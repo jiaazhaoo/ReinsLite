@@ -1,0 +1,12 @@
+[Unit]
+Description=reins board (C14): running and developing
+After=network.target
+
+[Service]
+Environment=REINS_HOME=/data/reins
+ExecStart=/env/code/ReinsLite/bin/reins board serve
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

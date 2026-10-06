@@ -1,0 +1,31 @@
+# Put this at a project's repo root as reins.toml. `reins` reads the nearest one above the current directory.
+
+project = "e2e-plan-extract"
+case_id_pattern = "^[0-9]+$"            # oachargeid format for this council family (digits; SHF_ is display only)
+
+[dev]
+repo = "/env/code/e2e-plan-extract"     # main worktree; candidates live in <repo>-wt-<version>, releases in <repo>-rel-...
+# Run inside the candidate's worktree by `reins dev finish`. Exit 0 = passed. If it writes JSON to $REINS_GATE_OUT
+# (fields in reins/gate.py), that becomes the gate_log row and must be green: missed_error not above the baseline,
+# no golden regressions. $REINS_GATE_SKIP carries a tier the user allowed to skip (recorded with the reason).
+gate = "python3 benchmark/qa359/gate.py --tier judges"
+
+[modules.plan_crop]
+about = "find and cut plan_images from scanned pages"
+files = ["e2e_plan_extract/stage_a/*"]
+
+[modules.georef]
+about = "place plan_images on the map (EPSG:27700)"
+files = ["e2e_plan_extract/georef/*"]
+
+[modules.trace]
+about = "trace the drawn boundary"
+files = ["tools/boundary_lab.py", "e2e_plan_extract/stage_b/*"]
+
+[modules.judge]
+about = "model judges and tie-break of a polygon against its plan_image"
+files = ["tools/qa_judge.py", "tools/qa_final.py"]
+
+[modules.lanes]
+about = "route each case to a lane from its verdicts"
+files = ["tools/qa_review/queues.py"]

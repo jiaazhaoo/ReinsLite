@@ -1,0 +1,29 @@
+# C7b routing rules as data. `reins rules list` prints them in plain words; every change ships with
+# `reins rules diff OLD_LANES.csv NEW_LANES.csv`.
+
+[[rule]]
+id = "no_plan_image_never_auto_accept"
+lane = "review"
+when = "the case has no plan_image at all"
+evidence = "bench-sheffield-wp3-359-v3: 491 cases had been auto-accepted without a drawing (user, 2026-10-05)"
+decided = "2026-10-05"
+by = "user"
+cost_per_case_usd = 0.0
+
+[[rule]]
+id = "address_lane_needs_iou_085"
+lane = "auto_accept"
+when = "the address parcel lane matched the delivered polygon with IoU >= 0.85 and the text check found no new build, no unclear address, no pointer to another plot"
+evidence = "bench-sheffield-wp3-359-v6; user ruling 2026-10-05 after SHF_134933 missed a substation"
+decided = "2026-10-05"
+by = "user"
+cost_per_case_usd = 0.0
+
+[[rule]]
+id = "gemini_veto"
+lane = "review"
+when = "the first judge says wrong; the tie-break judge may not overrule it"
+evidence = "bench-sheffield-wp3-359-v4: sol alone let SHF_162257 through (n=1 miss, 23 Fail cases)"
+decided = "2026-10-05"
+by = "user"
+cost_per_case_usd = 0.04

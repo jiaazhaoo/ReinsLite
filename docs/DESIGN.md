@@ -229,6 +229,17 @@ bench-sheffield-wp3-359/v6/
 
 **主控路由是唯一入口**：任何批次、任何阶段、任何付费调用都经过它。它做四件事：准入、调度、成本控制、恢复。
 
+**它管两类不可靠的工人**（2026-10-06 补）：
+1. 流水线阶段和付费模型（gemini、luna、OCR、georef）。
+2. **Claude 会话本身。** 复盘里最常出事的是会话：另一个会话 `setsid nohup` 起了 rework 没人知道；把未审的提交合进 main；在运行目录里切分支；在对话里改标准答案。
+   所以会话只能通过 `reins` 命令提议五类高风险动作：启动/停止批次、发布版本、改路由规则、花钱、写冻结或交付目录。
+
+**强制手段分两层**：拿不到（锁）比被拦（护栏）可靠。
+- 锁：付费 key 只在网关进程里（`reins gateway serve`）；冻结目录和 release worktree 只读；生产批次由 `reins run` 启动，进程组登记在主控名下；租约（C10）按 session id 判归属，fork 出来的会话什么都不拥有。
+- 护栏：Claude Code PreToolUse hook（`hooks/guard.py`）拦 detached 启动、手工 merge/push main、写冻结目录、改别人的 worktree。出错时放行并记日志。
+
+**和 LLM harness 的三点不同**：主控是确定性代码，不是模型；管的粒度是阶段和 case，不是每个工具调用；约束靠拿不到资源，不只靠拦截。
+
 ### 准入（开跑前，任一不满足就拒绝或停下问用户）
 1. 批次已登记（C3），case 集合通过 C1 校验（无空 id、无重复、无表头混入）。
 2. 每个阶段指定的模块版本是 `released`；生产/返工批次必须用 release。
@@ -398,4 +409,25 @@ Watchdog 负责发现，主控路由负责按预案处理。**自动修复只做
 
 ## 待定
 - 审核队列（P1–P5）是否改名：等 C6 落地时再定。
-- 主控路由方案（上面 C7）需要用户确认后再实现。
+
+## 实现状态（2026-10-06，v0.2）
+
+| 契约 | 状态 | 在哪 |
+|---|---|---|
+| C0 词表 | 有：31 词 + `reins lint`（表头、文档） | `reins/glossary.toml`, `glossary.py` |
+| C1 Case | 有：清单校验、逐 case 事件（started/done/skipped/failed）、守恒门、`reins case` | `batches.py` |
+| C2 模块版本 | 有：命名、candidate→released→retired、pins | `modules.py` |
+| C3 批次 | 有：登记、阶段顺序、paid 阶段 cap 门、mixed_version、别名、关闭冻结 | `batches.py` |
+| C4 Benchmark | 只有命名约定和 gate 的 benchmark 字段；冻结/标签/split 工具未做 | — |
+| C5 门禁 | 有：`gate_log`、green/red 规则（missed_error 不增、golden 不退）、`dev finish` 调用 | `gate.py`, `dev.py` |
+| C6 人工审核 | 未做（现有 `qa_review/review.db` 已接近，待抽象） | — |
+| C7 主控路由 | 有：准入（版本状态、release、cap、阶段顺序）、`reins run` 启动器（supervisor、pgid、自动重试、暂停通知）、`reins ctl`；规则即数据 + lane diff | `runner.py`, `rules.py` |
+| C8 Watchdog | 有：停滞、超时 case、进程丢失、网关宕、磁盘/内存（暂停）、GPU（告警）；systemd 单元 | `watchdog.py`, `systemd/` |
+| C9 花费账本 | 有：预留→结算、缓存、价格表、估价、80% 告警、到顶暂停；网关进程持 key | `spend.py`, `gateway.py` |
+| C10 租约 | 有：worktree / batch 租约，按 session id；hook 护栏 | `leases.py`, `hooks/guard.py` |
+| C11 验收 | 未做 | — |
+| C12 产物不可变 | 部分：release worktree chmod a-w；批次关闭后拒写登记；hook 拦冻结路径 | — |
+| C13 决定记录 | 有：`reins decide add/list`，supersedes | `decisions.py` |
+| C14 看板 | 有：运行中 / 开发中两栏 + 第二页（生产版本、历史、每周花费） | `board.py` |
+
+下一步：把 e2e-plan-extract 接进来（reins.toml、模块登记、`run_local_qa.sh` 每步 mark、`qa_judge.py` 走网关），然后 C4、C6、C11。

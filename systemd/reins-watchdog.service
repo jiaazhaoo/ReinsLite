@@ -1,0 +1,16 @@
+# systemd --user unit. Install:
+#   mkdir -p ~/.config/systemd/user && cp systemd/*.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now reins-watchdog reins-gateway reins-board
+#   loginctl enable-linger $USER      # keep them running without a login session
+[Unit]
+Description=reins watchdog (C8): progress, resources, lost processes
+After=network.target
+
+[Service]
+Environment=REINS_HOME=/data/reins
+ExecStart=/env/code/ReinsLite/bin/reins watchdog run --interval 60
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,198 @@
+"""C2 lifecycle with git: candidate version in its own worktree -> gate -> merge -> released -> release tag.
+
+    reins dev start MODULE SUFFIX --about '...' [--from-batch B --cases ID,ID,...] [--files 'GLOB ...']
+    reins dev finish VERSION [--skip-tier T --why '...']
+    reins dev abandon VERSION --why '...'
+    reins dev release [--note '...']
+    reins dev list
+
+Project settings come from the repo's reins.toml:
+    project = "e2e-plan-extract"
+    [dev]
+    repo = "/env/code/e2e-plan-extract"            # main worktree
+    gate = "python3 benchmark/qa359/gate.py"       # run in the candidate's worktree; exit 0 = passed. If it writes
+                                                   # JSON to $REINS_GATE_OUT, that is recorded as the gate_log row
+                                                   # and must be green (see reins/gate.py for the fields)
+    [modules.georef]
+    about = "place plan images on the map"
+    files = ["e2e_plan_extract/georef/*"]
+"""
+from __future__ import annotations
+
+import fnmatch
+import json
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+from . import gate as gatemod, leases, modules
+from .store import ReinsError, now, session, today, tx
+
+IDENT = ["-c", "user.name=reins", "-c", "user.email=reins@local"]
+
+
+def git(repo: Path, *args: str, check=True) -> str:
+    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    if check and r.returncode:
+        raise ReinsError(f"git {' '.join(args)}: {r.stderr.strip()[-400:]}")
+    return r.stdout.strip()
+
+
+def project_cfg(repo: Path) -> dict:
+    import tomllib
+    f = repo / "reins.toml"
+    if not f.is_file():
+        raise ReinsError(f"{repo} has no reins.toml (project = ..., [dev] repo = ..., gate = ...)")
+    cfg = tomllib.loads(f.read_text(encoding="utf-8"))
+    if "project" not in cfg:
+        raise ReinsError(f"{f}: missing project = \"...\"")
+    return cfg
+
+
+def _ensure_module(con, cfg: dict, module: str) -> None:
+    if con.execute("SELECT 1 FROM module WHERE name=?", (module,)).fetchone():
+        return
+    m = cfg.get("modules", {}).get(module)
+    if not m:
+        raise ReinsError(f"module {module!r} is neither registered nor declared under [modules.{module}] in reins.toml")
+    modules.add(con, module, cfg["project"], m.get("about", module))
+
+
+def start(con, repo: Path, module: str, suffix: str, about: str, from_batch: str | None = None,
+          cases: list[str] | None = None, files: list[str] | None = None) -> dict:
+    cfg = project_cfg(repo)
+    _ensure_module(con, cfg, module)
+    files = files or cfg.get("modules", {}).get(module, {}).get("files", [])
+    if from_batch:
+        from . import batches
+        b = batches.get(con, from_batch)
+        members = {r[0] for r in con.execute("SELECT oachargeid FROM batch_case WHERE batch_id=?", (from_batch,))}
+        bad = [c for c in (cases or []) if c not in members]
+        if bad:
+            raise ReinsError(f"cases not in {from_batch}: {', '.join(bad)}")
+        if not cases:
+            raise ReinsError("--from-batch needs --cases: the failing cases are this version's pilot set")
+    pins = {"files": files, "from_batch": from_batch, "pilot_cases": cases or [], "forked_from_session": session()}
+    version = modules.new(con, module, suffix, about, repo, pins)
+    wt = repo.parent / f"{repo.name}-wt-{version}"
+    branch = f"feat/{version}"
+    tracked = git(repo, "ls-files").splitlines()
+    mine = {f for g in files for f in tracked if fnmatch.fnmatch(f, g)}
+    warnings = []
+    for other in con.execute("SELECT version, pins, session FROM module_version WHERE status='candidate' AND version<>?",
+                             (version,)):
+        theirs = {f for g in json.loads(other["pins"]).get("files", []) for f in tracked if fnmatch.fnmatch(f, g)}
+        ov = sorted(mine & theirs)
+        if ov:
+            warnings.append(f"{other['version']} (session {other['session']}) also works on {ov[:5]}")
+    git(repo, "worktree", "add", "-b", branch, str(wt), "main")
+    with tx(con):
+        con.execute("UPDATE module_version SET worktree=?, branch=?, commit_sha=? WHERE version=?",
+                    (str(wt), branch, git(repo, "rev-parse", "main"), version))
+    leases.acquire(con, f"worktree:{wt}", f"develop {version}")
+    modules.note(con, version, "worktree", str(wt))
+    return {"version": version, "worktree": str(wt), "branch": branch, "warnings": warnings,
+            "pilot_cases": cases or []}
+
+
+def finish(con, version: str, skip_tier: str | None = None, why: str | None = None) -> dict:
+    row = modules.get(con, version)
+    if row["status"] != "candidate":
+        raise ReinsError(f"{version} is {row['status']}")
+    wt = Path(row["worktree"] or "")
+    if not wt.exists():
+        raise ReinsError(f"worktree {wt} is missing")
+    leases.check(con, f"worktree:{wt}")
+    repo = Path(git(wt, "rev-parse", "--git-common-dir")).resolve().parent
+    cfg = project_cfg(repo)
+    if git(wt, "status", "--porcelain"):
+        raise ReinsError(f"{wt} has uncommitted changes: commit them first")
+    r = subprocess.run(["git", *IDENT, "-C", str(wt), "merge", "--no-edit", "main"], capture_output=True, text=True)
+    if r.returncode:
+        raise ReinsError(f"merging main into {row['branch']} conflicts; resolve in {wt}, commit, finish again")
+    gate_cmd = cfg.get("dev", {}).get("gate")
+    evidence = ""
+    if gate_cmd:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, prefix="reins-gate-") as tf:
+            out = tf.name
+        env = {**os.environ, "REINS_GATE_OUT": out, "REINS_VERSION": version}
+        if skip_tier:
+            if not why:
+                raise ReinsError("--skip-tier needs --why (recorded)")
+            env["REINS_GATE_SKIP"] = skip_tier
+        g = subprocess.run(gate_cmd, shell=True, cwd=str(wt), env=env)
+        if g.returncode:
+            modules.note(con, version, "gate_red", f"exit {g.returncode}")
+            raise ReinsError(f"gate failed (exit {g.returncode}); not merged")
+        if Path(out).stat().st_size:
+            res = json.loads(Path(out).read_text())
+            res.setdefault("skipped", f"{skip_tier}: {why}" if skip_tier else None)
+            rec = gatemod.record(con, version, **res)
+            if rec["status"] != "green":
+                raise ReinsError(f"gate red: missed_error {rec['missed_error']} vs baseline {rec['base_missed_error']}, "
+                                 f"golden regressions {rec['golden_regressions']}; not merged")
+            evidence = f"gate green on {res['benchmark']} tiers {res['tiers']}: missed_error {rec['missed_error']} " \
+                       f"(base {rec['base_missed_error']}), review_load {rec['review_load']} (base {rec['base_review_load']})"
+        else:
+            evidence = f"gate command exit 0 ({gate_cmd})"
+        if skip_tier:
+            evidence += f"; tier {skip_tier} skipped: {why}"
+    else:
+        evidence = "no gate configured in reins.toml [dev].gate"
+    msg = f"Merge {row['branch']}: {row['about']}\n\n{evidence}\n"
+    r = subprocess.run(["git", *IDENT, "-C", str(repo), "merge", "--no-ff", "-m", msg, row["branch"]],
+                       capture_output=True, text=True)
+    if r.returncode:
+        raise ReinsError(f"merge into main failed: {r.stderr[-400:]}")
+    modules.release(con, version, evidence)
+    with tx(con):
+        con.execute("UPDATE module_version SET commit_sha=? WHERE version=?", (git(repo, "rev-parse", "main"), version))
+    git(repo, "worktree", "remove", "--force", str(wt), check=False)
+    git(repo, "branch", "-d", row["branch"], check=False)
+    leases.release(con, f"worktree:{wt}", force=True)
+    return {"version": version, "main": git(repo, "rev-parse", "--short", "main"), "evidence": evidence}
+
+
+def abandon(con, version: str, why: str) -> None:
+    row = modules.get(con, version)
+    if row["status"] != "candidate":
+        raise ReinsError(f"{version} is {row['status']}")
+    with tx(con):
+        con.execute("UPDATE module_version SET status='abandoned' WHERE version=?", (version,))
+    modules.note(con, version, "abandoned", why)
+    if row["worktree"]:
+        leases.release(con, f"worktree:{row['worktree']}", force=True)
+
+
+def release(con, repo: Path, note: str = "") -> dict:
+    cfg = project_cfg(repo)
+    project = cfg["project"]
+    day = today()
+    with tx(con):
+        n = con.execute("SELECT COUNT(*) FROM release WHERE project=? AND name LIKE ?", (project, f"rel-{project}-{day}-%")).fetchone()[0] + 1
+        name = f"rel-{project}-{day}-{n}"
+        git(repo, *IDENT, "tag", "-a", name, "-m", note or name, "main")
+        wt = repo.parent / f"{repo.name}-{name}"
+        git(repo, "worktree", "add", "--detach", str(wt), name)
+        subprocess.run(["chmod", "-R", "a-w", str(wt)], check=False)
+        versions = [r[0] for r in con.execute(
+            "SELECT version FROM module_version v JOIN module m ON m.name=v.module WHERE m.project=? AND v.status='released'"
+            " AND v.day || '-' || printf('%09d', v.seq) = (SELECT MAX(day || '-' || printf('%09d', seq)) FROM module_version x"
+            " WHERE x.module=v.module AND x.status='released')", (project,))]
+        con.execute("INSERT INTO release (name, project, commit_sha, worktree, note, versions, created, session)"
+                    " VALUES (?,?,?,?,?,?,?,?)", (name, project, git(repo, "rev-parse", name), str(wt), note,
+                                                  json.dumps(versions), now(), session()))
+    return {"name": name, "worktree": str(wt), "versions": versions}
+
+
+def list_(con, project: str | None = None) -> dict:
+    q = "SELECT v.*, m.project FROM module_version v JOIN module m ON m.name=v.module"
+    args = ()
+    if project:
+        q += " WHERE m.project=?"; args = (project,)
+    rows = [dict(r) for r in con.execute(q + " ORDER BY v.module, v.day, v.seq", args)]
+    rels = [dict(r) for r in con.execute("SELECT * FROM release" + (" WHERE project=?" if project else "") +
+                                         " ORDER BY created DESC LIMIT 5", args)]
+    return {"candidates": [r for r in rows if r["status"] == "candidate"],
+            "released": [r for r in rows if r["status"] == "released"], "releases": rels}

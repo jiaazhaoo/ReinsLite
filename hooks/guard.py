@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Claude Code PreToolUse guard: the guard-rail half of C7/C10 (the lock half is leases, the gateway and read-only dirs).
+
+Blocks, with the reins command to use instead:
+  Bash   setsid / nohup / disown / trailing &  on a pipeline command  -> reins run BATCH STAGE -- CMD
+         git merge|push into main, git checkout/switch inside another session's worktree -> reins dev finish
+         writes (> >> tee cp mv rm chmod) into frozen paths: /data/benchmarks/*, *-rel-*, release worktrees
+  Edit/Write/MultiEdit   files in frozen paths or in a worktree leased by another session
+
+Install (in ~/.claude/settings.json):
+  "hooks": {"PreToolUse": [{"matcher": "Bash|Edit|Write|MultiEdit",
+             "hooks": [{"type": "command", "command": "python3 /env/code/ReinsLite/hooks/guard.py"}]}]}
+Exit 2 = blocked (stderr is shown to the model); exit 0 = allowed. Any internal error allows (fail open) and
+logs to $REINS_HOME/guard.log, so a broken guard never stops work silently.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+import sys
+from pathlib import Path
+
+HOME = Path(os.environ.get("REINS_HOME", "/data/reins"))
+FROZEN = [re.compile(p) for p in (r"^/data/benchmarks/", r"/[^/ ]+-rel-[^/ ]+/", r"^/data/reins/cache/",
+                                  r"^/data/[^/]+/(text|spatial)/delivery/")]
+PIPELINE = re.compile(r"(run_local_qa\.sh|run_rework\.sh|run_batch|pipeline\.py|qa_judge\.py|batch\.py)")
+DETACH = re.compile(r"\b(setsid|nohup|disown)\b|&\s*$|&\s*;")
+MERGE_MAIN = re.compile(r"git\b[^|;&]*\b(merge|push)\b[^|;&]*\bmain\b|git\b[^|;&]*\bpush\b(?![^|;&]*--dry-run)")
+SWITCH = re.compile(r"git\b[^|;&]*\b(checkout|switch)\b")
+WRITE = re.compile(r"(>>?|\btee\b|\bcp\b|\bmv\b|\brm\b|\bchmod\b|\bmkdir\b|\btouch\b)\s+(-\w+\s+)*(\S+)")
+
+
+def frozen(path: str) -> bool:
+    return any(p.search(path) for p in FROZEN)
+
+
+def other_sessions_worktree(path: str) -> str | None:
+    me = os.environ.get("REINS_SESSION") or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    db = HOME / "reins.db"
+    if not db.exists():
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+    for res, holder in con.execute("SELECT resource, holder FROM lease WHERE resource LIKE 'worktree:%'"):
+        wt = res.split(":", 1)[1]
+        if (path == wt or path.startswith(wt.rstrip("/") + "/")) and holder != me:
+            return f"{wt} (session {holder})"
+    return None
+
+
+def check_bash(cmd: str) -> str | None:
+    if PIPELINE.search(cmd) and DETACH.search(cmd):
+        return "pipeline commands are not started detached by hand. Use: reins run BATCH STAGE -- CMD... " \
+               "(supervised, pgid-controlled, survives this session)"
+    if MERGE_MAIN.search(cmd):
+        return "merging into or pushing main is done by `reins dev finish VERSION` after the gate, never by hand"
+    cwd = os.getcwd()
+    if SWITCH.search(cmd):
+        o = other_sessions_worktree(cwd)
+        if o or frozen(cwd + "/"):
+            return f"no branch switching inside {o or cwd}: it is a release/batch tree or another session's worktree"
+    for m in WRITE.finditer(cmd):
+        target = os.path.abspath(os.path.join(cwd, m.group(3).strip("'\"")))
+        if frozen(target):
+            return f"{target} is frozen (benchmark / release / delivery). Create a new version instead of changing it"
+        o = other_sessions_worktree(target)
+        if o:
+            return f"{target} is inside {o}; start your own: reins dev start MODULE SUFFIX --about ..."
+    return None
+
+
+def check_edit(path: str) -> str | None:
+    p = os.path.abspath(path)
+    if frozen(p):
+        return f"{p} is frozen (benchmark / release / delivery). Create a new version instead of changing it"
+    o = other_sessions_worktree(p)
+    if o:
+        return f"{p} is inside {o}; start your own: reins dev start MODULE SUFFIX --about ..."
+    return None
+
+
+def main() -> int:
+    try:
+        data = json.load(sys.stdin)
+        tool, inp = data.get("tool_name", ""), data.get("tool_input", {}) or {}
+        if tool == "Bash":
+            msg = check_bash(inp.get("command", ""))
+        elif tool in ("Edit", "Write", "MultiEdit"):
+            msg = check_edit(inp.get("file_path", ""))
+        else:
+            msg = None
+        if msg:
+            print(f"reins guard: {msg}", file=sys.stderr)
+            return 2
+        return 0
+    except Exception as e:                                                      # noqa: BLE001
+        try:
+            HOME.mkdir(parents=True, exist_ok=True)
+            with (HOME / "guard.log").open("a") as f:
+                f.write(f"guard error: {e!r}\n")
+        except OSError:
+            pass
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

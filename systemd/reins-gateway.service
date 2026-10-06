@@ -1,0 +1,12 @@
+[Unit]
+Description=reins paid-call gateway (C9): the only holder of the OpenRouter key
+After=network.target
+
+[Service]
+Environment=REINS_HOME=/data/reins
+ExecStart=/env/code/ReinsLite/bin/reins gateway serve
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
