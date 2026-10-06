@@ -45,13 +45,13 @@ reins dev start → 改代码 → pilot 批次（问题 case）→ eval 批次�
 → reins dev finish（门禁绿 = missed_error 不增、golden 不退）→ 用户批准 → released
 → reins dev release（打 tag，只读 worktree）→ production 批次 → 用户验收
 ```
-上一步没完成，下一步开不了：production 批次只接受 released 版本 + release 名；paid 阶段在 cap 为 $0 时拒绝启动。
+上一步没完成，下一步开不了：production 批次只接受 released 版本 + release 名；paid 阶段在 `spend_cap` 为 $0 时拒绝启动。
 
 ## 用户出现的三个点
 
 | 决策点 | 命令 | 用户看到 | 用户做 |
 |---|---|---|---|
-| 批钱 | `reins batch approve B --cap USD` | 预估花费、和上一版对比 | 批或不批 |
+| 批钱 | `reins batch approve B --cap USD` | 预估 `spend_cap` 内的花费、和上一版对比 | 批或不批 |
 | 批发布 | `reins dev finish V`（会话提议）→ 用户点头 | 门禁结果 + 结果变了的 case 页面 | 批或打回 |
 | 验收交付 | C11（待实现） | 固定 seed 抽检页 | 交付或返工 |
 
@@ -84,4 +84,4 @@ loginctl enable-linger $USER
 "hooks": {"PreToolUse": [{"matcher": "Bash|Edit|Write|MultiEdit",
           "hooks": [{"type": "command", "command": "python3 /env/code/ReinsLite/hooks/guard.py"}]}]}
 ```
-拦：detached 启动流水线、手工 merge/push main、写冻结目录、改别人的 worktree。出错时放行并记日志（fail open）。
+拦：detached 启动流水线、手工 merge/push main、写冻结目录、改别人的 worktree。出错时放行并记日志（`fail open`）。
