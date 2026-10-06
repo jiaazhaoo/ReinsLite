@@ -1,0 +1,11 @@
+[project]
+name = "reinslite"
+version = "0.1.0"
+description = "Contracts and registry for automated-QA pipelines: case identity, module versions, batches, glossary."
+requires-python = ">=3.11"
+
+[project.scripts]
+reins = "reins.cli:main"
+
+[tool.setuptools.package-data]
+reins = ["glossary.toml"]

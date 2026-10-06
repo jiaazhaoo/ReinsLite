@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Run the reins CLI from this checkout without installing it.
+here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m reins "$@"

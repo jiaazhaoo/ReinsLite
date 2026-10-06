@@ -1,0 +1,198 @@
+# C0 glossary: one word, one meaning. The only source of terms for field names, table headers, status values and docs.
+#
+#   term        canonical English word (what code and headers use)
+#   zh          Chinese gloss, for reading only
+#   values      allowed values, when the term is an enum
+#   forbidden   synonyms that must not be used. A plain entry matches as a word anywhere in an identifier
+#               ("qa" hits "qa_final"); an entry starting with "=" matches only the whole identifier
+#               ("=confidence" hits "confidence" but not "trace_confidence").
+#
+# Changing a definition = a new term + `retired = "<date>: <why>"` on the old one. Never edit a meaning in place.
+
+[[term]]
+term = "case"
+zh = "案件"
+definition = "One land charge, identified by its oachargeid. Every record is keyed by it."
+forbidden = ["charge", "=chargeid", "=charge_id", "=case_id"]
+
+[[term]]
+term = "oachargeid"
+zh = "案件主键"
+definition = "The case key: the originating-authority charge identifier, stored exactly as received. Display prefixes (SHF_) are presentation only."
+forbidden = ["=originating_authority_charge_identifier", "=oaid"]
+
+[[term]]
+term = "application"
+zh = "规划申请"
+definition = "One planning application (LA reference). A case may refer to one; one application may serve several cases."
+
+[[term]]
+term = "la_reference"
+zh = "申请号"
+definition = "The local authority's application reference, e.g. 96/0220P."
+forbidden = ["=ref", "=reference", "=fir"]
+
+[[term]]
+term = "page"
+zh = "页"
+definition = "One page (frame) of one source file. Belongs to exactly one case by explicit attribution."
+
+[[term]]
+term = "plan_image"
+zh = "图纸图片"
+definition = "An image of a drawing cut from a page."
+forbidden = ["=plan", "=plans"]
+
+[[term]]
+term = "plan_type"
+zh = "图纸类型"
+definition = "What a plan_image shows."
+values = ["site", "location", "block", "floor", "other"]
+
+[[term]]
+term = "capture_route"
+zh = "生产路线"
+definition = "How a delivered polygon was produced, as the customer labels it."
+values = ["link_cleanse", "plan", "draw"]
+forbidden = ["=route"]
+
+[[term]]
+term = "check"
+zh = "自动检查"
+definition = "An automated test of one output of one case. Produces a verdict."
+forbidden = ["qa"]
+
+[[term]]
+term = "verdict"
+zh = "自动判定"
+definition = "What automated checks concluded about one output."
+values = ["correct", "wrong", "unsure"]
+forbidden = ["=pass", "=passed", "=fail", "=judgement"]
+
+[[term]]
+term = "lane"
+zh = "去向"
+definition = "Where the router sends a case after its verdicts."
+values = ["auto_accept", "review", "auto_reject", "cannot_verify"]
+forbidden = ["=category", "=queue", "=auto_pass"]
+
+[[term]]
+term = "review"
+zh = "人工审核"
+definition = "A human looks at a case. Only ever human; a model is never a reviewer."
+
+[[term]]
+term = "customer_result"
+zh = "客户质检结果"
+definition = "The customer's (HMLR, Landmark) own QC result for a case. Can be wrong; not a golden."
+values = ["Pass", "Fail", "Advisory"]
+forbidden = ["=hmlr_result", "=qc_result"]
+
+[[term]]
+term = "golden"
+zh = "人工裁定标签"
+definition = "A label a human confirmed on the review page, with who, when and whether the drawing was seen. The highest-trust label."
+forbidden = ["truth", "=gt", "=gold", "=ground_truth", "=standard_answer"]
+
+[[term]]
+term = "reference_geometry"
+zh = "参考几何"
+definition = "Geometry from an earlier delivery or the customer's input. Not a golden."
+
+[[term]]
+term = "confidence"
+zh = "置信度"
+definition = "Never used alone. Always <stage>_confidence, and the glossary entry for that stage says whether it is a calibrated probability or a band."
+forbidden = ["=confidence", "=cfd", "=high", "=medium", "=low"]
+
+[[term]]
+term = "batch"
+zh = "批次"
+definition = "One registered execution of planned stages over a fixed case set for one purpose (C3). Named <council>-<wp>-<type>-<YYYYMMDD>-<n>."
+forbidden = ["=run", "=run_id", "=eval_dir"]
+
+[[term]]
+term = "eval"
+zh = "评测批次"
+definition = "A batch type: running a pipeline on a benchmark to measure it. Also the short name of a benchmark in prose (eval-359 = bench-sheffield-wp3-359)."
+
+[[term]]
+term = "attempt"
+zh = "续跑"
+definition = "One start of a batch's processes; a resume after a crash is a new attempt of the same batch."
+
+[[term]]
+term = "work_package"
+zh = "工作包"
+definition = "The customer's unit of work (wp3). Short form wp is allowed inside names."
+
+[[term]]
+term = "customer_batch_label"
+zh = "客户批次标签"
+definition = "What the customer calls a set of cases (HMLR 'Batch-3'). Stored, never used as a key."
+
+[[term]]
+term = "module"
+zh = "子模块"
+definition = "A replaceable part of a pipeline, registered once, globally unique name."
+
+[[term]]
+term = "module_version"
+zh = "子模块版本"
+definition = "<module>-<suffix>-<YYYYMMDD>-<n>, n from 1 per module per day. Pins code, prompts, models, params, assets."
+forbidden = ["=version", "=v"]
+
+[[term]]
+term = "release"
+zh = "发布"
+definition = "A named set of module versions that production batches run."
+
+[[term]]
+term = "benchmark"
+zh = "基准集"
+definition = "A frozen, versioned case set with inputs, per-stage outputs and labels (C4). Named bench-<name>-vN."
+forbidden = ["=eval_set", "=testset", "=test_set"]
+
+[[term]]
+term = "georef"
+zh = "配准"
+definition = "Placing a plan_image on the map (EPSG:27700)."
+forbidden = ["=registration", "=placement"]
+
+[[term]]
+term = "threshold"
+zh = "阈值"
+definition = "A decision value on a score. Always recorded with the sample size and split it was set on."
+
+[[term]]
+term = "time_limit"
+zh = "时间上限"
+definition = "Wall-clock limit for one item or step."
+forbidden = ["=timeout_budget", "=truncation"]
+
+[[term]]
+term = "spend_cap"
+zh = "花费上限"
+definition = "The most a batch, stage or case may spend (USD). Set by the user."
+forbidden = ["=cap", "=budget"]
+
+[[term]]
+term = "balance"
+zh = "账户余额"
+definition = "Money left on a paid API account."
+
+[[term]]
+term = "key_limit"
+zh = "密钥限额"
+definition = "A provider-side spending limit on one API key (e.g. weekly)."
+
+[[term]]
+term = "missed_error"
+zh = "漏放"
+definition = "A case in lane auto_accept whose output is actually wrong. The primary metric; must not increase."
+forbidden = ["=miss", "=leak", "=leaked_fail"]
+
+[[term]]
+term = "review_load"
+zh = "审核量"
+definition = "Number of cases sent to review. A cost, not an error."
