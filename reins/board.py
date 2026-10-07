@@ -62,7 +62,15 @@ def _latest_notes(con, hours: int = 6) -> list[dict]:
     since = (dt.datetime.now() - dt.timedelta(hours=hours)).isoformat(timespec="seconds")
     rows = con.execute("SELECT * FROM notification WHERE acked=0 AND at>? AND id IN (SELECT MAX(id) FROM notification"
                        " GROUP BY key) ORDER BY id DESC LIMIT 8", (since,)).fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        k = r["key"].split(":")
+        if k[0] in ("stall", "late") and len(k) == 3:          # a stage that is no longer running has nothing to report
+            st = con.execute("SELECT status FROM batch_stage WHERE batch_id=? AND stage=?", (k[1], k[2])).fetchone()
+            if not st or st["status"] != "running":
+                continue
+        out.append(dict(r))
+    return out
 
 
 def state(con) -> dict:
