@@ -174,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     x = s.add_parser("summary"); x.add_argument("batch")
     x = s.add_parser("price"); x.add_argument("model"); x.add_argument("input_per_m", type=float)
     x.add_argument("output_per_m", type=float); x.add_argument("--source", default="")
-    s.add_parser("weekly")
+    s.add_parser("weekly"); s.add_parser("balances", help="poll provider balances now (free endpoints)")
     x = sub.add_parser("gateway").add_subparsers(dest="sub", required=True).add_parser("serve"); x.add_argument("--port", type=int)
     w = sub.add_parser("watchdog").add_subparsers(dest="sub", required=True)
     w.add_parser("once"); x = w.add_parser("run"); x.add_argument("--interval", type=int, default=60)
@@ -328,6 +328,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(spend.summary(con, args.batch), ensure_ascii=False, indent=1))
             elif args.sub == "price":
                 spend.set_price(con, args.model, args.input_per_m, args.output_per_m, args.source); print("ok")
+            elif args.sub == "balances":
+                for r in spend.poll_balances(con):
+                    print(f"{r['provider']:<12} balance ${r['balance']:.2f}  {r['detail']}" if r["balance"] is not None else f"{r['provider']}: {r['detail']}")
             else:
                 for w in spend.weekly(con):
                     print(f"{w['week']}  {w['project']:<22} ${w['usd'] or 0:8.2f}  {w['calls']:>6} calls  {w['hits']:>6} cache hits")

@@ -105,3 +105,81 @@ def weekly(con, weeks: int = 8) -> list[dict]:
     return [dict(r) for r in con.execute(
         "SELECT strftime('%Y-W%W', at) week, b.project, SUM(amount) usd, COUNT(*) calls, SUM(cache_hit) hits"
         " FROM spend s JOIN batch b USING (batch_id) GROUP BY week, b.project ORDER BY week DESC LIMIT ?", (weeks * 5,))]
+
+
+# ------------------------------------------------------------------ provider balances (free endpoints)
+PROVIDERS = ("openrouter", "deepseek", "google")
+
+
+def _key(provider: str) -> str | None:
+    from .store import home
+    f = home() / "secrets" / f"{provider}.key"
+    return f.read_text().strip() if f.is_file() else None
+
+
+def poll_balance(con, provider: str) -> dict | None:
+    """One sample of a provider's balance from its free account endpoint. None when it has none or the key is missing."""
+    import json as _json
+    import urllib.request
+    k = _key(provider)
+    if not k:
+        return None
+    try:
+        if provider == "openrouter":
+            req = urllib.request.Request("https://openrouter.ai/api/v1/credits", headers={"Authorization": "Bearer " + k})
+            d = _json.load(urllib.request.urlopen(req, timeout=20))["data"]
+            bal, used = float(d["total_credits"]) - float(d["total_usage"]), float(d["total_usage"])
+            detail = f"credits {d['total_credits']}"
+        elif provider == "deepseek":
+            req = urllib.request.Request("https://api.deepseek.com/user/balance", headers={"Authorization": "Bearer " + k})
+            d = _json.load(urllib.request.urlopen(req, timeout=20))
+            usd = next((b for b in d.get("balance_infos", []) if b.get("currency") == "USD"), None)
+            bal, used = (float(usd["total_balance"]) if usd else None), None
+            detail = ", ".join(f"{b['currency']} {b['total_balance']}" for b in d.get("balance_infos", []))
+        else:
+            return None
+    except Exception as e:                                                      # noqa: BLE001
+        with tx(con):
+            con.execute("INSERT INTO balance_sample (at, provider, detail) VALUES (?,?,?)", (now(), provider, f"error: {e!s}"[:200]))
+        return None
+    with tx(con):
+        con.execute("INSERT INTO balance_sample (at, provider, balance, usage_total, detail) VALUES (?,?,?,?,?)",
+                    (now(), provider, bal, used, detail))
+    return {"provider": provider, "balance": bal, "usage_total": used, "detail": detail}
+
+
+def poll_balances(con) -> list[dict]:
+    return [r for p in PROVIDERS if (r := poll_balance(con, p))]
+
+
+def cost_view(con) -> list[dict]:
+    """One card per provider: balance, spend today / this week (from balance samples where the provider reports usage,
+    else from the gateway ledger), last call, calls today."""
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+    week = (_dt.date.today() - _dt.timedelta(days=7)).isoformat()
+    out = []
+    for p in PROVIDERS:
+        latest = con.execute("SELECT * FROM balance_sample WHERE provider=? AND balance IS NOT NULL ORDER BY id DESC LIMIT 1", (p,)).fetchone()
+        first_today = con.execute("SELECT * FROM balance_sample WHERE provider=? AND balance IS NOT NULL AND at>=? ORDER BY id LIMIT 1",
+                                  (p, today)).fetchone()
+        first_week = con.execute("SELECT * FROM balance_sample WHERE provider=? AND balance IS NOT NULL AND at>=? ORDER BY id LIMIT 1",
+                                 (p, week)).fetchone()
+        led_today = con.execute("SELECT COALESCE(SUM(amount),0), COUNT(*), MAX(at) FROM spend WHERE provider=? AND at>=?", (p, today)).fetchone()
+        led_week = con.execute("SELECT COALESCE(SUM(amount),0) FROM spend WHERE provider=? AND at>=?", (p, week)).fetchone()[0]
+        by_batch = [dict(r) for r in con.execute(
+            "SELECT batch_id, ROUND(SUM(amount),2) usd FROM spend WHERE provider=? AND at>=? GROUP BY batch_id ORDER BY 2 DESC LIMIT 4", (p, week))]
+        spent_today = spent_week = None
+        src = "ledger"
+        if latest and first_today:
+            spent_today = round(first_today["balance"] - latest["balance"], 2); src = "balance"
+        if latest and first_week:
+            spent_week = round(first_week["balance"] - latest["balance"], 2)
+        out.append({"provider": p, "balance": latest["balance"] if latest else None,
+                    "balance_at": latest["at"] if latest else None, "has_endpoint": p in ("openrouter", "deepseek"),
+                    "key_present": _key(p) is not None,
+                    "spent_today": spent_today if spent_today is not None else round(led_today[0], 2),
+                    "spent_week": spent_week if spent_week is not None else round(led_week, 2),
+                    "spend_source": src, "calls_today": led_today[1], "last_call": led_today[2],
+                    "by_batch": by_batch, "error": (latest is None and _key(p) is not None and p != "google")})
+    return out

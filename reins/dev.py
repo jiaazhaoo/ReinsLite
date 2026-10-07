@@ -202,10 +202,17 @@ def finish(con, version: str, skip_tier: str | None = None, why: str | None = No
     modules.release(con, version, evidence)
     with tx(con):
         con.execute("UPDATE module_version SET commit_sha=? WHERE version=?", (git(repo, "rev-parse", "main"), version))
+        _unbind_sessions(con, version, row["module"])
     git(repo, "worktree", "remove", "--force", str(wt), check=False)
     git(repo, "branch", "-d", row["branch"], check=False)
     leases.release(con, f"worktree:{wt}", force=True)
     return {"version": version, "main": git(repo, "rev-parse", "--short", "main"), "evidence": evidence}
+
+
+def _unbind_sessions(con, version: str, module: str) -> None:
+    """The work is over: sessions bound to this version (or this session, to its module) stop showing as in progress."""
+    con.execute("UPDATE session SET version=NULL, module=NULL, role='analysis' WHERE version=? OR (id=? AND module=?)",
+                (version, session(), module))
 
 
 def abandon(con, version: str, why: str) -> None:
@@ -214,6 +221,7 @@ def abandon(con, version: str, why: str) -> None:
         raise ReinsError(f"{version} is {row['status']}")
     with tx(con):
         con.execute("UPDATE module_version SET status='abandoned' WHERE version=?", (version,))
+        _unbind_sessions(con, version, row["module"])
     modules.note(con, version, "abandoned", why)
     if row["worktree"]:
         leases.release(con, f"worktree:{row['worktree']}", force=True)

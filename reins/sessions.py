@@ -461,9 +461,12 @@ def development(con) -> list[dict]:
         items[("v", v["version"])] = {"module": v["module"], "module_about": v["module_about"], "version": v["version"],
                                       "about": v["about"], "registered": True, "sessions": {v["session"]} - {None},
                                       "last": v["created"]}
+    recent = (dt.datetime.now() - dt.timedelta(hours=48)).isoformat(timespec="seconds")
     for s in con.execute("SELECT * FROM session WHERE status<>'ended' AND role='develop'"
                          " AND (module IS NOT NULL OR version IS NOT NULL)"):
         last = con.execute("SELECT MAX(at) FROM session_event WHERE session_id=? AND kind='edit'", (s["id"],)).fetchone()[0]
+        if not s["version"] and (not last or last < recent):
+            continue
         key = next((k for k, it in items.items() if s["version"] and it["version"] == s["version"]), None)
         if key:
             items[key]["sessions"].add(s["id"]); items[key]["last"] = max(items[key]["last"] or "", last or ""); continue

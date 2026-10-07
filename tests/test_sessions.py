@@ -69,10 +69,11 @@ class Sessions(unittest.TestCase):
         self.assertEqual(len(sessions.timeline(self.con, "cccc3333")), 2)
         # the board: development items and runs, never a session id or a path
         st = board.state(self.con)
-        dev = [d for d in st["developing"] if d["module"] == "georef"]
+        dev = [d for d in st["in_progress"] if d["module"] == "georef"]
         self.assertEqual(len(dev), 1)
         self.assertIn("另一项开发也在改 georef", " ".join(dev[0]["conflicts"]) + " 2 个会话同时在做")
-        blob = json.dumps({"developing": st["developing"], "running": st["running"], "u": st["unregistered_runs"]}, ensure_ascii=False)
+        blob = json.dumps({"developing": st["in_progress"], "running": st["running"], "u": st["unregistered_runs"],
+                           "h": st["dev_history"], "r": st["run_history"]}, ensure_ascii=False)
         for secret in ("aaaa1111", "bbbb2222", "cccc3333", str(self.wt)):
             self.assertNotIn(secret, blob)
         self.hook("aaaa1111", "SessionEnd", reason="exit")

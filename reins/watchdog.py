@@ -131,10 +131,29 @@ def check_machine(con, cfg) -> list[str]:
     return out
 
 
+_last_poll = 0.0
+
+
+def poll_balances_due(con, cfg) -> list[str]:
+    """Provider balances every balance_poll_min minutes (free endpoints); a drop without gateway spend is flagged."""
+    global _last_poll
+    if time.time() - _last_poll < cfg["balance_poll_min"] * 60:
+        return []
+    _last_poll = time.time()
+    from . import spend
+    out = []
+    for r in spend.poll_balances(con):
+        out.append(f"{r['provider']} balance {r['balance']}")
+        if r["provider"] == "openrouter" and r["balance"] is not None and r["balance"] < 5:
+            notify.send(con, "balance_low:openrouter", "action", f"OpenRouter balance ${r['balance']:.2f}",
+                        "top up before the next paid stage; the gateway will pause batches at the cap", cooldown_min=360)
+    return out
+
+
 def once(con=None) -> list[str]:
     con = con or connect()
     cfg = config()
-    return check_batches(con, cfg) + check_machine(con, cfg)
+    return check_batches(con, cfg) + check_machine(con, cfg) + poll_balances_due(con, cfg)
 
 
 def run(interval: int = 60) -> None:

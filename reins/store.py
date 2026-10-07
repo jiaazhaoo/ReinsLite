@@ -391,6 +391,17 @@ CREATE TABLE IF NOT EXISTS session_event (
 );
 CREATE INDEX IF NOT EXISTS session_event_s ON session_event (session_id, id);
 CREATE INDEX IF NOT EXISTS session_event_wt ON session_event (worktree, at);
+-- C9 provider balances, sampled by the watchdog (free endpoints); the difference between samples is real spend,
+-- including calls that did not go through the gateway
+CREATE TABLE IF NOT EXISTS balance_sample (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  at        TEXT NOT NULL,
+  provider  TEXT NOT NULL,
+  balance   REAL,                                     -- USD left (NULL when the provider has no balance endpoint)
+  usage_total REAL,                                   -- cumulative usage reported by the provider, when it has one
+  detail    TEXT
+);
+CREATE INDEX IF NOT EXISTS balance_sample_p ON balance_sample (provider, id);
 -- C8 notifications sent
 CREATE TABLE IF NOT EXISTS notification (
   id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -421,7 +432,7 @@ def config() -> dict:
     cfg = tomllib.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
     defaults = {"gateway_port": 8790, "board_port": 8791, "bench_root": "/data/benchmarks", "notify_cmd": "", "stall_minutes": 30,
                 "disk_pause_pct": 90, "mem_pause_pct": 95, "gpu_warn_pct": 90, "default_call_estimate": 0.05,
-                "spend_warn_fraction": 0.8}
+                "spend_warn_fraction": 0.8, "balance_poll_min": 10}
     return {**defaults, **cfg}
 
 
