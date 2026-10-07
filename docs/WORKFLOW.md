@@ -89,11 +89,19 @@ loginctl enable-linger $USER
 ```
 网关 `127.0.0.1:8790`（key 放在 `/data/reins/secrets/openrouter.key`，chmod 600），看板 `127.0.0.1:8791`，Watchdog 每 60 秒一轮。
 
-## Claude Code hook（护栏）
+## Claude Code hook（会话登记 + 护栏）
 
-`~/.claude/settings.json`：
+一个脚本 `hooks/session_hook.py` 接所有事件，装在 `~/.claude/settings.json`（`H` 代表这条命令）：
 ```json
-"hooks": {"PreToolUse": [{"matcher": "Bash|Edit|Write|MultiEdit",
-          "hooks": [{"type": "command", "command": "python3 /env/code/ReinsLite/hooks/guard.py"}]}]}
+"hooks": {
+  "SessionStart":     [{"hooks": [H]}],
+  "UserPromptSubmit": [{"hooks": [H]}],
+  "PreToolUse":       [{"matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit", "hooks": [H]}],
+  "PostToolUse":      [{"matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [H]}],
+  "Stop":             [{"hooks": [H]}],
+  "SessionEnd":       [{"hooks": [H]}]
+}
+H = {"type": "command", "command": "python3 /env/code/ReinsLite/hooks/session_hook.py"}
 ```
-拦：detached 启动流水线、手工 merge/push main、写冻结目录、改别人的 worktree。出错时放行并记日志（`fail open`）。
+每次 20–50 毫秒。登记每个会话做了什么（C15）；拦：detached 启动流水线、手工 merge/push main、写冻结目录、改别人的 worktree。
+出错时放行并记日志（`fail open`），不会让会话卡住。

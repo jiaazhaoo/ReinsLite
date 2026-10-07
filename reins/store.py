@@ -357,6 +357,40 @@ CREATE TABLE IF NOT EXISTS deliverable (
   n_rows    INTEGER NOT NULL,
   manifest  TEXT NOT NULL                             -- JSON provenance tuple
 );
+-- C15 sessions: every Claude Code session, what it is for, what it did
+CREATE TABLE IF NOT EXISTS session (
+  id            TEXT PRIMARY KEY,                     -- Claude Code session id
+  started       TEXT NOT NULL,
+  last_seen     TEXT NOT NULL,
+  ended         TEXT,
+  status        TEXT NOT NULL CHECK (status IN ('active', 'idle', 'ended')),
+  cwd           TEXT,
+  transcript    TEXT,
+  prefix_sha    TEXT,                                 -- hash of the transcript's first lines: forks share it
+  parent        TEXT,                                 -- the session this one was forked from (inferred)
+  role          TEXT CHECK (role IS NULL OR role IN ('develop', 'run', 'experiment', 'analysis')),
+  purpose       TEXT,                                 -- one line, from the session (reins session bind) or inferred
+  module        TEXT,                                 -- the sub-module it updates
+  version       TEXT,                                 -- the module version it develops (registered)
+  batch_id      TEXT,                                 -- the batch it runs
+  project       TEXT,
+  n_edits       INTEGER NOT NULL DEFAULT 0,
+  n_commands    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS session_event (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  at         TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  kind       TEXT NOT NULL,      -- start | resume | edit | run_start | run_stop | experiment | git | merge | dev | blocked | command | bind | end
+  repo       TEXT,
+  worktree   TEXT,
+  path       TEXT,
+  module     TEXT,
+  batch_id   TEXT,
+  detail     TEXT
+);
+CREATE INDEX IF NOT EXISTS session_event_s ON session_event (session_id, id);
+CREATE INDEX IF NOT EXISTS session_event_wt ON session_event (worktree, at);
 -- C8 notifications sent
 CREATE TABLE IF NOT EXISTS notification (
   id     INTEGER PRIMARY KEY AUTOINCREMENT,

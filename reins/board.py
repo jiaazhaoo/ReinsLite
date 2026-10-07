@@ -11,7 +11,7 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import batches, gate, notify, spend
+from . import batches, gate, notify, sessions, spend
 from .store import config, connect
 
 
@@ -93,24 +93,18 @@ def state(con) -> dict:
                         "pct": round(100 * acc / max(1, b["n_cases"])),
                         "eta": _eta(con, b["batch_id"], cur["stage"], b["n_cases"], acc) if cur else "-",
                         "health": health, "needs": needs, "spent": st["batch"]["spent"], "cap": b["spend_cap"],
-                        "release": b["release_name"], "mixed": bool(b["mixed_version"]), "owner": b["owner_session"],
+                        "release": b["release_name"], "mixed": bool(b["mixed_version"]),
                         "attempts": max([p["attempt"] for p in st["processes"]] or [0]),
                         "last_event": st["recent_events"][0] if st["recent_events"] else None})
     developing = []
-    for v in con.execute("SELECT v.*, m.project FROM module_version v JOIN module m ON m.name=v.module"
-                         " WHERE v.status='candidate' ORDER BY v.created"):
-        g = gate.latest(con, v["version"])
-        last = con.execute("SELECT MAX(at) FROM module_event WHERE version=?", (v["version"],)).fetchone()[0] or v["created"]
-        idle_h = (dt.datetime.now() - dt.datetime.fromisoformat(last)).total_seconds() / 3600
-        pins = json.loads(v["pins"])
-        cost = con.execute("SELECT COALESCE(SUM(amount),0) FROM spend WHERE module_version=?", (v["version"],)).fetchone()[0]
-        developing.append({"version": v["version"], "project": v["project"], "about": v["about"], "branch": v["branch"],
-                           "worktree": v["worktree"], "session": v["session"], "from_batch": pins.get("from_batch"),
-                           "pilot_cases": len(pins.get("pilot_cases", [])),
-                           "gate": (f"{g['status']}: missed_error {g['missed_error']}/{g['base_missed_error']}, "
-                                    f"review_load {g['review_load']}/{g['base_review_load']}") if g else "not run",
-                           "gate_status": g["status"] if g else "none", "idle_h": round(idle_h, 1),
-                           "stalled": idle_h > 24, "spent": round(cost, 3)})
+    for d in sessions.development(con):
+        g = gate.latest(con, d["version"]) if d["version"] else None
+        idle_h = round((dt.datetime.now() - dt.datetime.fromisoformat(d["last"])).total_seconds() / 3600, 1) if d["last"] else None
+        developing.append({**d, "gate": (f"{g['status']}: 漏放 {g['missed_error']}/{g['base_missed_error']}, "
+                                         f"审核量 {g['review_load']}/{g['base_review_load']}") if g else "未过门禁",
+                           "gate_status": g["status"] if g else ("none" if d["registered"] else "unregistered"),
+                           "idle_h": idle_h, "stalled": bool(idle_h and idle_h > 24)})
+    unreg_runs = sessions.unregistered_runs(con)
     recent = [dict(r) for r in con.execute("SELECT batch_id, type, status, purpose, closed FROM batch"
                                            " WHERE status IN ('closed','done','failed') ORDER BY created DESC LIMIT 15")]
     production = [dict(r) for r in con.execute(
@@ -123,6 +117,7 @@ def state(con) -> dict:
         " AND e.event IN ('retired','abandoned') ORDER BY id DESC LIMIT 1) AS why FROM module_version v"
         " WHERE v.status IN ('retired','abandoned') ORDER BY v.created DESC LIMIT 10")]
     return {"at": dt.datetime.now().isoformat(timespec="seconds"), "running": running, "developing": developing,
+            "unregistered_runs": unreg_runs,
             "notifications": notify.pending(con, 12), "recent": recent, "production": production, "retired": retired,
             "spend_weekly": spend.weekly(con)}
 
@@ -149,7 +144,7 @@ h1{font-size:18px;margin:0 0 12px}h2{font-size:15px;margin:20px 0 8px;color:var(
 </style></head><body>
 <h1>Reins <span class="mute" id="at"></span></h1>
 <div class="tabs"><button class="on" onclick="tab('now')">运行中 · 开发中</button><button onclick="tab('else')">历史 · 版本 · 花费</button></div>
-<div id="now"><div id="notifs"></div><h2>运行中 Running</h2><div id="running"></div><h2>开发中 Developing</h2><div id="developing"></div></div>
+<div id="now"><div id="notifs"></div><h2>运行 Running</h2><div id="running"></div><h2>开发 Developing</h2><div id="developing"></div></div>
 <div id="else" style="display:none"><h2>生产版本 Production</h2><div id="production"></div><div id="retired"></div><h2>最近关闭 Recent</h2><div id="recent"></div><h2>每周花费 Spend</h2><div id="spend"></div></div>
 <script>
 function tab(t){for(const x of ['now','else']){document.getElementById(x).style.display=x===t?'':'none'}
@@ -166,12 +161,13 @@ async function load(){const s=await (await fetch('/api/state')).json();document.
   ${r.status_reason?`<div class="needs">⏸ ${esc(r.status_reason)}</div>`:''}${r.needs.filter(n=>!n.startsWith('paused')).map(n=>`<div class="needs">⚠ ${esc(n)}</div>`).join('')}
   ${r.progress.startsWith('adopted')?'':`<div class="bar"><i style="width:${r.pct}%"></i></div><div><span class="k">进度</span> ${esc(r.progress)} · <span class="k">ETA</span> ${esc(r.eta)}</div>`}
   ${r.probe.length?`<pre class="probe">${esc(r.probe.join('\\n'))}</pre>`:''}
-  <div class="row mute small"><span class="id">${esc(r.batch_id)}</span><span>release ${esc(r.release||'-')}</span><span>spend $${r.spent} / $${r.cap}</span><span>owner ${esc((r.owner||'-').slice(0,8))}</span>${r.aliases.length>1?`<span>also: ${esc(r.aliases.slice(1).join(', '))}</span>`:''}</div></div>`).join(''):'<div class="mute">nothing running</div>';
- document.getElementById('developing').innerHTML=s.developing.length?s.developing.map(d=>`<div class="card ${d.gate_status}">
-  <div class="row"><span class="id">${esc(d.version)}</span><span class="mute">${esc(d.project)}</span>${d.stalled?'<span class="needs">stalled '+d.idle_h+' h</span>':''}</div>
-  <div>${esc(d.about)}</div>
-  <div class="row"><span><span class="k">gate</span> ${esc(d.gate)}</span><span><span class="k">branch</span> ${esc(d.branch||'-')}</span><span><span class="k">session</span> ${esc((d.session||'-').slice(0,8))}</span>
-  ${d.from_batch?`<span><span class="k">from</span> ${esc(d.from_batch)} (${d.pilot_cases} pilot cases)</span>`:''}<span><span class="k">spend</span> $${d.spent}</span><span><span class="k">idle</span> ${d.idle_h} h</span></div></div>`).join(''):'<div class="mute">nothing in development</div>';
+  <div class="row mute small"><span class="id">${esc(r.batch_id)}</span><span>release ${esc(r.release||'-')}</span><span>spend $${r.spent} / $${r.cap}</span>${r.aliases.length>1?`<span>also: ${esc(r.aliases.slice(1).join(', '))}</span>`:''}</div></div>`).join(''):'<div class="mute">nothing running</div>';
+ document.getElementById('running').innerHTML+=s.unregistered_runs.map(u=>`<div class="card yellow"><div class="big">${esc(u.kind)}（未登记） <span class="pill">${esc(u.at.slice(11,16))}</span></div><div class="mute">${esc(u.what)}</div><div class="needs">⚠ 没有经过 reins 启动：看不到进度、花费和 case 账本</div></div>`).join('');
+ document.getElementById('developing').innerHTML=s.developing.length?s.developing.map(d=>`<div class="card ${d.conflicts.length?'red':(d.registered?'green':'yellow')}">
+  <div class="big">${esc(d.module)} <span class="pill">${d.registered?esc(d.version):'未登记版本'}</span>${d.stalled?' <span class="needs">停滞 '+d.idle_h+' 小时</span>':''}</div>
+  <div>${esc(d.about)}</div>${d.module_about?`<div class="mute small">模块：${esc(d.module_about)}</div>`:''}
+  ${d.conflicts.map(c=>`<div class="needs">⚠ ${esc(c)}</div>`).join('')}
+  <div class="row mute small"><span>门禁：${esc(d.gate)}</span><span>最后改动：${d.last?esc(d.last.slice(5,16).replace('T',' ')):'-'}</span></div></div>`).join(''):'<div class="mute">没有进行中的开发</div>';
  document.getElementById('production').innerHTML='<table><tr><th>模块</th><th>模块做什么</th><th>当前版本</th><th>这个版本的功能</th><th>登记</th></tr>'+s.production.map(p=>`<tr><td><b>${esc(p.module)}</b></td><td>${esc(p.module_about)}</td><td class="id">${esc(p.version)}</td><td>${esc(p.about)}</td><td class="mute">${esc(p.created.slice(0,10))}</td></tr>`).join('')+'</table>';
  document.getElementById('retired').innerHTML=s.retired.length?'<h2>已退役 Retired</h2><table>'+s.retired.map(p=>`<tr><td>${esc(p.module)}</td><td class="id">${esc(p.version)}</td><td>${esc(p.status)}</td><td class="mute">${esc(p.why||'')}</td></tr>`).join('')+'</table>':'';
  document.getElementById('recent').innerHTML='<table>'+s.recent.map(r=>`<tr><td class="id">${esc(r.batch_id)}</td><td>${esc(r.status)}</td><td class="mute">${esc(r.purpose)}</td></tr>`).join('')+'</table>';

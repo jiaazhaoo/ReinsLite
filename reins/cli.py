@@ -24,6 +24,7 @@
   preflight BATCH                                                         input health check
   deliver   check | register                                              C12 contract check + versioned copy
   rules     freeze                                                        ruleset-<project>-vN
+  session   list | show | bind | conflicts                                C15 sessions (kept out of the board)
 
 Project settings come from the nearest reins.toml (project, case_id_pattern, [dev], [modules]).
 """
@@ -36,7 +37,7 @@ import tomllib
 from pathlib import Path
 
 from . import (accept, batches, bench, decisions, deliver, dev, envs, gate, glossary, leases, modules, names, notify,
-               preflight, review, rules, runner, spend)
+               preflight, review, rules, runner, sessions, spend)
 from .store import ReinsError, connect
 
 
@@ -244,6 +245,13 @@ def build_parser() -> argparse.ArgumentParser:
     n = sub.add_parser("notify").add_subparsers(dest="sub", required=True)
     n.add_parser("list"); x = n.add_parser("ack"); x.add_argument("ids", nargs="+", type=int)
     x = sub.add_parser("lint"); x.add_argument("paths", nargs="+", type=Path)
+    se = sub.add_parser("session").add_subparsers(dest="sub", required=True)
+    x = se.add_parser("list"); x.add_argument("--all", action="store_true")
+    x = se.add_parser("show"); x.add_argument("id")
+    x = se.add_parser("bind"); x.add_argument("--role", required=True, choices=["develop", "run", "experiment", "analysis"])
+    x.add_argument("--purpose", required=True); x.add_argument("--module"); x.add_argument("--version"); x.add_argument("--batch")
+    x.add_argument("--id", help="session id (default: this session)")
+    se.add_parser("conflicts")
     return ap
 
 
@@ -339,6 +347,28 @@ def main(argv: list[str] | None = None) -> int:
                             base_missed_error=args.base_missed_error, base_review_load=args.base_review_load,
                             golden_regressions=args.golden_regressions, diff_path=args.diff, skipped=args.skipped)
             print(f"gate {r['status']}"); return 0 if r["status"] == "green" else 1
+        if args.cmd == "session":
+            from .store import session as this_session
+            if args.sub == "list":
+                for s in sessions.list_(con, args.all):
+                    last = s["last"]["kind"] + " " + (s["last"]["detail"] or s["last"]["path"] or "")[:60] if s["last"] else "-"
+                    print(f"{s['id'][:8]} {s['status']:<6} {s['role'] or '-':<10} {s['title'][:50]:<50} idle {s['idle_min']:>4} min  {last}")
+            elif args.sub == "show":
+                row = con.execute("SELECT * FROM session WHERE id LIKE ?", (args.id + "%",)).fetchone()
+                if not row:
+                    raise ReinsError(f"no session {args.id}")
+                print(f"{row['id']}  {row['status']}  {sessions.title(row)}  parent={row['parent'] or '-'}")
+                for e in reversed(sessions.timeline(con, row["id"])):
+                    print(f"  {e['at']}  {e['kind']:<10} {(e['detail'] or e['path'] or '')[:110]}")
+            elif args.sub == "bind":
+                sid = args.id or this_session()
+                if not sid:
+                    raise ReinsError("no session id in the environment; pass --id")
+                sessions.bind(con, sid, args.role, args.purpose, args.module, args.version, args.batch); print("bound")
+            else:
+                for c in sessions.conflicts(con):
+                    print(f"{c['kind']:<16} {', '.join(x[:8] for x in c['sessions']):<20} {c['what']}  {c['detail']}")
+            return 0
         if args.cmd == "notify":
             if args.sub == "list":
                 for n in notify.pending(con):

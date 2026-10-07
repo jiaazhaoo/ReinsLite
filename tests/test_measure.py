@@ -17,7 +17,7 @@ class Base(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="reins-measure-"))
         os.environ["REINS_HOME"] = str(self.tmp)
         os.environ["REINS_SESSION"] = "sess-A"
-        (self.tmp / "config.toml").write_text(f'bench_root = "{self.tmp / "benchmarks"}"\n')
+        (self.tmp / "config.toml").write_text(f'bench_root = "{self.tmp / "benchmarks"}"\ngateway_port = 9\n')   # no gateway there
         self.con = connect(self.tmp)
         modules.add(self.con, "judge", "e2e", "model judges of a polygon")
         self.v = modules.new(self.con, "judge", "x", "a test version that does t", self.tmp)
