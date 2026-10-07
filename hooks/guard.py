@@ -32,8 +32,25 @@ SWITCH = re.compile(r"git\b[^|;&]*\b(checkout|switch)\b")
 WRITE = re.compile(r"(>>?|\btee\b|\bcp\b|\bmv\b|\brm\b|\bchmod\b|\bmkdir\b|\btouch\b)\s+(-\w+\s+)*(\S+)")
 
 
+def _registry_frozen() -> list[str]:
+    """Paths the registry knows are frozen: frozen benchmarks, release trees, registered deliverables."""
+    db = HOME / "reins.db"
+    if not db.exists():
+        return []
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        out = [r[0] for r in con.execute("SELECT path FROM benchmark WHERE status='frozen'")]
+        out += [r[0] for r in con.execute("SELECT worktree FROM release")]
+        out += [r[0] for r in con.execute("SELECT path FROM deliverable")]
+        return out
+    except sqlite3.Error:
+        return []
+
+
 def frozen(path: str) -> bool:
-    return any(p.search(path) for p in FROZEN)
+    if any(p.search(path) for p in FROZEN):
+        return True
+    return any(path == f or path.startswith(f.rstrip("/") + "/") for f in _registry_frozen())
 
 
 def other_sessions_worktree(path: str) -> str | None:

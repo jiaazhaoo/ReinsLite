@@ -16,6 +16,14 @@
   gate      record VERSION ...                                            C5
   notify    list | ack ID...
   lint      PATH...                                                       C0
+  bench     init | add-stage | add-input | label | freeze | bump | verify | holdout | list     C4
+  threshold set | list                                                    C4 (every threshold carries its n)
+  env       snapshot | check | list                                       env-<name>-vN manifests
+  review    assign | verdict | import | calibration | candidates | taxonomy      C6
+  accept    sample | grade | check | decide | show                        C11
+  preflight BATCH                                                         input health check
+  deliver   check | register                                              C12 contract check + versioned copy
+  rules     freeze                                                        ruleset-<project>-vN
 
 Project settings come from the nearest reins.toml (project, case_id_pattern, [dev], [modules]).
 """
@@ -27,7 +35,8 @@ import sys
 import tomllib
 from pathlib import Path
 
-from . import batches, decisions, dev, gate, glossary, leases, modules, names, notify, rules, runner, spend
+from . import (accept, batches, bench, decisions, deliver, dev, envs, gate, glossary, leases, modules, names, notify,
+               preflight, review, rules, runner, spend)
 from .store import ReinsError, connect
 
 
@@ -115,6 +124,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="NAME[=MODULE_VERSION][:paid][:cap=USD][:limit=SECONDS], in run order")
     x.add_argument("--parent"); x.add_argument("--release"); x.add_argument("--alias", action="append")
     x.add_argument("--project"); x.add_argument("--work-dir"); x.add_argument("--cap", type=float, default=0.0)
+    x.add_argument("--ruleset"); x.add_argument("--env"); x.add_argument("--config", action="append", type=Path)
+    x.add_argument("--input", action="append", type=Path, help="mapping tables and other inputs to hash into provenance")
     x = b.add_parser("approve"); x.add_argument("batch"); x.add_argument("--cap", type=float, required=True)
     x.add_argument("--by", default="user")
     x = b.add_parser("stage-start"); x.add_argument("batch"); x.add_argument("stage")
@@ -133,7 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--cwd"); x.add_argument("--retries", type=int); x.add_argument("command", nargs=argparse.REMAINDER)
     x = sub.add_parser("ctl"); x.add_argument("verb", choices=["pause", "resume", "stop"]); x.add_argument("batch")
     x.add_argument("--why", default="")
-    x = sub.add_parser("case"); x.add_argument("case_id")
+    x = sub.add_parser("case"); x.add_argument("case_id"); x.add_argument("--provenance", action="store_true")
 
     s = sub.add_parser("spend").add_subparsers(dest="sub", required=True)
     x = s.add_parser("summary"); x.add_argument("batch")
@@ -149,6 +160,56 @@ def build_parser() -> argparse.ArgumentParser:
     x = r.add_parser("list"); x.add_argument("path", nargs="?")
     x = r.add_parser("diff"); x.add_argument("old", type=Path); x.add_argument("new", type=Path)
     x.add_argument("--key", default="oachargeid"); x.add_argument("--lane", default="lane"); x.add_argument("--json", action="store_true")
+    x = r.add_parser("freeze"); x.add_argument("path", type=Path); x.add_argument("--project")
+    x.add_argument("--old-lanes", type=Path); x.add_argument("--new-lanes", type=Path)
+
+    bn = sub.add_parser("bench").add_subparsers(dest="sub", required=True)
+    x = bn.add_parser("init"); x.add_argument("name"); x.add_argument("--cases", required=True, type=Path)
+    x.add_argument("--about", required=True); x.add_argument("--holdout-fraction", type=float, default=0.2)
+    x.add_argument("--seed", type=int, default=7); x.add_argument("--project")
+    x = bn.add_parser("add-stage"); x.add_argument("name"); x.add_argument("stage"); x.add_argument("--from", dest="src", required=True, type=Path)
+    x.add_argument("--module-version", required=True)
+    x = bn.add_parser("add-input"); x.add_argument("name"); x.add_argument("--from", dest="src", required=True, type=Path)
+    x = bn.add_parser("label"); x.add_argument("name"); x.add_argument("--file", required=True, type=Path)
+    x = bn.add_parser("freeze"); x.add_argument("name"); x.add_argument("--changelog", required=True)
+    x = bn.add_parser("bump"); x.add_argument("name"); x.add_argument("--changelog", required=True)
+    x = bn.add_parser("verify"); x.add_argument("name"); x.add_argument("version", nargs="?", type=int)
+    x = bn.add_parser("holdout"); x.add_argument("name"); x.add_argument("--why", required=True); x.add_argument("--tuned", action="store_true")
+    bn.add_parser("list")
+    th = sub.add_parser("threshold").add_subparsers(dest="sub", required=True)
+    x = th.add_parser("set"); x.add_argument("module"); x.add_argument("name"); x.add_argument("value")
+    x.add_argument("--n", type=int, required=True); x.add_argument("--split", default="dev"); x.add_argument("--benchmark")
+    x.add_argument("--by", default="user"); x.add_argument("--note", default="")
+    x = th.add_parser("list"); x.add_argument("module", nargs="?")
+    en = sub.add_parser("env").add_subparsers(dest="sub", required=True)
+    for verb in ("snapshot", "check"):
+        x = en.add_parser(verb); x.add_argument("name"); x.add_argument("--python", required=True)
+        x.add_argument("--asset", action="append")
+    en.add_parser("list")
+    rv = sub.add_parser("review").add_subparsers(dest="sub", required=True)
+    x = rv.add_parser("assign"); x.add_argument("batch"); x.add_argument("--reviewer", required=True)
+    x.add_argument("--cases", required=True); x.add_argument("--queue"); x.add_argument("--round"); x.add_argument("--by", default="user")
+    x = rv.add_parser("verdict"); x.add_argument("batch"); x.add_argument("case"); x.add_argument("verdict", choices=review.VERDICTS)
+    x.add_argument("--reviewer", required=True); x.add_argument("--error-type"); x.add_argument("--note"); x.add_argument("--target", default="case")
+    x = rv.add_parser("import"); x.add_argument("batch"); x.add_argument("--file", required=True, type=Path)
+    x = rv.add_parser("calibration"); x.add_argument("batch")
+    x = rv.add_parser("candidates"); x.add_argument("batch"); x.add_argument("--out", type=Path)
+    x = rv.add_parser("taxonomy"); x.add_argument("path", nargs="?", type=Path)
+    ac = sub.add_parser("accept").add_subparsers(dest="sub", required=True)
+    x = ac.add_parser("sample"); x.add_argument("batch"); x.add_argument("--lanes", required=True, type=Path)
+    x.add_argument("--n", type=int, default=315); x.add_argument("--seed", type=int, default=20261007)
+    x.add_argument("--from-lane", default="auto_accept"); x.add_argument("--ideal", type=int, default=3); x.add_argument("--max", type=int, default=6)
+    x = ac.add_parser("grade"); x.add_argument("batch"); x.add_argument("--file", required=True, type=Path)
+    x = ac.add_parser("check"); x.add_argument("batch"); x.add_argument("--lanes", required=True, type=Path)
+    x = ac.add_parser("decide"); x.add_argument("batch"); x.add_argument("--by", default="user"); x.add_argument("--note", default="")
+    x.add_argument("--lanes", type=Path)
+    x = ac.add_parser("show"); x.add_argument("batch")
+    x = sub.add_parser("preflight"); x.add_argument("batch"); x.add_argument("--project-root", type=Path)
+    dl = sub.add_parser("deliver").add_subparsers(dest="sub", required=True)
+    for verb in ("check", "register"):
+        x = dl.add_parser(verb); x.add_argument("file", type=Path); x.add_argument("--batch", required=True)
+        x.add_argument("--key", default="oachargeid"); x.add_argument("--sheets"); x.add_argument("--required")
+        x.add_argument("--allow-missing", type=int, default=0)
     dc = sub.add_parser("decide").add_subparsers(dest="sub", required=True)
     x = dc.add_parser("add"); x.add_argument("text"); x.add_argument("--evidence", required=True); x.add_argument("--by", default="user")
     x.add_argument("--supersedes", type=int); x.add_argument("--project")
@@ -176,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
             hits = glossary.lint(args.paths)
             for h in hits:
                 print(f"{h.where}: {h.word!r} -> {h.hint}")
-            print(f"{len(hits)} glossary violations")
+            print(f"{len(hits)} glossary violations (glossary v{glossary.version()})")
             return 1 if hits else 0
         if args.cmd == "gateway":
             from . import gateway
@@ -190,14 +251,23 @@ def main(argv: list[str] | None = None) -> int:
                 found = watchdog.once()
                 print("\n".join(found) or "nothing to report"); return 0
             watchdog.run(args.interval); return 0
-        if args.cmd == "rules":
+        if args.cmd == "rules" and args.sub != "freeze":
             if args.sub == "list":
                 p = Path(args.path) if args.path else (project_root(cwd) or cwd) / "rules.toml"
                 print(rules.describe(rules.load(p))); return 0
             d = rules.diff(args.old, args.new, args.key, args.lane)
             print(json.dumps(d, ensure_ascii=False, indent=1) if args.json else rules.format_diff(d)); return 0
+        if args.cmd == "review" and args.sub == "taxonomy":
+            print(json.dumps(review.taxonomy(args.path or (project_root(cwd) or cwd) / "review.toml"), indent=1)); return 0
 
         con = connect()
+        if args.cmd == "rules":
+            r = rules.freeze(con, args.path, _project(args, cfg), args.old_lanes, args.new_lanes)
+            print(f"{r['name']}" + ("" if r["new"] else "  (unchanged rules: same version)")
+                  + (f"\n  lane diff: {r['diff_summary']}  -> {r['diff_path']}" if r.get("diff_summary") else ""))
+            return 0
+        if args.cmd in ("bench", "threshold", "env", "review", "accept", "preflight", "deliver"):
+            return _measure(con, args, cfg, cwd)
         if args.cmd == "module":
             return _module(con, args, cfg)
         if args.cmd == "dev":
@@ -323,7 +393,8 @@ def _batch(con, args, cfg) -> int:
                             stages=[batches.parse_stage_spec(s) for s in args.stage], parent=args.parent,
                             release_name=args.release, aliases=args.alias,
                             case_pattern=cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN),
-                            work_dir=args.work_dir, spend_cap=args.cap)
+                            work_dir=args.work_dir, spend_cap=args.cap, ruleset=args.ruleset, env_name=args.env,
+                            config_files=args.config, input_files=args.input)
         print(bid)
     elif args.sub == "approve":
         batches.approve_spend(con, args.batch, args.cap, args.by); print(f"{args.batch} cap ${args.cap:.2f}")
@@ -362,6 +433,110 @@ def _case(con, args) -> int:
     if not members:
         print(f"{args.case_id}: in no registered batch"); return 1
     print(f"{args.case_id}: in {len(members)} batches: {', '.join(members)}")
+    if args.provenance:
+        for m in members:
+            print(json.dumps(batches.provenance(con, m), ensure_ascii=False, indent=1))
+        return 0
     for e in batches.case_history(con, args.case_id):
         print(f"  {e['at']}  {e['batch_id']}  {e['stage']:<18} {e['status']:<8} {e['reason'] or ''}  {e['module_version'] or ''}")
+    return 0
+
+
+def _measure(con, args, cfg, cwd) -> int:
+    if args.cmd == "bench":
+        if args.sub == "init":
+            r = bench.init(con, args.name, _project(args, cfg), args.cases, args.about, args.holdout_fraction, args.seed,
+                           cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN))
+            print(f"{r['name']} v1 at {r['path']}  dev={r['n_dev']} holdout={r['n_holdout']}")
+        elif args.sub == "add-stage":
+            print(f"{bench.add_stage(con, args.name, args.stage, args.src, args.module_version)} files added")
+        elif args.sub == "add-input":
+            print(f"{bench.add_input(con, args.name, args.src)} files added")
+        elif args.sub == "label":
+            r = bench.label(con, args.name, args.file); print(f"labelset {r['labelset']}: +{r['added']} {r['by_source']}")
+        elif args.sub == "freeze":
+            r = bench.freeze(con, args.name, args.changelog); print(f"{r['name']} v{r['version']} frozen: {r['files']} files, manifest {r['manifest_sha'][:12]}")
+        elif args.sub == "bump":
+            r = bench.bump(con, args.name, args.changelog); print(f"{r['name']} v{r['version']} open at {r['path']}")
+        elif args.sub == "verify":
+            r = bench.verify(con, args.name, args.version)
+            print("ok" if r["ok"] else f"MISMATCH changed={r['changed'][:5]} missing={r['missing'][:5]} extra={r['extra'][:5]}")
+            return 0 if r["ok"] else 1
+        elif args.sub == "holdout":
+            bench.holdout(con, args.name, args.why, args.tuned); print("recorded" + (" (holdout now compromised)" if args.tuned else ""))
+        else:
+            for b in bench.list_(con):
+                print(f"{b['name']:<32} v{b['version']:<3} {b['status']:<7} cases={b['n_cases']} dev={b['n_dev']} holdout={b['n_holdout']}"
+                      f" labelset={b['labelset']}{'  HOLDOUT COMPROMISED' if b['holdout_compromised'] else ''}  {b['path']}")
+    elif args.cmd == "threshold":
+        if args.sub == "set":
+            r = bench.set_threshold(con, args.module, args.name, args.value, args.n, args.split, args.benchmark, args.by, args.note)
+            print(f"{r['module']}.{r['name']} = {r['value']} (n={r['n']}{', LOW N: re-validate on the next council' if r['low_n'] else ''})")
+        else:
+            for t in bench.thresholds(con, args.module):
+                print(f"{t['module']}.{t['name']:<28} = {t['value']:<10} n={t['n']:<5} {t['split']:<7} {t['benchmark'] or '-':<30}"
+                      f"{' LOW_N' if t['low_n'] else ''}  {t['at'][:10]}")
+    elif args.cmd == "env":
+        if args.sub == "snapshot":
+            r = envs.snapshot(con, args.name, args.python, args.asset)
+            print(f"{r['name']}  ({'new' if r['new'] else 'unchanged'}; {r['packages']} packages, {r['assets']} assets)")
+        elif args.sub == "check":
+            r = envs.check(con, args.name, args.python, args.asset)
+            print(f"against {r['against']}: " + ("same" if r["same"] else json.dumps(r["diff"], indent=1)[:2000]))
+            return 0 if r["same"] else 1
+        else:
+            for e in envs.list_(con):
+                print(f"{e['name']:<30} {e['sha'][:12]}  {e['created']}")
+    elif args.cmd == "review":
+        tax = review.taxonomy((project_root(cwd) or cwd) / "review.toml")
+        if args.sub == "assign":
+            n = review.assign(con, args.batch, args.reviewer, [c for c in args.cases.split(",") if c], args.queue, args.round, args.by)
+            print(f"{n} cases appended to {args.reviewer}'s list")
+        elif args.sub == "verdict":
+            review.record(con, args.batch, [{"oachargeid": args.case, "target": args.target, "reviewer": args.reviewer,
+                                             "action": "verdict", "verdict": args.verdict, "error_type": args.error_type,
+                                             "note": args.note}], tax)
+            print("recorded")
+        elif args.sub == "import":
+            print(f"{review.record(con, args.batch, review.read_events(args.file), tax)} events recorded")
+        elif args.sub == "calibration":
+            print(json.dumps(review.calibration(con, args.batch), ensure_ascii=False, indent=1))
+        elif args.sub == "candidates":
+            c = review.candidates(con, args.batch)
+            text = "\n".join(json.dumps(x, ensure_ascii=False) for x in c) + ("\n" if c else "")
+            if args.out:
+                args.out.write_text(text); print(f"{len(c)} candidate labels -> {args.out} (reins bench label after a person confirms)")
+            else:
+                print(text, end="")
+    elif args.cmd == "accept":
+        if args.sub == "sample":
+            r = accept.sample(con, args.batch, args.lanes, args.n, args.seed, args.from_lane, args.ideal, args.max)
+            print(f"acceptance #{r['acceptance_id']}: {r['n']} of {r['pool']} {args.from_lane} cases, seed {r['seed']} {r['note']}")
+        elif args.sub == "grade":
+            print(f"{accept.grade(con, args.batch, accept.read_grades(args.file))} grades recorded")
+        elif args.sub == "check":
+            r = accept.check(con, args.batch, args.lanes); print(f"{len(r['stale'])} of {r['n']} sampled cases changed lane: {r['stale'][:10]}")
+            return 1 if r["stale"] else 0
+        elif args.sub == "decide":
+            r = accept.decide(con, args.batch, args.by, args.note, args.lanes)
+            print(f"{r['decision'].upper()}  F={r['F']} A={r['A']} P={r['P']} of {r['graded']} (ideal {r['budget_ideal']}, max {r['budget_max']})")
+            print(f"  registry line: {r['registry_line']}")
+        else:
+            print(json.dumps(accept.show(con, args.batch), ensure_ascii=False, indent=1))
+    elif args.cmd == "preflight":
+        r = preflight.run(con, args.batch, args.project_root or project_root(cwd))
+        for c in r["checks"]:
+            print(f"  {'ok  ' if c['ok'] else 'FAIL'} {c['name']:<24} {c['detail']}")
+        print("preflight PASS" if r["ok"] else "preflight FAIL"); return 0 if r["ok"] else 1
+    elif args.cmd == "deliver":
+        kw = dict(key=args.key, sheets_expected=args.sheets.split(",") if args.sheets else None,
+                  required=args.required.split(",") if args.required else None, allow_missing=args.allow_missing)
+        if args.sub == "check":
+            r = deliver.check(con, args.file, args.batch, **kw)
+            for p in r["problems"]:
+                print(f"  {p}")
+            print(f"{'ok' if r['ok'] else str(len(r['problems'])) + ' problems'}: {r['n_rows']} rows, sheets {r['sheets']}, digest {r['data_digest'][:12]}")
+            return 0 if r["ok"] else 1
+        r = deliver.register(con, args.file, args.batch, **kw)
+        print(f"v{r['version']} -> {r['path']}  (read-only; manifest alongside)")
     return 0

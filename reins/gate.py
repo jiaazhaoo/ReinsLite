@@ -7,6 +7,8 @@ A project's gate command writes this JSON to $REINS_GATE_OUT:
 """
 from __future__ import annotations
 
+import re
+
 from . import modules
 from .store import ReinsError, now, session, tx
 
@@ -17,8 +19,16 @@ def record(con, version: str, *, benchmark: str, tiers: str, stages_covered: str
     if not benchmark.startswith("bench-"):
         raise ReinsError(f"benchmark {benchmark!r} must be named bench-<name>-vN")
     status = "green" if missed_error <= base_missed_error and golden_regressions == 0 else "red"
+    m = re.match(r"^(bench-.+)-v(\d+)$", benchmark)
     with tx(con):
         modules.get(con, version)
+        if m:
+            brow = con.execute("SELECT status, holdout_compromised FROM benchmark WHERE name=? AND version=?",
+                               (m.group(1), int(m.group(2)))).fetchone()
+            if brow and brow["status"] != "frozen":
+                raise ReinsError(f"{benchmark} is registered but not frozen; a gate runs on frozen benchmarks only")
+            if brow and brow["holdout_compromised"]:
+                skipped = f"{skipped + '; ' if skipped else ''}holdout compromised (tuned on): result is dev-only evidence"
         con.execute("INSERT INTO gate_log (at, version, benchmark, tiers, stages_covered, missed_error, review_load,"
                     " base_missed_error, base_review_load, golden_regressions, status, diff_path, skipped, session)"
                     " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

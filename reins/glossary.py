@@ -22,6 +22,10 @@ class Hit:
     hint: str
 
 
+def version(path: Path = GLOSSARY) -> int:
+    return int(tomllib.loads(path.read_text(encoding="utf-8")).get("version", 0))
+
+
 def load(path: Path = GLOSSARY) -> list[dict]:
     terms = tomllib.loads(path.read_text(encoding="utf-8"))["term"]
     seen = set()

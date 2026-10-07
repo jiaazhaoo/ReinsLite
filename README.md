@@ -28,6 +28,12 @@ reins/
   decisions.py  C13 决定记录
   notify.py     通知：notify.jsonl + 可配置命令
   board.py      C14 看板：运行中 / 开发中
+  bench.py      C4 benchmark：冻结、分级标签、dev/holdout、阈值带 n
+  review.py     C6 审核记录：只追加、署名、必填字段、校准、候选标签
+  accept.py     C11 验收：固定 seed 抽样、P/A/F、错误预算、lane 陈旧检查
+  preflight.py  输入体检：内置 + 项目 [[preflight]]
+  deliver.py    C12 交付件契约检查 + 版本化只读副本 + manifest
+  envs.py       env-<name>-vN 环境清单
 hooks/guard.py  Claude Code PreToolUse 护栏
 systemd/        gateway / watchdog / board 的 user 单元
 ```
@@ -52,5 +58,5 @@ bin/reins board serve                            # http://127.0.0.1:8791
 ## 测试
 
 ```bash
-python3 -m unittest discover -s tests          # 36 tests
+python3 -m unittest discover -s tests          # 48 tests
 ```

@@ -8,6 +8,9 @@
 #               ("=confidence" hits "confidence" but not "trace_confidence").
 #
 # Changing a definition = a new term + `retired = "<date>: <why>"` on the old one. Never edit a meaning in place.
+# `version` bumps whenever a term is added or retired; tables and docs linted against a version record which one.
+
+version = 1
 
 [[term]]
 term = "case"

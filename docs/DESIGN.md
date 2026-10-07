@@ -410,24 +410,48 @@ Watchdog 负责发现，主控路由负责按预案处理。**自动修复只做
 ## 待定
 - 审核队列（P1–P5）是否改名：等 C6 落地时再定。
 
-## 实现状态（2026-10-06，v0.2）
+## 版本对象一览（2026-10-07）
+
+原则：凡是能改变结果的东西都有版本；每条产出记录带着生产它的全部版本（来源元组）。
+
+| 对象 | 版本形式 | 命令 |
+|---|---|---|
+| 代码 + prompt + 模型 + 参数 + 资产 | `module_version` `<module>-<suffix>-<YYYYMMDD>-<n>` | `reins module` / `reins dev` |
+| 一组模块版本 | `release` `rel-<project>-<YYYYMMDD>-<n>`，git tag + 只读树 | `reins dev release` |
+| 批次 | `batch_id`，续跑 = 同批次新 attempt | `reins batch` |
+| case 集合 / 配置 / 输入表 | 内容 sha256，存在批次记录里 | `reins batch open --config --input` |
+| benchmark | `bench-<name>-vN`，冻结后只读，`labelset` 子版本 | `reins bench` |
+| 阈值 | 每条带 n、split、benchmark；n < 30 标 low_n | `reins threshold` |
+| 路由规则集 | `ruleset-<project>-vN`，v2 起必须附 lane diff | `reins rules freeze` |
+| 运行环境 | `env-<name>-vN`，清单哈希相同即同版本 | `reins env snapshot / check` |
+| 决定 | 编号 + superseded_by 链 | `reins decide` |
+| 价格表 | 每条带 since | `reins spend price` |
+| 词表 / 审核错误分类表 | `version` 字段，改义走 retired | `glossary.toml` / `review.toml` |
+| 交付件 | `<stem>-vN` + manifest，只读，不覆盖 | `reins deliver register` |
+
+来源元组：`reins case ID --provenance` → batch_id · module_versions · release · ruleset · env · config_sha · input_shas · case_set_sha。
+
+## 实现状态（2026-10-07，v0.3）
 
 | 契约 | 状态 | 在哪 |
 |---|---|---|
-| C0 词表 | 有：31 词 + `reins lint`（表头、文档） | `reins/glossary.toml`, `glossary.py` |
-| C1 Case | 有：清单校验、逐 case 事件（started/done/skipped/failed）、守恒门、`reins case` | `batches.py` |
+| C0 词表 | 有：31 词 + `reins lint`（表头、文档），词表带 `version` | `reins/glossary.toml`, `glossary.py` |
+| C1 Case | 有：清单校验、逐 case 事件、守恒门、`reins case [--provenance]` | `batches.py` |
 | C2 模块版本 | 有：命名、candidate→released→retired、pins | `modules.py` |
-| C3 批次 | 有：登记、阶段顺序、paid 阶段 cap 门、mixed_version、别名、关闭冻结 | `batches.py` |
-| C4 Benchmark | 只有命名约定和 gate 的 benchmark 字段；冻结/标签/split 工具未做 | — |
-| C5 门禁 | 有：`gate_log`、green/red 规则（missed_error 不增、golden 不退）、`dev finish` 调用 | `gate.py`, `dev.py` |
-| C6 人工审核 | 未做（现有 `qa_review/review.db` 已接近，待抽象） | — |
-| C7 主控路由 | 有：准入（版本状态、release、cap、阶段顺序）、`reins run` 启动器（supervisor、pgid、自动重试、暂停通知）、`reins ctl`；规则即数据 + lane diff | `runner.py`, `rules.py` |
-| C8 Watchdog | 有：停滞、超时 case、进程丢失、网关宕、磁盘/内存（暂停）、GPU（告警）；systemd 单元 | `watchdog.py`, `systemd/` |
-| C9 花费账本 | 有：预留→结算、缓存、价格表、估价、80% 告警、到顶暂停；网关进程持 key | `spend.py`, `gateway.py` |
-| C10 租约 | 有：worktree / batch 租约，按 session id；hook 护栏 | `leases.py`, `hooks/guard.py` |
-| C11 验收 | 未做 | — |
-| C12 产物不可变 | 部分：release worktree chmod a-w；批次关闭后拒写登记；hook 拦冻结路径 | — |
-| C13 决定记录 | 有：`reins decide add/list`，supersedes | `decisions.py` |
-| C14 看板 | 有：运行中 / 开发中两栏 + 第二页（生产版本、历史、每周花费） | `board.py` |
+| C3 批次 | 有：登记、阶段顺序、paid `spend_cap` 门、mixed_version、别名、来源元组、关闭冻结 | `batches.py` |
+| C4 Benchmark | 有：init（dev/holdout 分割）、add-stage/input、分级标签（golden 必须真人 + 看过图）、freeze/verify/bump、holdout 访问记录与 compromised、阈值带 n | `bench.py` |
+| C5 门禁 | 有：gate_log、green/red、只认冻结的 benchmark、compromised 标注 | `gate.py`, `dev.py` |
+| C6 人工审核 | 有：只追加事件、署名、wrong 必填 error_type（项目 review.toml）、unsure 必填备注、分配只追加不重排、审核员校准、候选标签导出 | `review.py` |
+| C7 主控路由 | 有：准入、`reins run`/`ctl`、规则即数据 + lane diff + ruleset 版本、preflight 门 | `runner.py`, `rules.py`, `preflight.py` |
+| C8 Watchdog | 有 | `watchdog.py`, `systemd/` |
+| C9 花费账本 | 有；drift 批次绕过缓存 | `spend.py`, `gateway.py` |
+| C10 租约 | 有 | `leases.py`, `hooks/guard.py` |
+| C11 验收 | 有：固定 seed 抽样、P/A/F 评分、lane 陈旧检查、ship / ship_with_note / rework | `accept.py` |
+| C12 产物不可变 | 有：交付件契约检查（守恒、CJK、重复、截断长度、空/常量列、sheet 名）+ 版本化只读副本 + manifest | `deliver.py` |
+| C13 决定记录 | 有 | `decisions.py` |
+| C14 看板 | 有 | `board.py` |
+| 输入体检 | 有：内置检查 + 项目 `[[preflight]]`；production/rework 第一阶段前必须通过 | `preflight.py` |
+| 环境版本 | 有 | `envs.py` |
+| 漂移测试 | 有：`--type drift` 批次不读不写缓存；比较用 `reins rules diff --lane <col>` | `gateway.py` |
 
-下一步：把 e2e-plan-extract 接进来（reins.toml、模块登记、`run_local_qa.sh` 每步 mark、`qa_judge.py` 走网关），然后 C4、C6、C11。
+下一步：接入第一个项目（`e2e-plan-extract`），只做接口：reins.toml、每步 `reins batch mark`、付费调用走网关、现有 benchmark 登记为 `bench-sheffield-wp3-359`。

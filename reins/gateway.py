@@ -134,7 +134,8 @@ class Handler(BaseHTTPRequestHandler):
         sha = canonical_sha(body)
         mv = con.execute("SELECT module_version FROM batch_stage WHERE batch_id=? AND stage=?", (batch, stage)).fetchone()[0]
         cp = cache_path(sha)
-        if cp.is_file():
+        drift = con.execute("SELECT type FROM batch WHERE batch_id=?", (batch,)).fetchone()[0] == "drift"
+        if cp.is_file() and not drift:                     # a drift batch asks the live model on purpose
             spend.record_free(con, batch, stage, provider="openrouter", model=model, request_sha=sha, module_version=mv)
             self._send(200, cp.read_bytes()); return
         est = spend.estimate(con, batch, stage, model)
@@ -168,8 +169,9 @@ class Handler(BaseHTTPRequestHandler):
                      tokens_in=usage.get("prompt_tokens"), tokens_out=usage.get("completion_tokens"), cache_hit=False,
                      request_sha=sha, http_status=code, module_version=mv)
         if code == 200 and d is not None:
-            cp.parent.mkdir(parents=True, exist_ok=True)
-            cp.write_bytes(raw)
+            if not drift:                                   # drift answers are evidence, not cache
+                cp.parent.mkdir(parents=True, exist_ok=True)
+                cp.write_bytes(raw)
             self._warn_near_cap(con, batch)
         elif code in (402, 403):
             self._on_cap(con, batch, f"provider refused ({code}): balance or key limit -- {raw[:200]!r}")

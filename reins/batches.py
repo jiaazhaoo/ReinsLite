@@ -50,7 +50,9 @@ def parse_stage_spec(spec: str) -> dict:
 def open_(con, *, project: str, council: str, wp: str, type_: str, purpose: str, case_file: Path,
           stages: list[dict], parent: str | None = None, release_name: str | None = None,
           aliases: list[str] | None = None, case_pattern: str = names.DEFAULT_CASE_PATTERN,
-          work_dir: str | None = None, spend_cap: float = 0.0, day: str | None = None) -> str:
+          work_dir: str | None = None, spend_cap: float = 0.0, day: str | None = None,
+          ruleset: str | None = None, env_name: str | None = None, config_files: list[Path] | None = None,
+          input_files: list[Path] | None = None) -> str:
     if not purpose.strip():
         raise ReinsError("a batch needs a purpose (one sentence: why it runs)")
     if not stages:
@@ -63,9 +65,15 @@ def open_(con, *, project: str, council: str, wp: str, type_: str, purpose: str,
     if work_dir and (Path(work_dir).resolve() == Path("/env/code") or Path("/env/code") in Path(work_dir).resolve().parents):
         raise ReinsError(f"work_dir {work_dir} is inside /env/code: batch outputs go under /data")
     day = day or today()
+    config_sha = names.sha256_lines([f"{p}:{names.sha256_file(p)}" for p in (config_files or [])]) if config_files else None
+    input_shas = {str(p): names.sha256_file(p) for p in (input_files or [])}
     with tx(con):
         if parent:
             get(con, parent)
+        if ruleset and not con.execute("SELECT 1 FROM ruleset WHERE name=?", (ruleset,)).fetchone():
+            raise ReinsError(f"ruleset {ruleset!r} is not registered (reins rules freeze)")
+        if env_name and not con.execute("SELECT 1 FROM env WHERE name=?", (env_name,)).fetchone():
+            raise ReinsError(f"env {env_name!r} is not registered (reins env snapshot)")
         if release_name and not con.execute("SELECT 1 FROM release WHERE name=?", (release_name,)).fetchone():
             raise ReinsError(f"release {release_name!r} is not registered (reins dev release)")
         if type_ in STRICT_TYPES and not release_name:
@@ -85,11 +93,12 @@ def open_(con, *, project: str, council: str, wp: str, type_: str, purpose: str,
                           (council, wp, type_, day)).fetchone()[0]
         bid = names.batch_id(council, wp, type_, day, seq)
         con.execute("INSERT INTO batch (batch_id, project, council, wp, type, day, seq, purpose, parent, case_set_path,"
-                    " case_set_sha, n_cases, release_name, aliases, status, spend_cap, work_dir, owner_session, created)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'open', ?,?,?,?)",
+                    " case_set_sha, n_cases, release_name, aliases, status, spend_cap, work_dir, ruleset, env_name,"
+                    " config_sha, input_shas, owner_session, created)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'open', ?,?,?,?,?,?,?,?)",
                     (bid, project, council, wp, type_, day, seq, purpose, parent, str(case_file.resolve()),
                      names.sha256_lines(ids), len(ids), release_name, json.dumps(aliases or [], ensure_ascii=False),
-                     spend_cap, work_dir, session(), now()))
+                     spend_cap, work_dir, ruleset, env_name, config_sha, json.dumps(input_shas), session(), now()))
         con.executemany("INSERT INTO batch_case VALUES (?,?)", [(bid, i) for i in ids])
         con.executemany("INSERT INTO batch_stage (batch_id, stage, ord, module_version, status, paid, spend_cap,"
                         " time_limit_s) VALUES (?,?,?,?, 'planned', ?,?,?)",
@@ -143,6 +152,8 @@ def stage_start(con, batch: str, stage: str, module_version: str | None = None, 
         if prev:
             raise ReinsError(f"earlier stages not finished: {', '.join(r[0] for r in prev)} "
                              f"(a stage starts only when every case is accounted for upstream)")
+        if st["ord"] == 0 and b["type"] in STRICT_TYPES and not b["preflight_ok"]:
+            raise ReinsError(f"{b['type']} batch: run `reins preflight {batch}` (and pass) before the first stage")
         mv = module_version or st["module_version"]
         if mv:
             row = modules.get(con, mv)
@@ -312,6 +323,16 @@ def case_history(con, oachargeid: str) -> list[dict]:
     return [dict(r) for r in con.execute(
         "SELECT e.at, e.batch_id, b.type, e.stage, e.status, e.reason, e.module_version"
         " FROM case_event e JOIN batch b USING (batch_id) WHERE e.oachargeid=? ORDER BY e.id", (oachargeid,))]
+
+
+def provenance(con, batch: str) -> dict:
+    """The tuple every output of this batch was produced under."""
+    b = get(con, batch)
+    stages = {r["stage"]: r["module_version"] for r in con.execute(
+        "SELECT stage, module_version FROM batch_stage WHERE batch_id=? ORDER BY ord", (batch,))}
+    return {"batch_id": batch, "release": b["release_name"], "module_versions": stages, "ruleset": b["ruleset"],
+            "env": b["env_name"], "config_sha": b["config_sha"], "input_shas": json.loads(b["input_shas"]),
+            "case_set_sha": b["case_set_sha"], "mixed_version": bool(b["mixed_version"])}
 
 
 def live(con) -> list[dict]:

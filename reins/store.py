@@ -76,6 +76,11 @@ CREATE TABLE IF NOT EXISTS batch (
   mixed_version  INTEGER NOT NULL DEFAULT 0,
   spend_cap      REAL NOT NULL DEFAULT 0,             -- USD; 0 = paid stages blocked until approved
   work_dir       TEXT,                                -- the batch's own output directory
+  ruleset        TEXT,                                -- ruleset-<project>-vN the lanes were computed with
+  env_name       TEXT,                                -- env-<name>-vN the stages ran in
+  config_sha     TEXT,                                -- sha256 of the config file(s) the run read
+  input_shas     TEXT NOT NULL DEFAULT '{}',          -- JSON {path: sha256} of mapping tables / other inputs
+  preflight_ok   INTEGER NOT NULL DEFAULT 0,
   owner_session  TEXT,
   created        TEXT NOT NULL,
   closed         TEXT,
@@ -218,6 +223,139 @@ CREATE TABLE IF NOT EXISTS decision (
   superseded_by INTEGER REFERENCES decision(id),
   session       TEXT
 );
+-- C4 benchmarks, thresholds; rulesets; environments
+CREATE TABLE IF NOT EXISTS benchmark (
+  name      TEXT NOT NULL,                            -- bench-<name>
+  version   INTEGER NOT NULL,
+  project   TEXT NOT NULL,
+  path      TEXT NOT NULL,
+  status    TEXT NOT NULL CHECK (status IN ('open', 'frozen')),
+  n_cases   INTEGER NOT NULL,
+  n_dev     INTEGER NOT NULL,
+  n_holdout INTEGER NOT NULL,
+  labelset  INTEGER NOT NULL DEFAULT 0,               -- bumps on every label append
+  holdout_compromised INTEGER NOT NULL DEFAULT 0,     -- tuned on holdout: it is dev now
+  manifest_sha TEXT,
+  created   TEXT NOT NULL,
+  frozen    TEXT,
+  PRIMARY KEY (name, version)
+);
+CREATE TABLE IF NOT EXISTS benchmark_event (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  at       TEXT NOT NULL,
+  name     TEXT NOT NULL,
+  version  INTEGER NOT NULL,
+  event    TEXT NOT NULL,                             -- created | stage_added | labels_added | frozen | holdout_access | holdout_tuned | bumped
+  detail   TEXT,
+  session  TEXT
+);
+CREATE TABLE IF NOT EXISTS threshold (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  at        TEXT NOT NULL,
+  module    TEXT NOT NULL,
+  name      TEXT NOT NULL,
+  value     TEXT NOT NULL,
+  n         INTEGER NOT NULL,
+  split     TEXT NOT NULL CHECK (split IN ('dev', 'holdout', 'other')),
+  benchmark TEXT,
+  low_n     INTEGER NOT NULL,
+  by_whom   TEXT,
+  note      TEXT
+);
+CREATE TABLE IF NOT EXISTS ruleset (
+  name      TEXT PRIMARY KEY,                         -- ruleset-<project>-vN
+  project   TEXT NOT NULL,
+  version   INTEGER NOT NULL,
+  sha       TEXT NOT NULL,
+  path      TEXT NOT NULL,
+  n_rules   INTEGER NOT NULL,
+  diff_path TEXT,                                     -- lane diff that justified it (required from v2 on)
+  diff_summary TEXT,
+  created   TEXT NOT NULL,
+  session   TEXT
+);
+CREATE TABLE IF NOT EXISTS env (
+  name      TEXT PRIMARY KEY,                         -- env-<name>-vN
+  base      TEXT NOT NULL,
+  version   INTEGER NOT NULL,
+  sha       TEXT NOT NULL,
+  manifest  TEXT NOT NULL,                            -- JSON: python, packages, cuda, driver, assets {path: sha}
+  created   TEXT NOT NULL
+);
+-- C6 review records (generic; the project supplies the error taxonomy in review.toml)
+CREATE TABLE IF NOT EXISTS review_event (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  at          TEXT NOT NULL,
+  batch_id    TEXT NOT NULL,
+  oachargeid  TEXT NOT NULL,
+  target      TEXT NOT NULL DEFAULT 'case',           -- which output of the case (polygon, address, date, ...)
+  reviewer    TEXT NOT NULL,
+  action      TEXT NOT NULL CHECK (action IN ('view', 'verdict', 'draw', 'note')),
+  verdict     TEXT CHECK (verdict IS NULL OR verdict IN ('correct', 'wrong', 'unsure')),
+  error_type  TEXT,
+  note        TEXT,
+  payload     TEXT,                                   -- JSON (drawn geometry, evidence refs)
+  taxonomy_version INTEGER,
+  client      TEXT
+);
+CREATE INDEX IF NOT EXISTS review_case ON review_event (batch_id, oachargeid, id);
+CREATE TABLE IF NOT EXISTS review_assignment (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  at         TEXT NOT NULL,
+  batch_id   TEXT NOT NULL,
+  oachargeid TEXT NOT NULL,
+  reviewer   TEXT NOT NULL,
+  queue      TEXT,
+  round      TEXT,
+  ord        INTEGER NOT NULL,
+  by_whom    TEXT
+);
+-- C11 acceptance
+CREATE TABLE IF NOT EXISTS acceptance (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  at          TEXT NOT NULL,
+  batch_id    TEXT NOT NULL,
+  seed        INTEGER NOT NULL,
+  n           INTEGER NOT NULL,
+  from_lane   TEXT NOT NULL,
+  lanes_sha   TEXT NOT NULL,
+  sample      TEXT NOT NULL,                          -- JSON [{oachargeid, lane}]
+  budget_ideal INTEGER NOT NULL,
+  budget_max  INTEGER NOT NULL,
+  decision    TEXT CHECK (decision IS NULL OR decision IN ('ship', 'ship_with_note', 'rework')),
+  decided_at  TEXT,
+  decided_by  TEXT,
+  note        TEXT
+);
+CREATE TABLE IF NOT EXISTS acceptance_grade (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  at          TEXT NOT NULL,
+  acceptance_id INTEGER NOT NULL REFERENCES acceptance(id),
+  oachargeid  TEXT NOT NULL,
+  grade       TEXT NOT NULL CHECK (grade IN ('P', 'A', 'F')),
+  by_whom     TEXT NOT NULL,
+  note        TEXT
+);
+-- preflight and deliverables
+CREATE TABLE IF NOT EXISTS preflight (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  at        TEXT NOT NULL,
+  batch_id  TEXT NOT NULL,
+  check_name TEXT NOT NULL,
+  ok        INTEGER NOT NULL,
+  detail    TEXT
+);
+CREATE TABLE IF NOT EXISTS deliverable (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  at        TEXT NOT NULL,
+  batch_id  TEXT NOT NULL,
+  version   INTEGER NOT NULL,
+  path      TEXT NOT NULL,
+  sha256    TEXT NOT NULL,
+  data_digest TEXT NOT NULL,                          -- hash of the rows, not the container (xlsx zips differ per build)
+  n_rows    INTEGER NOT NULL,
+  manifest  TEXT NOT NULL                             -- JSON provenance tuple
+);
 -- C8 notifications sent
 CREATE TABLE IF NOT EXISTS notification (
   id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -246,7 +384,7 @@ def config() -> dict:
     """$REINS_HOME/config.toml: gateway port, notify command, thresholds. All optional."""
     f = home() / "config.toml"
     cfg = tomllib.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
-    defaults = {"gateway_port": 8790, "board_port": 8791, "notify_cmd": "", "stall_minutes": 30,
+    defaults = {"gateway_port": 8790, "board_port": 8791, "bench_root": "/data/benchmarks", "notify_cmd": "", "stall_minutes": 30,
                 "disk_pause_pct": 90, "mem_pause_pct": 95, "gpu_warn_pct": 90, "default_call_estimate": 0.05,
                 "spend_warn_fraction": 0.8}
     return {**defaults, **cfg}

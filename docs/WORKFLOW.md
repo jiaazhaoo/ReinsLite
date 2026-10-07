@@ -53,9 +53,21 @@ reins dev start → 改代码 → pilot 批次（问题 case）→ eval 批次�
 |---|---|---|---|
 | 批钱 | `reins batch approve B --cap USD` | 预估 `spend_cap` 内的花费、和上一版对比 | 批或不批 |
 | 批发布 | `reins dev finish V`（会话提议）→ 用户点头 | 门禁结果 + 结果变了的 case 页面 | 批或打回 |
-| 验收交付 | C11（待实现） | 固定 seed 抽检页 | 交付或返工 |
+| 验收交付 | `reins accept sample/grade/decide` | 固定 seed 抽样的评分表；F 数对错误预算 | 交付 / 带说明交付 / 返工 |
 
 其余时间用户只看看板（`reins board serve`）的"运行中 / 开发中"两栏。批次结束、暂停、等批准都会推送通知；用户不需要问"好了么"。
+
+## 测量闭环
+
+```
+reins bench init/freeze ──► 门禁打分（C5）──► 批次 ──► lanes ──► reins accept（C11）
+        ▲                                                 │
+        │  reins bench label（真人确认后）◄── reins review candidates（C6）◄── 审核员
+        └──────────────── reins bench bump（新版本）◄─────────────────────────┘
+```
+标签只能通过 `reins bench label` 进入，golden 必须是真人、看过图纸。在对话里改标签 = 违规。
+每个阈值 `reins threshold set --n`；n < 30 自动标 LOW_N。改规则 `reins rules freeze --old-lanes --new-lanes`，没有 lane diff 不生效。
+每周一次 `--type drift` 批次：不读缓存，对比上周结果，看托管模型有没有悄悄变。
 
 ## 会话的硬规则
 

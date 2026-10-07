@@ -266,3 +266,17 @@ class Small(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Drift(Gateway):
+    def test_drift_batch_bypasses_cache(self):
+        b = self.open(["judge:paid"], cap=1.0)
+        batches.stage_start(self.con, b, "judge")
+        body = {"model": "m", "messages": [{"role": "user", "content": "same"}]}
+        self.post(f"{b}:judge", body); self.post(f"{b}:judge", body)
+        self.assertEqual(FakeUpstream.calls, 1)                   # second is a cache hit
+        d = batches.open_(self.con, project="e2e-plan-extract", council="sheffield", wp="wp3", type_="drift",
+                          purpose="weekly drift", case_file=self.cases, stages=[batches.parse_stage_spec("judge:paid")], spend_cap=1.0)
+        batches.stage_start(self.con, d, "judge")
+        self.post(f"{d}:judge", body); self.post(f"{d}:judge", body)
+        self.assertEqual(FakeUpstream.calls, 3)                   # drift asks the live model every time

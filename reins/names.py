@@ -11,7 +11,7 @@ from pathlib import Path
 from .store import ReinsError
 
 TOKEN = r"[a-z][a-z0-9_]*"
-BATCH_TYPES = ("production", "rework", "experiment", "pilot", "eval", "benchmark_build", "smoke")
+BATCH_TYPES = ("production", "rework", "experiment", "pilot", "eval", "benchmark_build", "smoke", "drift")
 
 MODULE_VERSION = re.compile(rf"^(?P<module>{TOKEN})-(?P<suffix>[a-z0-9][a-z0-9_]*)-(?P<day>\d{{8}})-(?P<seq>[1-9]\d*)$")
 BATCH_ID = re.compile(rf"^(?P<council>{TOKEN})-(?P<wp>{TOKEN})-(?P<type>{'|'.join(BATCH_TYPES)})"
@@ -111,3 +111,11 @@ def read_case_set(path: Path, column: str = CASE_KEY) -> list[str]:
 
 def sha256_lines(ids: list[str]) -> str:
     return hashlib.sha256("\n".join(sorted(ids)).encode()).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()

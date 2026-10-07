@@ -13,11 +13,13 @@ A project's rules.toml:
 from __future__ import annotations
 
 import csv
+import json
 import tomllib
 from collections import Counter
 from pathlib import Path
 
-from .store import ReinsError
+from . import names
+from .store import ReinsError, now, session, tx
 
 REQUIRED = ("id", "lane", "when", "evidence", "decided", "by")
 
@@ -68,6 +70,38 @@ def diff(old: Path, new: Path, key: str = "oachargeid", lane_col: str = "lane") 
     return {"old": str(old), "new": str(new), "n_old": len(a), "n_new": len(b),
             "unchanged": sum(1 for k in a if a[k] == b.get(k)),
             "moves": [{"from": f, "to": t, "n": len(c), "cases": c} for (f, t), c in sorted(moves.items())]}
+
+
+def freeze(con, path: Path, project: str, old_lanes: Path | None, new_lanes: Path | None, key: str = "oachargeid",
+           lane_col: str = "lane") -> dict:
+    """ruleset-<project>-vN for the rules file as it is now. From v2 on, a lane diff (old vs new lanes) is required:
+    a rule change without the list of cases that moved is not allowed to take effect."""
+    rules = load(path)
+    sha = names.sha256_file(path)
+    with tx(con):
+        same = con.execute("SELECT name FROM ruleset WHERE project=? AND sha=?", (project, sha)).fetchone()
+        if same:
+            return {"name": same["name"], "new": False}
+        v = con.execute("SELECT COALESCE(MAX(version),0)+1 FROM ruleset WHERE project=?", (project,)).fetchone()[0]
+        diff_path = summary = None
+        if v > 1:
+            if not (old_lanes and new_lanes):
+                raise ReinsError(f"ruleset v{v} needs --old-lanes and --new-lanes (the lane diff that justifies the change)")
+            d = diff(old_lanes, new_lanes, key, lane_col)
+            diff_path = str(path.parent / f"ruleset-{project}-v{v}.lanediff.json")
+            Path(diff_path).write_text(json.dumps(d, ensure_ascii=False, indent=1))
+            summary = "; ".join(f"{m['from']}->{m['to']}:{m['n']}" for m in d["moves"]) or "no case moved"
+        name = f"ruleset-{project}-v{v}"
+        con.execute("INSERT INTO ruleset (name, project, version, sha, path, n_rules, diff_path, diff_summary, created, session)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?)", (name, project, v, sha, str(path.resolve()), len(rules), diff_path, summary, now(), session()))
+    return {"name": name, "new": True, "n_rules": len(rules), "diff_summary": summary, "diff_path": diff_path}
+
+
+def get(con, name: str):
+    row = con.execute("SELECT * FROM ruleset WHERE name=?", (name,)).fetchone()
+    if not row:
+        raise ReinsError(f"ruleset {name!r} is not registered (reins rules freeze)")
+    return row
 
 
 def format_diff(d: dict, show: int = 10) -> str:
