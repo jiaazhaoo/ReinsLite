@@ -46,6 +46,19 @@ fork 不再起自己的监控；监控是 Watchdog 和运维会话的事。
 
 修好以后：`reins dev finish <version>` → 门禁绿 → 版本 released → 通知原批次的拥有者 → **由用户决定**是否让生产批次用新版本续跑（会标 `mixed_version`）。
 
+## 会话之间的交接：问题单（issue）
+
+运行会话发现问题 → 另一个会话修 → 发版 → 回到运行会话续跑，这条链每天都在发生。交接的载体是**问题单**，挂在批次上：
+
+```
+reins issue open --batch B --cases 111055,103713 --symptom "路名定位落到别的镇" --stage georef   # 运行会话 / 审核平台（reins issue from-review B）
+reins dev start georef roadnames --about "..." --issue 7        # 接手的会话：问题 case 自动成 pilot 集合，问题单变"修复中"
+reins dev finish V                                               # 门禁绿 → 问题单变"已修复"，开单的会话收到通知：用 V 续跑 B 的哪个阶段
+reins issue verify 7 --by user --note "..."                       # 运行会话在问题 case 上确认后关闭
+```
+看板：运行卡上显示待修 / 修复中 / 已修复待确认的问题单；开发卡上显示"修问题单 #7"。每个新会话开始时会被告知有哪些问题单待修。
+不做的："任务交接"（一个会话把半截活递给另一个会话）。会话各管一件事；要递的是问题，不是活。
+
 ## 每个模块版本的固定流程
 
 ```

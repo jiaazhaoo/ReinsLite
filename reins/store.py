@@ -449,6 +449,8 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     con.execute("PRAGMA busy_timeout=30000")
     con.executescript(SCHEMA)
     _migrate(con)
+    from . import issues
+    issues.ensure(con)
     return con
 
 

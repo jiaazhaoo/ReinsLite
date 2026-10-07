@@ -99,9 +99,16 @@ def adopt(con, worktree: Path, module: str, suffix: str, about: str, files: list
 
 
 def start(con, repo: Path, module: str, suffix: str, about: str, from_batch: str | None = None,
-          cases: list[str] | None = None, files: list[str] | None = None, overlap_ok: str | None = None) -> dict:
+          cases: list[str] | None = None, files: list[str] | None = None, overlap_ok: str | None = None,
+          issue: int | None = None) -> dict:
     cfg = project_cfg(repo)
     _ensure_module(con, cfg, module)
+    if issue is not None:
+        from . import issues
+        row = issues.get(con, issue)
+        if row["status"] not in ("open", "in_progress"):
+            raise ReinsError(f"issue #{issue} is {row['status']}")
+        from_batch, cases = row["batch_id"], json.loads(row["cases"])
     files = files or cfg.get("modules", {}).get(module, {}).get("files", [])
     if from_batch:
         from . import batches
@@ -116,8 +123,11 @@ def start(con, repo: Path, module: str, suffix: str, about: str, from_batch: str
     if ov and not overlap_ok:
         raise ReinsError("overlaps other work: " + "; ".join(ov) + ". Agree an order, or pass --overlap-ok 'why' (recorded)")
     pins = {"files": files, "from_batch": from_batch, "pilot_cases": cases or [], "forked_from_session": session(),
-            "overlap_ok": overlap_ok}
+            "overlap_ok": overlap_ok, "issue": issue}
     version = modules.new(con, module, suffix, about, repo, pins)
+    if issue is not None:
+        from . import issues
+        issues.take(con, issue, version)
     wt = repo.parent / f"{repo.name}-wt-{version}"
     branch = f"feat/{version}"
     tracked = git(repo, "ls-files").splitlines()
@@ -203,6 +213,8 @@ def finish(con, version: str, skip_tier: str | None = None, why: str | None = No
     with tx(con):
         con.execute("UPDATE module_version SET commit_sha=? WHERE version=?", (git(repo, "rev-parse", "main"), version))
         _unbind_sessions(con, version, row["module"])
+    from . import issues
+    issues.fixed(con, version)
     git(repo, "worktree", "remove", "--force", str(wt), check=False)
     git(repo, "branch", "-d", row["branch"], check=False)
     leases.release(con, f"worktree:{wt}", force=True)

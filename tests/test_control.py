@@ -368,3 +368,41 @@ class Pool(Base):
         self.assertIn("hourly", str(e.exception))
         u = spend.pool_usage(self.con)
         self.assertAlmostEqual(u["today"], 0.3)
+
+
+class Issues(Dev):
+    def test_run_finds_problem_dev_fixes_opener_told(self):
+        from reins import issues
+        b = self.open(["judge"], type_="experiment")
+        os.environ["REINS_SESSION"] = "ops-session"
+        i = issues.open_(self.con, b, ["101", "103"], "polygon lands in the next town", stage="judge")
+        with self.assertRaises(ReinsError):
+            issues.open_(self.con, b, ["999"], "not a member case here")
+        os.environ["REINS_SESSION"] = "dev-session"
+        r = dev.start(self.con, self.repo, "judge", "town", "reject a geocode outside the town", issue=i)
+        self.assertEqual(r["pilot_cases"], ["101", "103"])                     # the issue's cases are the pilot set
+        self.assertEqual(issues.get(self.con, i)["status"], "in_progress")
+        (Path(r["worktree"]) / "judge" / "a.py").write_text("x = 3\n")
+        subprocess.run(["git", "-C", r["worktree"], "commit", "-qam", "fix"], check=True)
+        dev.finish(self.con, r["version"])
+        self.assertEqual(issues.get(self.con, i)["status"], "fixed")
+        n = self.con.execute("SELECT body FROM notification WHERE key=?", (f"issue_fixed:{i}",)).fetchone()
+        self.assertIn(r["version"], n[0]); self.assertIn(b, n[0])             # the opener is told what to resume with
+        with self.assertRaises(ReinsError):
+            issues.verify(self.con, 999, "user")
+        issues.verify(self.con, i, "user", "111055 now 90 m from the plan")
+        self.assertEqual(issues.get(self.con, i)["status"], "verified")
+        self.assertEqual(issues.list_(self.con), [])                            # verified issues are off the open list
+
+    def test_issues_from_review(self):
+        from reins import issues, review
+        b = self.open(["check"], type_="experiment")
+        batches.stage_start(self.con, b, "check")
+        tax = {"version": 1, "error_types": ["location", "polygon"], "unsure_needs_note": True}
+        review.record(self.con, b, [
+            {"oachargeid": "101", "reviewer": "Maggie", "action": "verdict", "verdict": "wrong", "error_type": "location"},
+            {"oachargeid": "102", "reviewer": "Maggie", "action": "verdict", "verdict": "wrong", "error_type": "polygon"},
+            {"oachargeid": "103", "reviewer": "Yishan", "action": "verdict", "verdict": "correct"}], tax)
+        ids = issues.from_review(self.con, b)
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(issues.from_review(self.con, b), [])                  # already covered

@@ -25,6 +25,7 @@
   deliver   check | register                                              C12 contract check + versioned copy
   rules     freeze                                                        ruleset-<project>-vN
   session   list | show | bind | conflicts                                C15 sessions (kept out of the board)
+  issue     open | from-review | list | show | note | verify | close     C16 handoff: a run's problem -> a fix -> back
 
 Project settings come from the nearest reins.toml (project, case_id_pattern, [dev], [modules]).
 """
@@ -36,8 +37,8 @@ import sys
 import tomllib
 from pathlib import Path
 
-from . import (accept, batches, bench, decisions, deliver, dev, envs, gate, glossary, leases, modules, names, notify,
-               preflight, review, rules, runner, sessions, spend)
+from . import (accept, batches, bench, decisions, deliver, dev, envs, gate, glossary, issues, leases, modules, names,
+               notify, preflight, review, rules, runner, sessions, spend)
 from .store import ReinsError, connect
 
 
@@ -114,6 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--from-batch"); x.add_argument("--cases", help="comma-separated oachargeids: the pilot set")
     x.add_argument("--files", help="space-separated globs this version touches"); x.add_argument("--repo")
     x.add_argument("--overlap-ok", help="why overlapping another candidate's files is fine (recorded)")
+    x.add_argument("--issue", type=int, help="the issue this version fixes; its cases become the pilot set")
     x = d.add_parser("adopt", help="register an existing worktree as this session's candidate version")
     x.add_argument("worktree", type=Path); x.add_argument("module"); x.add_argument("suffix"); x.add_argument("--about", required=True)
     x.add_argument("--files"); x.add_argument("--overlap-ok")
@@ -259,6 +261,15 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--purpose", required=True); x.add_argument("--module"); x.add_argument("--version"); x.add_argument("--batch")
     x.add_argument("--id", help="session id (default: this session)")
     se.add_parser("conflicts")
+    iss = sub.add_parser("issue").add_subparsers(dest="sub", required=True)
+    x = iss.add_parser("open"); x.add_argument("--batch", required=True); x.add_argument("--cases", required=True)
+    x.add_argument("--symptom", required=True); x.add_argument("--stage")
+    x = iss.add_parser("from-review"); x.add_argument("batch"); x.add_argument("--stage", default="check")
+    x = iss.add_parser("list"); x.add_argument("--all", action="store_true"); x.add_argument("--batch")
+    x = iss.add_parser("show"); x.add_argument("id", type=int)
+    x = iss.add_parser("note"); x.add_argument("id", type=int); x.add_argument("text")
+    x = iss.add_parser("verify"); x.add_argument("id", type=int); x.add_argument("--by", default="user"); x.add_argument("--note", default="")
+    x = iss.add_parser("close"); x.add_argument("id", type=int); x.add_argument("--why", required=True)
     return ap
 
 
@@ -379,6 +390,31 @@ def main(argv: list[str] | None = None) -> int:
                 for c in sessions.conflicts(con):
                     print(f"{c['kind']:<16} {', '.join(x[:8] for x in c['sessions']):<20} {c['what']}  {c['detail']}")
             return 0
+        if args.cmd == "issue":
+            S = {"open": "待修", "in_progress": "修复中", "fixed": "已修复，待确认", "verified": "已确认", "closed": "已关闭"}
+            if args.sub == "open":
+                i = issues.open_(con, args.batch, [c for c in args.cases.split(",") if c], args.symptom, args.stage)
+                print(f"issue #{i} opened on {args.batch}")
+            elif args.sub == "from-review":
+                ids = issues.from_review(con, args.batch, args.stage)
+                print(f"{len(ids)} issue(s) opened: {ids}" if ids else "no uncovered wrong verdicts")
+            elif args.sub == "list":
+                for i in issues.list_(con, args.all, args.batch):
+                    print(f"#{i['id']:<4} {S[i['status']]:<10} {i['batch_id']}  {len(i['cases'])} cases  {i['symptom'][:70]}"
+                          + (f"  -> {i['version']}" if i["version"] else ""))
+            elif args.sub == "show":
+                i = issues.show(con, args.id)
+                print(f"#{i['id']} {S[i['status']]}  {i['batch_id']} stage {i['stage'] or '-'}\n  {i['symptom']}\n  cases: {', '.join(i['cases'])}"
+                      f"\n  version: {i['version'] or '-'}")
+                for e in i["events"]:
+                    print(f"    {e['at'][:16]}  {e['event']:<9} {(e['detail'] or '')[:100]}")
+            elif args.sub == "note":
+                issues.note(con, args.id, args.text); print("noted")
+            elif args.sub == "verify":
+                issues.verify(con, args.id, args.by, args.note); print(f"issue #{args.id} verified")
+            else:
+                issues.close(con, args.id, args.why); print(f"issue #{args.id} closed")
+            return 0
         if args.cmd == "notify":
             if args.sub == "list":
                 for n in notify.pending(con):
@@ -427,7 +463,7 @@ def _dev(con, args, cfg, cwd) -> int:
     if args.sub == "start":
         r = dev.start(con, repo, args.module, args.suffix, args.about, args.from_batch,
                       [c for c in (args.cases or "").split(",") if c], args.files.split() if args.files else None,
-                      args.overlap_ok)
+                      args.overlap_ok, args.issue)
         for w in r["warnings"]:
             print(f"WARNING {w}", file=sys.stderr)
         print(f"{r['version']}\n  cd {r['worktree']}      # branch {r['branch']}")

@@ -491,6 +491,11 @@ def briefing(con, sid: str) -> str:
     others = [o for o in list_(con) if o["id"] != sid and o["status"] == "active"]
     for o in others[:8]:
         lines.append(f"[reins] Other active session {o['id'][:8]}: {o['title']} (cwd {o['cwd']})")
+    from . import issues
+    open_issues = [i for i in issues.list_(con) if i["status"] == "open"]
+    for i in open_issues[:5]:
+        lines.append(f"[reins] Open issue #{i['id']} on {i['batch_id']}: {i['symptom'][:80]} ({len(i['cases'])} cases). "
+                     f"To fix it: reins dev start MODULE SUFFIX --about '...' --issue {i['id']}")
     lines.append("[reins] Say what you are for once you know: reins session bind --role develop|run|experiment|analysis "
                  "--purpose '...' [--module M | --batch B]. Start runs with reins run; merge with reins dev finish.")
     return "\n".join(lines)

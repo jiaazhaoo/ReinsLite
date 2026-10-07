@@ -17,7 +17,7 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import batches, gate, notify, sessions, spend
+from . import batches, gate, issues, notify, sessions, spend
 from .store import config, connect
 
 _PROBE: dict[str, tuple[float, list[str]]] = {}
@@ -101,8 +101,10 @@ def running_cards(con) -> list[dict]:
         reasons = [f"{r[1]} × {r[0]}" for r in con.execute(
             "SELECT reason, COUNT(*) FROM case_current WHERE batch_id=? AND status='skipped' GROUP BY reason ORDER BY 2 DESC", (b["batch_id"],))]
         aliases = json.loads(b["aliases"])
+        iss = [{"id": i["id"], "status": i["status"], "symptom": i["symptom"], "n": len(i["cases"]), "version": i["version"]}
+               for i in issues.list_(con, False, b["batch_id"])]
         out.append({"batch_id": b["batch_id"], "title": aliases[0] if aliases else b["purpose"], "purpose": b["purpose"],
-                    "type": b["type"], "status": b["status"], "status_reason": b["status_reason"],
+                    "type": b["type"], "status": b["status"], "status_reason": b["status_reason"], "issues": iss,
                     "n_cases": b["n_cases"], "n_skipped": skipped, "skip_reasons": reasons,
                     "stage": cur["stage"] if cur else "-", "stage_ord": f"{cur['ord'] + 1}/{len(st['stages'])}" if cur else "-",
                     "stage_age": _age(cur["started"]) if cur else "-",
@@ -123,11 +125,12 @@ def in_progress(con) -> list[dict]:
         idle_h = round((dt.datetime.now() - dt.datetime.fromisoformat(d["last"])).total_seconds() / 3600, 1) if d["last"] else None
         files = con.execute("SELECT COUNT(DISTINCT path) FROM session_event WHERE kind='edit' AND module=? AND at>?",
                             (d["module"], (dt.datetime.now() - dt.timedelta(hours=48)).isoformat(timespec="seconds"))).fetchone()[0]
-        from_batch = None
+        from_batch = issue = None
         if d["version"]:
             pins = con.execute("SELECT pins FROM module_version WHERE version=?", (d["version"],)).fetchone()
-            from_batch = json.loads(pins[0]).get("from_batch") if pins else None
-        out.append({**d, "files": files, "from_batch": from_batch,
+            pv = json.loads(pins[0]) if pins else {}
+            from_batch, issue = pv.get("from_batch"), pv.get("issue")
+        out.append({**d, "files": files, "from_batch": from_batch, "issue": issue,
                     "gate": (f"{'通过' if g['status'] == 'green' else '未通过'}：漏放 {g['missed_error']}/{g['base_missed_error']}，"
                              f"审核量 {g['review_load']}/{g['base_review_load']}") if g else "还没过门禁",
                     "gate_status": g["status"] if g else "none", "idle_h": idle_h, "stalled": bool(idle_h and idle_h > 24)})
@@ -237,13 +240,14 @@ async function load(){const s=await (await fetch('/api/state')).json();document.
   <div class="big">${esc(p.module)} <span class="pill ${p.registered?'ok':'warn'}">${p.registered?'候选版本 '+esc(p.version):'还没登记版本'}</span>${p.stalled?' <span class="pill bad">停滞 '+p.idle_h+' h</span>':''}</div>
   <div>${esc(p.about)}</div>${p.module_about?`<div class="mute small">模块：${esc(p.module_about)}</div>`:''}
   ${p.conflicts.map(c=>`<div class="needs">⚠ ${esc(c)}</div>`).join('')}
-  <div class="row mute small"><span>改了 ${p.files} 个文件</span><span>门禁：${esc(p.gate)}</span>${p.from_batch?`<span>起因：${esc(p.from_batch)}</span>`:''}<span>最后改动 ${d(p.last)}</span></div></div>`).join(''):'<div class="mute">没有进行中的开发</div>';
+  <div class="row mute small"><span>改了 ${p.files} 个文件</span><span>门禁：${esc(p.gate)}</span>${p.issue?`<span>修问题单 #${p.issue}</span>`:''}${p.from_batch?`<span>起因：${esc(p.from_batch)}</span>`:''}<span>最后改动 ${d(p.last)}</span></div></div>`).join(''):'<div class="mute">没有进行中的开发</div>';
  document.getElementById('devhist').innerHTML=s.dev_history.length?'<table><tr><th>时间</th><th>模块</th><th>版本</th><th>这个版本做了什么</th><th>门禁</th></tr>'+s.dev_history.map(v=>`<tr><td>${d(v.released_at)}</td><td><b>${esc(v.module)}</b></td><td class="id">${esc(v.version)}${v.status!=='released'?' <span class="pill bad">'+esc(v.status)+'</span>':''}</td><td>${esc(v.about)}${v.from_batch?'<div class="mute small">起因：'+esc(v.from_batch)+'</div>':''}${v.why_out?'<div class="mute small">'+esc(v.why_out)+'</div>':''}</td><td class="mute">${esc(v.gate)}</td></tr>`).join('')+'</table>':'<div class="mute">还没有发布记录</div>';
  const runs=s.running.map(r=>`<div class="card ${r.health}">
   <div class="big">${esc(r.title)} <span class="pill ${r.status}">${ST[r.status]||esc(r.status)}</span><span class="pill">${TYPE[r.type]||esc(r.type)}</span>${r.mixed?' <span class="pill warn">中途换过版本</span>':''}</div>
   <div>${esc(r.purpose)}</div>
   <div class="stat"><span><b>${r.n_cases}</b> cases</span>${r.n_skipped?`<span><b>${r.n_skipped}</b> 不进流程 <span class="mute">(${esc(r.skip_reasons.join('; '))})</span></span>`:''}<span>当前阶段 <b>${esc(r.stage)}</b> (${esc(r.stage_ord)})，已 ${esc(r.stage_age)}</span></div>
   ${r.status_reason?`<div class="needs">⏸ ${esc(r.status_reason)}</div>`:''}${r.needs.map(n=>`<div class="needs">⚠ ${esc(n)}</div>`).join('')}
+  ${r.issues.map(i=>`<div class="${i.status==='fixed'?'mute':'needs'} small">${i.status==='fixed'?'✓ 已修复待确认':i.status==='in_progress'?'🔧 修复中':'⚠ 待修'} #${i.id}（${i.n} cases）${esc(i.symptom)}${i.version?' → '+esc(i.version):''}</div>`).join('')}
   ${r.adopted?`<div class="mute small">${esc(r.progress)}</div>`:`<div class="bar"><i style="width:${r.pct}%"></i></div><div><span class="k">进度</span> ${esc(r.progress)} · <span class="k">ETA</span> ${esc(r.eta)}</div>`}
   ${r.probe.length?`<pre class="probe">${esc(r.probe.join('\\n'))}</pre>`:''}
   <div class="row mute small"><span class="id">${esc(r.batch_id)}</span><span>版本 ${esc(r.release||'-')}</span><span>花费 ${usd(r.spent)} / ${usd(r.cap)}</span><span>用时 ${r.time_used_h} h${r.time_budget_h?' / '+r.time_budget_h+' h':''}</span>${r.aliases.length?`<span>也叫 ${esc(r.aliases.join(', '))}</span>`:''}</div></div>`).join('');
