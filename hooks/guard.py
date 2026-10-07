@@ -22,12 +22,10 @@ import sqlite3
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 HOME = Path(os.environ.get("REINS_HOME", "/data/reins"))
 FROZEN = [re.compile(p) for p in (r"^/data/benchmarks/", r"/[^/ ]+-rel-[^/ ]+/", r"^/data/reins/cache/",
                                   r"^/data/[^/]+/(text|spatial)/delivery/")]
-PIPELINE = re.compile(r"(run_local_qa\.sh|run_rework\.sh|run_batch|pipeline\.py|qa_judge\.py|batch\.py)")
-DETACH = re.compile(r"\b(setsid|nohup|disown)\b|&\s*$|&\s*;")
-MERGE_MAIN = re.compile(r"git\b[^|;&]*\b(merge|push)\b[^|;&]*\bmain\b|git\b[^|;&]*\bpush\b(?![^|;&]*--dry-run)")
 SWITCH = re.compile(r"git\b[^|;&]*\b(checkout|switch)\b")
 WRITE = re.compile(r"(>>?|\btee\b|\bcp\b|\bmv\b|\brm\b|\bchmod\b|\bmkdir\b|\btouch\b)\s+(-\w+\s+)*(\S+)")
 
@@ -88,11 +86,31 @@ def managed_repo(cmd: str) -> bool:
     return False
 
 
+def merges_main(cmd: str) -> bool:
+    """A git segment that merges into or pushes main (by the program run, not by words in the command)."""
+    from reins.sessions import segments
+    for seg in segments(cmd):
+        a = seg["argv"]
+        if Path(a[0]).name != "git":
+            continue
+        rest = a[1:]
+        if "-C" in rest:
+            i = rest.index("-C")
+            rest = rest[:i] + rest[i + 2:]
+        args = [x for x in rest if not x.startswith("-")]
+        if args and args[0] == "push" and "--dry-run" not in rest:
+            return True
+        if args and args[0] == "merge":
+            return True                              # merging is done by reins dev finish in a managed repo
+    return False
+
+
 def check_bash(cmd: str) -> str | None:
-    if PIPELINE.search(cmd) and DETACH.search(cmd):
+    from reins.sessions import detached_pipeline        # by the programs executed, not words in the command
+    if detached_pipeline(cmd):
         return "pipeline commands are not started detached by hand. Use: reins run BATCH STAGE -- CMD... " \
                "(supervised, pgid-controlled, survives this session)"
-    if MERGE_MAIN.search(cmd) and managed_repo(cmd):
+    if merges_main(cmd) and managed_repo(cmd):
         return "merging into or pushing main is done by `reins dev finish VERSION` after the gate, never by hand"
     cwd = os.getcwd()
     if SWITCH.search(cmd):

@@ -33,38 +33,113 @@ from .store import ReinsError, now, tx
 IDLE_MIN = 30            # no event for this long -> idle
 CONFLICT_WINDOW_H = 24   # edits older than this do not conflict
 
-# Bash commands, classified. Order matters: the first match wins.
-RUN_START = re.compile(r"\breins\s+run\b|run_local_qa\.sh|run_rework\.sh|run_batch|run_portal_part|boundary_lab\.py\s+local|"
-                       r"qa_judge\.py(?!.*--prepare)|e2e_plan_extract\.georef\.batch|vlm_crops\.py|case_classify\.py")
-RUN_STOP = re.compile(r"\breins\s+ctl\s+(stop|pause)\b|qa_ctl\.sh\s+(stop|pause)|\bkill(all)?\b|\bpkill\b")
-RUN_RESUME = re.compile(r"\breins\s+ctl\s+resume\b|qa_ctl\.sh\s+resume")
-EXPERIMENT = re.compile(r"--type\s+(experiment|pilot|smoke|eval)\b|\btryrun\b|/experiments?/|-probe-")
-MERGE = re.compile(r"\bgit\b[^|;&]*\bmerge\b|\breins\s+dev\s+finish\b|dev\.py\s+finish")
-DEV = re.compile(r"\breins\s+dev\s+(start|abandon|release)\b|dev\.py\s+(start|abandon|release)")
-GIT = re.compile(r"\bgit\b[^|;&]*\b(commit|checkout|switch|worktree|rebase|reset|push|branch)\b")
-READONLY = re.compile(r"^\s*(ls|cat|head|tail|grep|rg|find|wc|du|df|ps|free|nvidia-smi|stat|file|which|echo|pwd|"
-                      r"git\s+(status|log|diff|show|branch\s*$)|reins\s+(batch\s+(status|list)|session|case|module\s+(list|status)|notify\s+list|bench\s+list))\b")
+# Bash commands are classified by the programs they execute, never by words that merely appear in them
+# (`cat tools/run_local_qa.sh` reads the script; it does not run it). Here-doc bodies are data, not commands.
+RUN_PROGRAMS = {"run_local_qa.sh", "run_rework.sh", "run_batch.sh", "run_batch3.sh", "run_portal_part.sh",
+                "boundary_lab.py", "qa_judge.py", "vlm_crops.py", "vet_crops.py", "case_classify.py", "qa_input_polygon.py"}
+RUN_MODULES = {"e2e_plan_extract.georef.batch", "e2e_plan_extract.georef.read_vlm", "e2e_plan_extract.georef.ocr_rotated"}
+WRAPPERS = {"nohup", "setsid", "time", "nice", "ionice", "exec", "env", "sudo", "systemd-run", "stdbuf", "(", "{"}
+DETACHERS = {"nohup", "setsid", "disown"}
+INTERPRETERS = re.compile(r"^(python[0-9.]*|\S*/python[0-9.]*|bash|sh|zsh|\$\{?\w*PY\}?)$")
+EXPERIMENT_TYPES = re.compile(r"--type\s+(experiment|pilot|smoke|eval)\b")
 BATCH_IN = re.compile(r"\b([a-z][a-z0-9_]*-[a-z][a-z0-9_]*-(?:production|rework|experiment|pilot|eval|benchmark_build|smoke|drift)-\d{8}-\d+)\b")
+READ_PROGRAMS = {"ls", "cat", "head", "tail", "grep", "rg", "find", "wc", "du", "df", "ps", "free", "nvidia-smi", "stat",
+                 "file", "which", "echo", "pwd", "sed", "awk", "sort", "uniq", "cut", "tr", "diff", "jq", "less", "curl",
+                 "readlink", "realpath", "date", "test", "true", "sleep", "printf", "cd", "[", "column", "xargs"}
+
+
+def segments(cmd: str) -> list[dict]:
+    """Each command segment: {"argv": [program, args...], "detached": bool} after env assignments and wrappers."""
+    import shlex
+    cmd = re.split(r"<<-?\s*['\"]?\w+['\"]?", cmd, maxsplit=1)[0]
+    out = []
+    for raw, sep in re.findall(r"(.*?)(;|&&|\|\||\||\n|&(?!&)|$)", cmd):
+        if not raw.strip():
+            continue
+        try:
+            toks = shlex.split(raw, comments=True)
+        except ValueError:
+            toks = raw.split()
+        detached = sep == "&"
+        while toks:
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]):
+                toks = toks[1:]
+            elif toks[0] in WRAPPERS or toks[0] in DETACHERS:
+                detached |= toks[0] in DETACHERS
+                toks = toks[1:]
+            elif toks[0] == "timeout":
+                toks = toks[1:]
+                while toks and re.match(r"^(-\S+|\d+(\.\d+)?[smhd]?)$", toks[0]):
+                    toks = toks[1:]
+            else:
+                break
+        if toks:
+            out.append({"argv": toks, "detached": detached})
+    return out
+
+
+def runs_pipeline(argv: list[str]) -> bool:
+    if Path(argv[0]).name in RUN_PROGRAMS:
+        return True
+    if INTERPRETERS.match(argv[0]) and len(argv) > 1:
+        if argv[1] == "-m" and len(argv) > 2:
+            return argv[2] in RUN_MODULES
+        return Path(argv[1]).name in RUN_PROGRAMS
+    return False
+
+
+def _kind(argv: list[str]) -> str:
+    p, rest = Path(argv[0]).name, argv[1:]
+    if p == "reins" or (INTERPRETERS.match(argv[0]) and rest[:2] == ["-m", "reins"]):
+        r = rest[2:] if p != "reins" else rest
+        if r[:1] == ["run"] or r[:2] == ["ctl", "resume"]:
+            return "run_start"
+        if r[:2] in (["ctl", "stop"], ["ctl", "pause"]):
+            return "run_stop"
+        if r[:2] == ["dev", "finish"]:
+            return "merge"
+        if r[:1] == ["dev"] and r[1:2] and r[1] in ("start", "abandon", "release"):
+            return "dev"
+        if r[:2] == ["batch", "open"] and EXPERIMENT_TYPES.search(" ".join(r)):
+            return "experiment"
+        return "read"
+    if p in ("kill", "pkill", "killall"):
+        return "run_stop"
+    if p == "qa_ctl.sh":
+        return "run_stop" if rest[:1] and rest[0] in ("stop", "pause") else "run_start" if rest[:1] == ["resume"] else "read"
+    if p == "dev.py" or (INTERPRETERS.match(argv[0]) and len(argv) > 1 and Path(argv[1]).name == "dev.py"):
+        verb = (argv[2] if Path(argv[0]).name != "dev.py" else argv[1]) if len(argv) > 2 or p == "dev.py" else ""
+        return "merge" if verb == "finish" else "dev" if verb in ("start", "abandon", "release") else "read"
+    if runs_pipeline(argv):
+        return "experiment" if re.search(r"-probe-|/experiments?/|\btryrun\b", " ".join(argv)) else "run_start"
+    if p == "git":
+        args = [a for a in rest if not a.startswith("-")]
+        # git -C PATH ...: the path is an argument of -C, not the verb
+        if "-C" in rest:
+            i = rest.index("-C")
+            args = [a for a in rest[:i] + rest[i + 2:] if not a.startswith("-")]
+        verb = args[0] if args else ""
+        if verb == "merge":
+            return "merge"
+        if verb in ("commit", "checkout", "switch", "worktree", "rebase", "reset", "push", "branch", "tag"):
+            return "git"
+        return "read"
+    if p in READ_PROGRAMS:
+        return "read"
+    return "command"
 
 
 def classify(cmd: str) -> str:
-    if RUN_STOP.search(cmd):
-        return "run_stop"
-    if RUN_RESUME.search(cmd):
-        return "run_start"
-    if MERGE.search(cmd):
-        return "merge"
-    if DEV.search(cmd):
-        return "dev"
-    if RUN_START.search(cmd):
-        return "experiment" if EXPERIMENT.search(cmd) else "run_start"
-    if EXPERIMENT.search(cmd) and not READONLY.search(cmd):
-        return "experiment"
-    if GIT.search(cmd):
-        return "git"
-    if READONLY.search(cmd):
-        return "read"
-    return "command"
+    kinds = {_kind(seg["argv"]) for seg in segments(cmd)}
+    for k in ("run_stop", "merge", "run_start", "experiment", "dev", "git", "command"):
+        if k in kinds:
+            return k
+    return "read"
+
+
+def detached_pipeline(cmd: str) -> bool:
+    """A pipeline program started in the background by hand (nohup / setsid / disown / trailing &)."""
+    return any(seg["detached"] and runs_pipeline(seg["argv"]) for seg in segments(cmd))
 
 
 # ------------------------------------------------------------------ repo / module resolution
@@ -385,7 +460,8 @@ def development(con) -> list[dict]:
         items[("v", v["version"])] = {"module": v["module"], "module_about": v["module_about"], "version": v["version"],
                                       "about": v["about"], "registered": True, "sessions": {v["session"]} - {None},
                                       "last": v["created"]}
-    for s in con.execute("SELECT * FROM session WHERE status<>'ended' AND role='develop'"):
+    for s in con.execute("SELECT * FROM session WHERE status<>'ended' AND role='develop'"
+                         " AND (module IS NOT NULL OR version IS NOT NULL)"):
         last = con.execute("SELECT MAX(at) FROM session_event WHERE session_id=? AND kind='edit'", (s["id"],)).fetchone()[0]
         key = next((k for k, it in items.items() if s["version"] and it["version"] == s["version"]), None)
         if key:
