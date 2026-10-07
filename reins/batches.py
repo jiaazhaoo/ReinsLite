@@ -195,12 +195,24 @@ def skip_cases(con, batch: str, stage: str, cases: list[str], reason: str) -> in
 
 
 def approve_spend(con, batch: str, cap: float, who: str = "user") -> None:
-    """C7/C9: paid stages run only after a human sets the cap. Recorded as an event."""
+    """C7/C9: paid stages run only after a human sets the cap. The cap must fit the pool: one batch never exceeds
+    max_batch_cap, and all open caps together never exceed what the day has left. Recorded as an event."""
+    from .store import config as _config
     if cap < 0:
         raise ReinsError("cap must be >= 0")
+    pool = _config()["pool"]
+    if cap > pool["max_batch_cap"]:
+        raise ReinsError(f"cap ${cap:.2f} exceeds the pool's max_batch_cap ${pool['max_batch_cap']:.2f} "
+                         f"(raise it in $REINS_HOME/config.toml [pool] if the user really wants that)")
     with tx(con):
         b = get(con, batch)
         _live(b)
+        from . import spend as _spend
+        u = _spend.pool_usage(con)
+        others = u["open_caps"] - b["spend_cap"]
+        if others + cap > pool["daily_cap"] + 1e-9 and cap > b["spend_cap"]:
+            raise ReinsError(f"open batch caps ${others:.2f} + ${cap:.2f} exceed today's pool ${pool['daily_cap']:.2f}; "
+                             f"close or lower another batch first (reins batch list --live)")
         con.execute("UPDATE batch SET spend_cap=? WHERE batch_id=?", (cap, batch))
         _event(con, batch, "spend_approved", f"${cap:.2f} by {who} (was ${b['spend_cap']:.2f})")
 

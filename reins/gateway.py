@@ -38,6 +38,7 @@ GOOGLE_MAPS = "https://maps.googleapis.com"
 GOOGLE_CALL_PRICE = {"geocode": 0.005, "place/findplacefromtext": 0.017, "place/details": 0.017,
                      "place/textsearch": 0.032, "staticmap": 0.002, "distancematrix": 0.005}
 _local = threading.local()
+_FAILS: dict[tuple[str, str], int] = {}       # (batch, stage) -> consecutive non-200 upstream answers
 
 
 def _con() -> sqlite3.Connection:
@@ -252,6 +253,13 @@ class Handler(BaseHTTPRequestHandler):
         spend.settle(con, rid, provider=provider, model=model, amount=amount, priced=priced,
                      tokens_in=usage.get("prompt_tokens"), tokens_out=usage.get("completion_tokens"), cache_hit=False,
                      request_sha=sha, http_status=code, module_version=mv)
+        key_ = (batch, stage)
+        if code == 200:
+            _FAILS[key_] = 0
+        else:
+            _FAILS[key_] = _FAILS.get(key_, 0) + 1
+            if _FAILS[key_] >= config()["pool"]["max_consecutive_failures"]:
+                self._on_cap(con, batch, f"{_FAILS[key_]} paid calls failed in a row (last HTTP {code}): not retrying on money")
         if code == 200 and d is not None:
             if not drift:                                   # drift answers are evidence, not cache
                 cp.parent.mkdir(parents=True, exist_ok=True)

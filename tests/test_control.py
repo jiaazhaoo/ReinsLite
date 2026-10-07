@@ -347,3 +347,24 @@ class GoogleMaps(Gateway):
             pass
         self.assertEqual(len(FakeGoogle.seen), 1)                          # identical request: cache
         fake.shutdown()
+
+
+class Pool(Base):
+    def test_pool_limits_approval_and_spend(self):
+        (self.tmp / "config.toml").write_text('[pool]\ndaily_cap = 1.0\nhourly_cap = 0.5\nweekly_cap = 5.0\nmax_batch_cap = 0.8\nper_session_daily_cap = 0.6\n')
+        b = self.open(["judge:paid"])
+        with self.assertRaises(ReinsError):                        # one batch never above max_batch_cap
+            batches.approve_spend(self.con, b, 0.9)
+        batches.approve_spend(self.con, b, 0.7)
+        b2 = self.open(["judge:paid"])
+        with self.assertRaises(ReinsError):                        # open caps together never above the day's pool
+            batches.approve_spend(self.con, b2, 0.5)
+        batches.stage_start(self.con, b, "judge")
+        r = spend.reserve(self.con, b, "judge", 0.3)
+        spend.settle(self.con, r, provider="openrouter", model="m", amount=0.3, priced="provider", tokens_in=1, tokens_out=1,
+                     cache_hit=False, request_sha="a", http_status=200)
+        with self.assertRaises(spend.CapReached) as e:              # 0.3 + 0.3 > hourly 0.5, though the batch cap (0.7) allows it
+            spend.reserve(self.con, b, "judge", 0.3)
+        self.assertIn("hourly", str(e.exception))
+        u = spend.pool_usage(self.con)
+        self.assertAlmostEqual(u["today"], 0.3)

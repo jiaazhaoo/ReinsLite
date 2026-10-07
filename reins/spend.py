@@ -35,6 +35,44 @@ def estimate(con, batch: str, stage: str, model: str) -> float:
     return float(config()["default_call_estimate"])
 
 
+# ------------------------------------------------------------------ the pool: all sessions together
+def pool_usage(con) -> dict:
+    """Spent + reserved across every batch: last hour, today, this week; today per owning session."""
+    import datetime as _dt
+    now_ = _dt.datetime.now()
+    hour = (now_ - _dt.timedelta(hours=1)).isoformat(timespec="seconds")
+    today = now_.date().isoformat()
+    week = (now_.date() - _dt.timedelta(days=7)).isoformat()
+
+    def spent_since(ts, extra="", args=()):
+        s = con.execute(f"SELECT COALESCE(SUM(amount),0) FROM spend s JOIN batch b USING (batch_id) WHERE s.at>=? {extra}", (ts, *args)).fetchone()[0]
+        r = con.execute(f"SELECT COALESCE(SUM(amount),0) FROM spend_reserve s JOIN batch b USING (batch_id) WHERE state='open' AND s.at>=? {extra}", (ts, *args)).fetchone()[0]
+        return s + r
+
+    by_session = {r[0]: r[1] for r in con.execute(
+        "SELECT b.owner_session, COALESCE(SUM(s.amount),0) FROM spend s JOIN batch b USING (batch_id) WHERE s.at>=?"
+        " GROUP BY b.owner_session", (today,))}
+    return {"hour": spent_since(hour), "today": spent_since(today), "week": spent_since(week), "today_by_session": by_session,
+            "open_caps": con.execute("SELECT COALESCE(SUM(spend_cap),0) FROM batch WHERE status IN ('open','running','paused')").fetchone()[0]}
+
+
+def pool_check(con, batch: str, amount: float) -> None:
+    """Would this spend break the pool? Raises CapReached naming the limit."""
+    pool = config()["pool"]
+    u = pool_usage(con)
+    b = batches.get(con, batch)
+    if u["hour"] + amount > pool["hourly_cap"]:
+        raise CapReached(f"pool: ${u['hour']:.2f} spent in the last hour + ${amount:.3f} > hourly cap ${pool['hourly_cap']:.2f}")
+    if u["today"] + amount > pool["daily_cap"]:
+        raise CapReached(f"pool: ${u['today']:.2f} spent today + ${amount:.3f} > daily cap ${pool['daily_cap']:.2f}")
+    if u["week"] + amount > pool["weekly_cap"]:
+        raise CapReached(f"pool: ${u['week']:.2f} spent this week + ${amount:.3f} > weekly cap ${pool['weekly_cap']:.2f}")
+    sess = b["owner_session"]
+    if sess and u["today_by_session"].get(sess, 0) + amount > pool["per_session_daily_cap"]:
+        raise CapReached(f"pool: session {sess[:8]} spent ${u['today_by_session'][sess]:.2f} today + ${amount:.3f} > "
+                         f"per-session daily cap ${pool['per_session_daily_cap']:.2f}")
+
+
 def caps(con, batch: str, stage: str) -> tuple[float, float | None]:
     b = batches.get(con, batch)
     st = con.execute("SELECT spend_cap FROM batch_stage WHERE batch_id=? AND stage=?", (batch, stage)).fetchone()
@@ -59,6 +97,7 @@ def reserve(con, batch: str, stage: str, amount: float) -> int:
             used_s = batches.spent(con, batch, stage)
             if used_s + amount > scap:
                 raise CapReached(f"{batch}/{stage}: ${used_s:.3f} + ${amount:.3f} > stage cap ${scap:.2f}")
+        pool_check(con, batch, amount)
         cur = con.execute("INSERT INTO spend_reserve (at, batch_id, stage, amount, state) VALUES (?,?,?,?, 'open')",
                           (now(), batch, stage, amount))
         return cur.lastrowid

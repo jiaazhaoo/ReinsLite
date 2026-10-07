@@ -432,8 +432,11 @@ def config() -> dict:
     cfg = tomllib.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
     defaults = {"gateway_port": 8790, "board_port": 8791, "bench_root": "/data/benchmarks", "notify_cmd": "", "stall_minutes": 30,
                 "disk_pause_pct": 90, "mem_pause_pct": 95, "gpu_warn_pct": 90, "default_call_estimate": 0.05,
-                "spend_warn_fraction": 0.8, "balance_poll_min": 10}
-    return {**defaults, **cfg}
+                "spend_warn_fraction": 0.8, "balance_poll_min": 10,
+                "pool": {"daily_cap": 20.0, "weekly_cap": 60.0, "hourly_cap": 6.0, "max_batch_cap": 15.0,
+                         "per_session_daily_cap": 10.0, "max_consecutive_failures": 10}}
+    pool = {**defaults["pool"], **(cfg.get("pool") or {})}
+    return {**defaults, **cfg, "pool": pool}
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:

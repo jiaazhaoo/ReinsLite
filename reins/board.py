@@ -177,7 +177,8 @@ def run_history(con, limit: int = 15) -> list[dict]:
 
 def state(con) -> dict:
     return {"at": dt.datetime.now().isoformat(timespec="seconds"),
-            "cost": spend.cost_view(con), "notifications": _latest_notes(con),
+            "cost": spend.cost_view(con), "pool": {**spend.pool_usage(con), "limits": config()["pool"]},
+            "notifications": _latest_notes(con),
             "in_progress": in_progress(con), "dev_history": dev_history(con),
             "running": running_cards(con), "unregistered_runs": sessions.unregistered_runs(con),
             "run_history": run_history(con),
@@ -210,7 +211,7 @@ table{border-collapse:collapse;width:100%;font-size:13px}td,th{text-align:left;p
 </style></head><body>
 <h1>Reins <span class="mute" id="at"></span></h1>
 <div id="notifs"></div>
-<h2>成本 <small id="costnote"></small></h2><div class="grid" id="cost"></div>
+<h2>成本 <small id="costnote"></small></h2><div id="pool" class="card none"></div><div class="grid" id="cost"></div>
 <h2>正在开发 <small>会话还在改、还没进生产的</small></h2><div id="inprogress"></div>
 <h2>开发记录 <small>已进生产的版本</small></h2><div id="devhist"></div>
 <h2>运行 <small>正在跑的批次</small></h2><div id="running"></div>
@@ -230,6 +231,8 @@ async function load(){const s=await (await fetch('/api/state')).json();document.
   <div class="row2 small"><span>${c.spend_source==='balance'?'按余额变化计，含未经网关的调用':c.provider==='google'?'无余额接口：按调用数 × 牌价估算（geocode $5/1000）':'仅网关记账'}</span>${c.balance_at?`<span>余额 ${d(c.balance_at)}</span>`:''}</div>
   ${c.by_batch.length?`<div class="small mute">本周按批次：${c.by_batch.map(b=>esc(b.batch_id)+' '+usd(b.usd)).join('；')}</div>`:''}</div>`).join('');
  document.getElementById('costnote').textContent='余额每 10 分钟查一次（免费接口）';
+ const P=s.pool,L=P.limits;const pct=(a,b)=>Math.min(100,Math.round(100*a/b));
+ document.getElementById('pool').innerHTML=`<div class="row"><b>预算池（所有会话合计，经网关）</b><span>近 1 小时 <b>${usd(P.hour)}</b> / ${usd(L.hourly_cap)}</span><span>今日 <b>${usd(P.today)}</b> / ${usd(L.daily_cap)}</span><span>本周 <b>${usd(P.week)}</b> / ${usd(L.weekly_cap)}</span><span>未关闭批次的上限合计 <b>${usd(P.open_caps)}</b></span><span class="mute">单批 ≤ ${usd(L.max_batch_cap)}，单会话每日 ≤ ${usd(L.per_session_daily_cap)}</span></div><div class="bar"><i style="width:${pct(P.today,L.daily_cap)}%"></i></div>`;
  document.getElementById('inprogress').innerHTML=s.in_progress.length?s.in_progress.map(p=>`<div class="card ${p.conflicts.length?'red':(p.registered?'green':'yellow')}">
   <div class="big">${esc(p.module)} <span class="pill ${p.registered?'ok':'warn'}">${p.registered?'候选版本 '+esc(p.version):'还没登记版本'}</span>${p.stalled?' <span class="pill bad">停滞 '+p.idle_h+' h</span>':''}</div>
   <div>${esc(p.about)}</div>${p.module_about?`<div class="mute small">模块：${esc(p.module_about)}</div>`:''}
