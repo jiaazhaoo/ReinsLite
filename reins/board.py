@@ -57,6 +57,14 @@ def _age(ts: str | None) -> str:
     return f"{m / 60:.1f} h" if m >= 90 else f"{m:.0f} min"
 
 
+def _latest_notes(con, hours: int = 6) -> list[dict]:
+    """One line per notification key (the newest), from the last few hours; older repeats are noise."""
+    since = (dt.datetime.now() - dt.timedelta(hours=hours)).isoformat(timespec="seconds")
+    rows = con.execute("SELECT * FROM notification WHERE acked=0 AND at>? AND id IN (SELECT MAX(id) FROM notification"
+                       " GROUP BY key) ORDER BY id DESC LIMIT 8", (since,)).fetchall()
+    return [dict(r) for r in rows]
+
+
 def state(con) -> dict:
     running = []
     for b in batches.live(con):
@@ -118,7 +126,7 @@ def state(con) -> dict:
         " WHERE v.status IN ('retired','abandoned') ORDER BY v.created DESC LIMIT 10")]
     return {"at": dt.datetime.now().isoformat(timespec="seconds"), "running": running, "developing": developing,
             "unregistered_runs": unreg_runs,
-            "notifications": notify.pending(con, 12), "recent": recent, "production": production, "retired": retired,
+            "notifications": _latest_notes(con), "recent": recent, "production": production, "retired": retired,
             "spend_weekly": spend.weekly(con)}
 
 

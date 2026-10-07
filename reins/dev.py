@@ -191,11 +191,17 @@ def adopt_release(con, repo: Path, tag: str, note: str = "") -> dict:
     cfg = project_cfg(repo) if (repo / "reins.toml").is_file() else None
     project = cfg["project"] if cfg else repo.name
     commit = git(repo, "rev-parse", f"{tag}^{{commit}}")
-    wt = None
+    wt, best = None, -1
     for block in git(repo, "worktree", "list", "--porcelain").split("\n\n"):
         lines = dict(l.split(" ", 1) if " " in l else (l, "") for l in block.splitlines())
-        if lines.get("HEAD") == commit and lines.get("worktree") != str(repo):
-            wt = lines["worktree"]
+        if lines.get("HEAD") != commit or lines.get("worktree") == str(repo):
+            continue
+        # a release tree is detached and usually named after the tag; a branch worktree at the same commit is not one
+        score = ("detached" in lines) * 2 + (tag in lines.get("worktree", ""))
+        if score > best:
+            wt, best = lines["worktree"], score
+    if wt and best < 2:
+        raise ReinsError(f"only a branch worktree sits at {tag} ({wt}); a release tree must be a detached checkout")
     if not wt:
         raise ReinsError(f"no worktree checked out at {tag} ({commit[:9]}); release trees must exist read-only")
     with tx(con):
