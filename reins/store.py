@@ -449,12 +449,13 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     con.execute("PRAGMA busy_timeout=30000")
     con.executescript(SCHEMA)
     _migrate(con)
-    from . import issues
+    from . import artifacts, issues
     issues.ensure(con)
+    artifacts.ensure(con)
     return con
 
 
-MIGRATIONS = [("batch", "probe_cmd", "TEXT"), ("batch", "time_budget_h", "REAL")]
+MIGRATIONS = [("batch", "probe_cmd", "TEXT"), ("batch", "time_budget_h", "REAL"), ("batch", "workflow", "TEXT")]
 
 
 def _migrate(con: sqlite3.Connection) -> None:

@@ -52,11 +52,18 @@ def open_(con, *, project: str, council: str, wp: str, type_: str, purpose: str,
           aliases: list[str] | None = None, case_pattern: str = names.DEFAULT_CASE_PATTERN,
           work_dir: str | None = None, spend_cap: float = 0.0, day: str | None = None,
           ruleset: str | None = None, env_name: str | None = None, config_files: list[Path] | None = None,
-          input_files: list[Path] | None = None) -> str:
+          input_files: list[Path] | None = None, workflow: str | None = None) -> str:
     if not purpose.strip():
         raise ReinsError("a batch needs a purpose (one sentence: why it runs)")
+    if workflow:
+        from . import artifacts
+        wst = artifacts.workflow_stages(con, workflow)
+        given = {s["stage"]: s for s in stages}
+        stages = [{"stage": s["name"], "module_version": s["module_version"], "paid": int(s["paid"]),
+                   "spend_cap": given.get(s["name"], {}).get("spend_cap"), "time_limit_s": given.get(s["name"], {}).get("time_limit_s")}
+                  for s in wst]
     if not stages:
-        raise ReinsError("a batch needs at least one planned stage")
+        raise ReinsError("a batch needs at least one planned stage (or --workflow)")
     ids = names.read_case_set(case_file)
     problems = names.case_problems(ids, case_pattern)
     if problems:
@@ -85,7 +92,7 @@ def open_(con, *, project: str, council: str, wp: str, type_: str, purpose: str,
                 row = modules.get(con, mv)
                 if type_ in STRICT_TYPES and row["status"] != "released":
                     raise ReinsError(f"{type_} batches run released versions only; {mv} is {row['status']}")
-            elif type_ in STRICT_TYPES:
+            elif type_ in STRICT_TYPES and not workflow:        # a frozen workflow already pins what each stage runs
                 raise ReinsError(f"{type_} batch: stage {s['stage']!r} needs a module version (stage=<module_version>)")
             if s["spend_cap"] and spend_cap and s["spend_cap"] > spend_cap:
                 raise ReinsError(f"stage {s['stage']} cap {s['spend_cap']} exceeds the batch cap {spend_cap}")
@@ -105,6 +112,8 @@ def open_(con, *, project: str, council: str, wp: str, type_: str, purpose: str,
                         [(bid, s["stage"], k, s["module_version"], s["paid"], s["spend_cap"], s["time_limit_s"])
                          for k, s in enumerate(stages)])
         _event(con, bid, "opened", purpose)
+        if workflow:
+            con.execute("UPDATE batch SET workflow=? WHERE batch_id=?", (workflow, bid))
     if session():
         leases.acquire(con, f"batch:{bid}", "owner")
     return bid
@@ -442,7 +451,13 @@ def provenance(con, batch: str) -> dict:
     b = get(con, batch)
     stages = {r["stage"]: r["module_version"] for r in con.execute(
         "SELECT stage, module_version FROM batch_stage WHERE batch_id=? ORDER BY ord", (batch,))}
-    return {"batch_id": batch, "release": b["release_name"], "module_versions": stages, "ruleset": b["ruleset"],
+    arts = {}
+    for mv in stages.values():
+        if mv:
+            p = con.execute("SELECT pins FROM module_version WHERE version=?", (mv,)).fetchone()
+            arts[mv] = json.loads(p[0]).get("artifacts", []) if p else []
+    return {"batch_id": batch, "release": b["release_name"], "workflow": b["workflow"], "module_versions": stages,
+            "artifacts": arts, "ruleset": b["ruleset"],
             "env": b["env_name"], "config_sha": b["config_sha"], "input_shas": json.loads(b["input_shas"]),
             "case_set_sha": b["case_set_sha"], "mixed_version": bool(b["mixed_version"])}
 

@@ -209,10 +209,23 @@ def finish(con, version: str, skip_tier: str | None = None, why: str | None = No
                        capture_output=True, text=True)
     if r.returncode:
         raise ReinsError(f"merge into main failed: {r.stderr[-400:]}")
+    from . import artifacts
+    head = git(wt, "rev-parse", "--short", "HEAD")
+    arts = artifacts.scan(con, wt, cfg, head)                       # prompt / model versions as this candidate has them
+    mine = (cfg.get("modules", {}).get(row["module"], {}))
+    pinned = [arts[f"prompt:{p}"] for p in mine.get("prompts", []) if f"prompt:{p}" in arts] + \
+             [arts[f"model:{m}"] for m in mine.get("models", []) if f"model:{m}" in arts]
     modules.release(con, version, evidence)
     with tx(con):
-        con.execute("UPDATE module_version SET commit_sha=? WHERE version=?", (git(repo, "rev-parse", "main"), version))
+        pins = json.loads(con.execute("SELECT pins FROM module_version WHERE version=?", (version,)).fetchone()[0])
+        pins["artifacts"] = pinned
+        con.execute("UPDATE module_version SET commit_sha=?, pins=? WHERE version=?",
+                    (git(repo, "rev-parse", "main"), json.dumps(pins, sort_keys=True), version))
         _unbind_sessions(con, version, row["module"])
+    for name in pinned:
+        if artifacts.get(con, name)["status"] == "candidate":
+            artifacts.set_status(con, name, "active", f"released with {version}")
+    evidence += ("; artifacts " + ", ".join(pinned)) if pinned else ""
     from . import issues
     issues.fixed(con, version)
     git(repo, "worktree", "remove", "--force", str(wt), check=False)

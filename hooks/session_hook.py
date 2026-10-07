@@ -63,6 +63,8 @@ def main() -> int:
         tool, inp = data.get("tool_name", ""), data.get("tool_input") or {}
         if ev == "PreToolUse" and tool == "Bash":
             cmd = inp.get("command", "")
+            if (Path(os.environ.get("REINS_HOME", "/data/reins")) / "hook.debug").exists():
+                log(f"debug Bash cwd(json)={cwd} getcwd={os.getcwd()} cmd={cmd[:120]!r}")
             import guard
             msg = guard.check_bash(cmd)
             kind = sessions.classify(cmd)

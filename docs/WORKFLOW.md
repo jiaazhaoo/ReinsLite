@@ -68,6 +68,13 @@ reins dev start → 改代码 → pilot 批次（问题 case）→ eval 批次�
 ```
 上一步没完成，下一步开不了：production 批次只接受 released 版本 + release 名；paid 阶段在 `spend_cap` 为 $0 时拒绝启动。
 
+## 提示词、模型、工作流的版本
+
+改提示词 = 改代码：在自己的候选分支里改 `PROMPT` 常量，`reins dev finish` 时 reins 读出新文本、登记 `prompt-<name>-vN`、钉在这个模块版本上。
+改模型或参数：改 `reins.toml [models]`，同样走 finish。
+发版前 `reins workflow freeze local_qa`：把每个阶段的生产模块版本、提示词版本、模型版本冻成 `workflow-local_qa-vN`；
+开批次用 `--workflow workflow-local_qa-vN`，批次的来源元组里就有整套。两套并行试验 = 两个工作流版本、两个批次。
+
 ## 用户出现的三个点
 
 | 决策点 | 命令 | 用户看到 | 用户做 |

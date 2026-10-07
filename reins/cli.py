@@ -26,6 +26,8 @@
   rules     freeze                                                        ruleset-<project>-vN
   session   list | show | bind | conflicts                                C15 sessions (kept out of the board)
   issue     open | from-review | list | show | note | verify | close     C16 handoff: a run's problem -> a fix -> back
+  artifact  scan | list | show | diff | status                            C17 prompt / model versions
+  workflow  freeze | show                                                 C17 workflow-<name>-vN
 
 Project settings come from the nearest reins.toml (project, case_id_pattern, [dev], [modules]).
 """
@@ -37,8 +39,8 @@ import sys
 import tomllib
 from pathlib import Path
 
-from . import (accept, batches, bench, decisions, deliver, dev, envs, gate, glossary, issues, leases, modules, names,
-               notify, preflight, review, rules, runner, sessions, spend)
+from . import (accept, artifacts, batches, bench, decisions, deliver, dev, envs, gate, glossary, issues, leases, modules,
+               names, notify, preflight, review, rules, runner, sessions, spend)
 from .store import ReinsError, connect
 
 
@@ -132,13 +134,14 @@ def build_parser() -> argparse.ArgumentParser:
     for a in ("--council", "--wp", "--purpose", "--cases"):
         x.add_argument(a, required=True)
     x.add_argument("--type", required=True, choices=names.BATCH_TYPES)
-    x.add_argument("--stage", action="append", required=True,
-                   help="NAME[=MODULE_VERSION][:paid][:cap=USD][:limit=SECONDS], in run order")
+    x.add_argument("--stage", action="append", default=[],
+                   help="NAME[=MODULE_VERSION][:paid][:cap=USD][:limit=SECONDS], in run order (or --workflow)")
     x.add_argument("--parent"); x.add_argument("--release"); x.add_argument("--alias", action="append")
     x.add_argument("--project"); x.add_argument("--work-dir"); x.add_argument("--cap", type=float, default=0.0)
     x.add_argument("--ruleset"); x.add_argument("--env"); x.add_argument("--config", action="append", type=Path)
     x.add_argument("--input", action="append", type=Path, help="mapping tables and other inputs to hash into provenance")
     x.add_argument("--time-budget", type=float, help="hours for the whole batch; the watchdog reports overruns")
+    x.add_argument("--workflow", help="workflow-<name>-vN: stages, module versions, prompts and models come from it")
     x = b.add_parser("adopt", help="bring a batch that already exists on disk under reins")
     for a in ("--council", "--wp", "--purpose", "--cases", "--work-dir"):
         x.add_argument(a, required=True)
@@ -270,6 +273,15 @@ def build_parser() -> argparse.ArgumentParser:
     x = iss.add_parser("note"); x.add_argument("id", type=int); x.add_argument("text")
     x = iss.add_parser("verify"); x.add_argument("id", type=int); x.add_argument("--by", default="user"); x.add_argument("--note", default="")
     x = iss.add_parser("close"); x.add_argument("id", type=int); x.add_argument("--why", required=True)
+    ar = sub.add_parser("artifact").add_subparsers(dest="sub", required=True)
+    x = ar.add_parser("scan"); x.add_argument("--repo")
+    x = ar.add_parser("list"); x.add_argument("kind", nargs="?", choices=artifacts.KINDS)
+    x = ar.add_parser("show"); x.add_argument("name")
+    x = ar.add_parser("diff"); x.add_argument("a"); x.add_argument("b")
+    x = ar.add_parser("status"); x.add_argument("name"); x.add_argument("status", choices=["candidate", "active", "retired"]); x.add_argument("--why", default="")
+    wf = sub.add_parser("workflow").add_subparsers(dest="sub", required=True)
+    x = wf.add_parser("freeze"); x.add_argument("name"); x.add_argument("--repo")
+    x = wf.add_parser("show"); x.add_argument("name")
     return ap
 
 
@@ -389,6 +401,36 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 for c in sessions.conflicts(con):
                     print(f"{c['kind']:<16} {', '.join(x[:8] for x in c['sessions']):<20} {c['what']}  {c['detail']}")
+            return 0
+        if args.cmd in ("artifact", "workflow"):
+            repo = Path(getattr(args, "repo", None) or cfg.get("dev", {}).get("repo") or (project_root(cwd) or cwd))
+            if args.cmd == "workflow":
+                if args.sub == "freeze":
+                    r = artifacts.freeze_workflow(con, repo, dev.project_cfg(repo), args.name)
+                    print(f"{r['name']}" + ("" if r["new"] else "  (unchanged: same version)"))
+                    for s in r["stages"]:
+                        print(f"  {s['name']:<12} {s['module_version'] or '-':<36} {' '.join(s['prompts'] + s['models'])}{'  paid' if s['paid'] else ''}")
+                else:
+                    for s in artifacts.workflow_stages(con, args.name):
+                        print(f"  {s['name']:<12} {s['module_version'] or '-':<36} {' '.join(s['prompts'] + s['models'])}{'  paid' if s['paid'] else ''}")
+                return 0
+            if args.sub == "scan":
+                r = artifacts.scan(con, repo, dev.project_cfg(repo), None)
+                for k, v in sorted(r.items()):
+                    print(f"{k:<24} {v}")
+            elif args.sub == "list":
+                for a in artifacts.list_(con, args.kind):
+                    print(f"{a['name']:<36} {a['status']:<10} {(a['about'] or '')[:50]:<50} {a['source'] or ''}")
+            elif args.sub == "show":
+                a = artifacts.get(con, args.name); pin = artifacts.pinned_in(con, args.name)
+                print(f"{a['name']}  [{a['status']}]  {a['about'] or ''}\n  source {a['source']}  sha {a['sha'][:12]}  created {a['created'][:16]}")
+                print(f"  pinned in module versions: {pin['module_versions'] or '-'}; workflows: {pin['workflows'] or '-'}")
+                body = a["body"] if a["kind"] == "prompt" else json.dumps(json.loads(a["body"]), indent=1)
+                print("  ---\n" + "\n".join("  " + l for l in body.splitlines()[:60]))
+            elif args.sub == "diff":
+                print(artifacts.diff(con, args.a, args.b) or "(identical)")
+            else:
+                artifacts.set_status(con, args.name, args.status, args.why); print("ok")
             return 0
         if args.cmd == "issue":
             S = {"open": "待修", "in_progress": "修复中", "fixed": "已修复，待确认", "verified": "已确认", "closed": "已关闭"}
@@ -516,7 +558,7 @@ def _batch(con, args, cfg) -> int:
                             release_name=args.release, aliases=args.alias,
                             case_pattern=cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN),
                             work_dir=args.work_dir, spend_cap=args.cap, ruleset=args.ruleset, env_name=args.env,
-                            config_files=args.config, input_files=args.input)
+                            config_files=args.config, input_files=args.input, workflow=args.workflow)
         probe = cfg.get("run", {}).get("probe")
         if probe:
             batches.set_probe(con, bid, probe)

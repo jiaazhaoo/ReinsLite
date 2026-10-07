@@ -151,6 +151,7 @@ def dev_history(con, limit: int = 20) -> list[dict]:
         pins = json.loads(r["pins"] or "{}")
         out.append({"version": r["version"], "module": r["module"], "about": r["about"], "status": r["status"],
                     "released_at": r["released_at"] or r["created"], "from_batch": pins.get("from_batch"), "why_out": r["why_out"],
+                    "artifacts": pins.get("artifacts", []),
                     "gate": (f"漏放 {g['missed_error']}/{g['base_missed_error']}，审核量 {g['review_load']}/{g['base_review_load']}"
                              f"（{g['benchmark']}）") if g else (r["evidence"] or "")[:120]})
     return out
@@ -241,7 +242,7 @@ async function load(){const s=await (await fetch('/api/state')).json();document.
   <div>${esc(p.about)}</div>${p.module_about?`<div class="mute small">模块：${esc(p.module_about)}</div>`:''}
   ${p.conflicts.map(c=>`<div class="needs">⚠ ${esc(c)}</div>`).join('')}
   <div class="row mute small"><span>改了 ${p.files} 个文件</span><span>门禁：${esc(p.gate)}</span>${p.issue?`<span>修问题单 #${p.issue}</span>`:''}${p.from_batch?`<span>起因：${esc(p.from_batch)}</span>`:''}<span>最后改动 ${d(p.last)}</span></div></div>`).join(''):'<div class="mute">没有进行中的开发</div>';
- document.getElementById('devhist').innerHTML=s.dev_history.length?'<table><tr><th>时间</th><th>模块</th><th>版本</th><th>这个版本做了什么</th><th>门禁</th></tr>'+s.dev_history.map(v=>`<tr><td>${d(v.released_at)}</td><td><b>${esc(v.module)}</b></td><td class="id">${esc(v.version)}${v.status!=='released'?' <span class="pill bad">'+esc(v.status)+'</span>':''}</td><td>${esc(v.about)}${v.from_batch?'<div class="mute small">起因：'+esc(v.from_batch)+'</div>':''}${v.why_out?'<div class="mute small">'+esc(v.why_out)+'</div>':''}</td><td class="mute">${esc(v.gate)}</td></tr>`).join('')+'</table>':'<div class="mute">还没有发布记录</div>';
+ document.getElementById('devhist').innerHTML=s.dev_history.length?'<table><tr><th>时间</th><th>模块</th><th>版本</th><th>这个版本做了什么</th><th>门禁</th></tr>'+s.dev_history.map(v=>`<tr><td>${d(v.released_at)}</td><td><b>${esc(v.module)}</b></td><td class="id">${esc(v.version)}${v.status!=='released'?' <span class="pill bad">'+esc(v.status)+'</span>':''}</td><td>${esc(v.about)}${v.from_batch?'<div class="mute small">起因：'+esc(v.from_batch)+'</div>':''}${v.artifacts&&v.artifacts.length?'<div class="mute small">用：'+v.artifacts.map(esc).join('、')+'</div>':''}${v.why_out?'<div class="mute small">'+esc(v.why_out)+'</div>':''}</td><td class="mute">${esc(v.gate)}</td></tr>`).join('')+'</table>':'<div class="mute">还没有发布记录</div>';
  const runs=s.running.map(r=>`<div class="card ${r.health}">
   <div class="big">${esc(r.title)} <span class="pill ${r.status}">${ST[r.status]||esc(r.status)}</span><span class="pill">${TYPE[r.type]||esc(r.type)}</span>${r.mixed?' <span class="pill warn">中途换过版本</span>':''}</div>
   <div>${esc(r.purpose)}</div>
