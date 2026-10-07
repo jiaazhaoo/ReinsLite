@@ -136,6 +136,10 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--stage", action="append", required=True, help="NAME:planned|running|done|skipped, in order")
     x.add_argument("--release"); x.add_argument("--owner", help="session id that owns it"); x.add_argument("--alias", action="append")
     x.add_argument("--project"); x.add_argument("--note", default="")
+    x = b.add_parser("probe", help="set the command that prints this batch's progress (board shows it)")
+    x.add_argument("batch"); x.add_argument("--cmd", required=True)
+    x = b.add_parser("skip-cases", help="mark cases that never enter a stage as skipped")
+    x.add_argument("batch"); x.add_argument("stage"); x.add_argument("--file", required=True, type=Path); x.add_argument("--why", required=True)
     x = b.add_parser("approve"); x.add_argument("batch"); x.add_argument("--cap", type=float, required=True)
     x.add_argument("--by", default="user")
     x = b.add_parser("stage-start"); x.add_argument("batch"); x.add_argument("stage")
@@ -429,6 +433,10 @@ def _batch(con, args, cfg) -> int:
                             release_name=args.release, owner=args.owner, aliases=args.alias,
                             case_pattern=cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN), note=args.note)
         print(bid)
+    elif args.sub == "probe":
+        batches.set_probe(con, args.batch, args.cmd); print("probe set")
+    elif args.sub == "skip-cases":
+        n = batches.skip_cases(con, args.batch, args.stage, names.read_case_set(args.file), args.why); print(f"{n} cases skipped")
     elif args.sub == "approve":
         batches.approve_spend(con, args.batch, args.cap, args.by); print(f"{args.batch} cap ${args.cap:.2f}")
     elif args.sub == "stage-start":

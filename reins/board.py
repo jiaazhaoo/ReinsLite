@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import subprocess
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import batches, gate, notify, spend
@@ -28,6 +30,33 @@ def _eta(con, bid: str, stage: str, n_cases: int, done: int) -> str:
     return f"{left / 60:.1f} h" if left > 90 else f"{left:.0f} min"
 
 
+_PROBE: dict[str, tuple[float, list[str]]] = {}
+
+
+def probe(b) -> list[str]:
+    """Output of the batch's probe command, cached 60 s (the board refreshes every 30 s)."""
+    cmd = b["probe_cmd"] if "probe_cmd" in b.keys() else None
+    if not cmd:
+        return []
+    hit = _PROBE.get(b["batch_id"])
+    if hit and time.time() - hit[0] < 60:
+        return hit[1]
+    try:
+        r = subprocess.run(cmd.format(work_dir=b["work_dir"] or ""), shell=True, capture_output=True, text=True, timeout=20)
+        lines = [l for l in (r.stdout or r.stderr).splitlines() if l.strip()][:30]
+    except subprocess.TimeoutExpired:
+        lines = ["(progress probe timed out)"]
+    _PROBE[b["batch_id"]] = (time.time(), lines)
+    return lines
+
+
+def _age(ts: str | None) -> str:
+    if not ts:
+        return "-"
+    m = (dt.datetime.now() - dt.datetime.fromisoformat(ts)).total_seconds() / 60
+    return f"{m / 60:.1f} h" if m >= 90 else f"{m:.0f} min"
+
+
 def state(con) -> dict:
     running = []
     for b in batches.live(con):
@@ -40,11 +69,21 @@ def state(con) -> dict:
         if any(s["paid"] for s in st["stages"]) and b["spend_cap"] <= 0:
             needs.append(f"approve spend: reins batch approve {b['batch_id']} --cap USD")
         acc = (cur["done"] + cur["skipped"] + cur["failed"]) if cur else 0
-        adopted = bool(cur and cur["note"] == "adopted" and acc == 0)      # stage ran before reins: no per-case ledger yet
+        adopted = bool(cur and cur["note"] == "adopted" and cur["done"] == 0)  # stage ran before reins: no per-case ledger yet
         health = "red" if b["status"] == "paused" or needs else "green"
         if cur and cur["failed"] > 0.05 * max(1, acc):
             health = "yellow" if health == "green" else health
+        skipped_total = con.execute("SELECT COUNT(DISTINCT oachargeid) FROM case_current WHERE batch_id=? AND status='skipped'",
+                                    (b["batch_id"],)).fetchone()[0]
+        skip_reasons = [f"{r[1]} × {r[0]}" for r in con.execute(
+            "SELECT reason, COUNT(*) FROM case_current WHERE batch_id=? AND status='skipped' GROUP BY reason ORDER BY 2 DESC",
+            (b["batch_id"],))]
+        aliases = json.loads(b["aliases"])
         running.append({"batch_id": b["batch_id"], "type": b["type"], "purpose": b["purpose"], "status": b["status"],
+                        "title": aliases[0] if aliases else b["purpose"], "aliases": aliases,
+                        "n_cases": b["n_cases"], "n_skipped": skipped_total, "skip_reasons": skip_reasons,
+                        "stage_started": cur["started"] if cur else None, "stage_age": _age(cur["started"]) if cur else "-",
+                        "status_reason": b["status_reason"], "probe": probe(b),
                         "stage": cur["stage"] if cur else "-", "stage_ord": f"{cur['ord'] + 1}/{len(st['stages'])}" if cur else "-",
                         "progress": "adopted · ledger not wired" if adopted else f"{acc}/{b['n_cases']}",
                         "pct": round(100 * acc / max(1, b["n_cases"])),
@@ -97,6 +136,11 @@ h1{font-size:18px;margin:0 0 12px}h2{font-size:15px;margin:20px 0 8px;color:var(
 .id{font-family:ui-monospace,monospace;font-weight:600}.mute{color:var(--mute)}.needs{color:var(--red);font-weight:600}
 .bar{height:6px;background:var(--line);border-radius:3px;margin:6px 0}.bar i{display:block;height:100%;background:var(--blue);border-radius:3px}
 .row{display:flex;flex-wrap:wrap;gap:4px 18px}.k{color:var(--mute)}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line)}
+.big{font-size:17px;font-weight:700;margin-bottom:2px}.stat{display:flex;flex-wrap:wrap;gap:4px 22px;margin:6px 0}
+.pill{font-size:12px;font-weight:600;padding:1px 8px;border-radius:10px;border:1px solid var(--line);vertical-align:middle}
+.pill.running{color:var(--green);border-color:var(--green)}.pill.paused{color:var(--red);border-color:var(--red)}
+.probe{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font:12px/1.4 ui-monospace,monospace;overflow-x:auto;margin:6px 0}
+.small{font-size:12px;margin-top:4px}
 .notif{padding:6px 10px;border-radius:6px;margin:4px 0;background:var(--card);border:1px solid var(--line)}.notif.action{border-color:var(--red)}.notif.warn{border-color:var(--yellow)}
 </style></head><body>
 <h1>Reins <span class="mute" id="at"></span></h1>
@@ -109,13 +153,16 @@ function tab(t){for(const x of ['now','else']){document.getElementById(x).style.
 function esc(s){return String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
 async function load(){const s=await (await fetch('/api/state')).json();document.getElementById('at').textContent='· '+s.at;
  document.getElementById('notifs').innerHTML=s.notifications.filter(n=>n.level!=='info').map(n=>`<div class="notif ${n.level}"><b>${esc(n.title)}</b> <span class="mute">${esc(n.at)}</span><br>${esc(n.body)}</div>`).join('');
+ const ST={running:'运行中',paused:'暂停',open:'未开始'};
  document.getElementById('running').innerHTML=s.running.length?s.running.map(r=>`<div class="card ${r.health}">
-  <div class="row"><span class="id">${esc(r.batch_id)}</span><span>${esc(r.type)}</span><span>[${esc(r.status)}]</span>${r.mixed?'<span class="needs">MIXED VERSION</span>':''}</div>
-  <div class="mute">${esc(r.purpose)}</div>${r.needs.map(n=>`<div class="needs">⚠ ${esc(n)}</div>`).join('')}
-  <div class="bar"><i style="width:${r.pct}%"></i></div>
-  <div class="row"><span><span class="k">stage</span> ${esc(r.stage)} (${esc(r.stage_ord)})</span><span><span class="k">progress</span> ${esc(r.progress)}</span><span><span class="k">ETA</span> ${esc(r.eta)}</span>
-  <span><span class="k">spend</span> $${r.spent} / $${r.cap}</span><span><span class="k">release</span> ${esc(r.release||'-')}</span><span><span class="k">attempts</span> ${r.attempts}</span><span><span class="k">owner</span> ${esc((r.owner||'-').slice(0,8))}</span></div>
-  ${r.last_event?`<div class="mute">${esc(r.last_event.at)} ${esc(r.last_event.event)} ${esc(r.last_event.detail||'')}</div>`:''}</div>`).join(''):'<div class="mute">nothing running</div>';
+  <div class="big">${esc(r.title)} <span class="pill ${r.status}">${ST[r.status]||esc(r.status)}</span>${r.mixed?' <span class="needs">MIXED VERSION</span>':''}</div>
+  <div>${esc(r.purpose)}</div>
+  <div class="stat"><span><b>${r.n_cases}</b> cases</span>${r.n_skipped?`<span><b>${r.n_skipped}</b> 不进流程 <span class="mute">(${esc(r.skip_reasons.join('; '))})</span></span>`:''}
+   <span>当前阶段 <b>${esc(r.stage)}</b> (${esc(r.stage_ord)})，已 ${esc(r.stage_age)}</span></div>
+  ${r.status_reason?`<div class="needs">⏸ ${esc(r.status_reason)}</div>`:''}${r.needs.filter(n=>!n.startsWith('paused')).map(n=>`<div class="needs">⚠ ${esc(n)}</div>`).join('')}
+  ${r.progress.startsWith('adopted')?'':`<div class="bar"><i style="width:${r.pct}%"></i></div><div><span class="k">进度</span> ${esc(r.progress)} · <span class="k">ETA</span> ${esc(r.eta)}</div>`}
+  ${r.probe.length?`<pre class="probe">${esc(r.probe.join('\\n'))}</pre>`:''}
+  <div class="row mute small"><span class="id">${esc(r.batch_id)}</span><span>release ${esc(r.release||'-')}</span><span>spend $${r.spent} / $${r.cap}</span><span>owner ${esc((r.owner||'-').slice(0,8))}</span>${r.aliases.length>1?`<span>also: ${esc(r.aliases.slice(1).join(', '))}</span>`:''}</div></div>`).join(''):'<div class="mute">nothing running</div>';
  document.getElementById('developing').innerHTML=s.developing.length?s.developing.map(d=>`<div class="card ${d.gate_status}">
   <div class="row"><span class="id">${esc(d.version)}</span><span class="mute">${esc(d.project)}</span>${d.stalled?'<span class="needs">stalled '+d.idle_h+' h</span>':''}</div>
   <div>${esc(d.about)}</div>

@@ -150,6 +150,32 @@ def adopt(con, *, project: str, council: str, wp: str, type_: str, purpose: str,
     return bid
 
 
+def set_probe(con, batch: str, cmd: str) -> None:
+    """A project command that prints this batch's progress in plain lines; the board shows its output.
+    Used where the per-case ledger is not wired yet. {work_dir} is substituted."""
+    with tx(con):
+        get(con, batch)
+        con.execute("UPDATE batch SET probe_cmd=? WHERE batch_id=?", (cmd, batch))
+        _event(con, batch, "probe_set", cmd)
+
+
+def skip_cases(con, batch: str, stage: str, cases: list[str], reason: str) -> int:
+    """Mark cases that never enter a stage (e.g. no scans) as skipped with a reason, whatever the stage state."""
+    if not reason.strip():
+        raise ReinsError("skipping cases needs a reason")
+    with tx(con):
+        get(con, batch); _stage(con, batch, stage)
+        members = {r[0] for r in con.execute("SELECT oachargeid FROM batch_case WHERE batch_id=?", (batch,))}
+        bad = [c for c in cases if c not in members]
+        if bad:
+            raise ReinsError(f"not in {batch}: {bad[:5]}")
+        t = now()
+        con.executemany("INSERT INTO case_event (at, batch_id, stage, oachargeid, status, reason) VALUES (?,?,?,?, 'skipped', ?)",
+                        [(t, batch, stage, c, reason) for c in cases])
+        _event(con, batch, "cases_skipped", f"{stage}: {len(cases)} cases, {reason}")
+    return len(cases)
+
+
 def approve_spend(con, batch: str, cap: float, who: str = "user") -> None:
     """C7/C9: paid stages run only after a human sets the cap. Recorded as an event."""
     if cap < 0:

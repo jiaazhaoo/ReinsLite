@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS batch (
   config_sha     TEXT,                                -- sha256 of the config file(s) the run read
   input_shas     TEXT NOT NULL DEFAULT '{}',          -- JSON {path: sha256} of mapping tables / other inputs
   preflight_ok   INTEGER NOT NULL DEFAULT 0,
+  probe_cmd      TEXT,                                -- project command printing human progress ({work_dir} substituted)
   owner_session  TEXT,
   created        TEXT NOT NULL,
   closed         TEXT,
@@ -399,7 +400,19 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     con.execute("PRAGMA foreign_keys=ON")
     con.execute("PRAGMA busy_timeout=30000")
     con.executescript(SCHEMA)
+    _migrate(con)
     return con
+
+
+MIGRATIONS = [("batch", "probe_cmd", "TEXT")]
+
+
+def _migrate(con: sqlite3.Connection) -> None:
+    """Columns added after a registry was created (CREATE TABLE IF NOT EXISTS does not add them)."""
+    for table, col, typ in MIGRATIONS:
+        cols = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+        if col not in cols:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
 
 
 class tx:
