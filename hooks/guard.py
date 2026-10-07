@@ -66,11 +66,33 @@ def other_sessions_worktree(path: str) -> str | None:
     return None
 
 
+GIT_C = re.compile(r"git\s+-C\s+(\S+)")
+
+
+def managed_repo(cmd: str) -> bool:
+    """True when the git command acts on a repo managed by reins (its main repo has reins.toml). Other repos,
+    ReinsLite itself included, keep their own rules."""
+    m = GIT_C.search(cmd)
+    p = Path(m.group(1).strip("'\"")) if m else Path(os.getcwd())
+    for d in (p, *p.parents):
+        g = d / ".git"
+        if g.is_dir():
+            return (d / "reins.toml").is_file()
+        if g.is_file():
+            try:
+                gd = g.read_text().split(":", 1)[1].strip()
+                main = Path(gd).parents[2] if "/worktrees/" in gd else d
+            except (OSError, IndexError):
+                main = d
+            return (main / "reins.toml").is_file()
+    return False
+
+
 def check_bash(cmd: str) -> str | None:
     if PIPELINE.search(cmd) and DETACH.search(cmd):
         return "pipeline commands are not started detached by hand. Use: reins run BATCH STAGE -- CMD... " \
                "(supervised, pgid-controlled, survives this session)"
-    if MERGE_MAIN.search(cmd):
+    if MERGE_MAIN.search(cmd) and managed_repo(cmd):
         return "merging into or pushing main is done by `reins dev finish VERSION` after the gate, never by hand"
     cwd = os.getcwd()
     if SWITCH.search(cmd):

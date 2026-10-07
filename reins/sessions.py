@@ -38,7 +38,7 @@ RUN_START = re.compile(r"\breins\s+run\b|run_local_qa\.sh|run_rework\.sh|run_bat
                        r"qa_judge\.py(?!.*--prepare)|e2e_plan_extract\.georef\.batch|vlm_crops\.py|case_classify\.py")
 RUN_STOP = re.compile(r"\breins\s+ctl\s+(stop|pause)\b|qa_ctl\.sh\s+(stop|pause)|\bkill(all)?\b|\bpkill\b")
 RUN_RESUME = re.compile(r"\breins\s+ctl\s+resume\b|qa_ctl\.sh\s+resume")
-EXPERIMENT = re.compile(r"--type\s+(experiment|pilot|smoke|eval)\b|\btryrun\b|/experiments?/|probe")
+EXPERIMENT = re.compile(r"--type\s+(experiment|pilot|smoke|eval)\b|\btryrun\b|/experiments?/|-probe-")
 MERGE = re.compile(r"\bgit\b[^|;&]*\bmerge\b|\breins\s+dev\s+finish\b|dev\.py\s+finish")
 DEV = re.compile(r"\breins\s+dev\s+(start|abandon|release)\b|dev\.py\s+(start|abandon|release)")
 GIT = re.compile(r"\bgit\b[^|;&]*\b(commit|checkout|switch|worktree|rebase|reset|push|branch)\b")

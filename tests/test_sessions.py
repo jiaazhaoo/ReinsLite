@@ -101,6 +101,8 @@ class Sessions(unittest.TestCase):
         self.assertEqual(c("python3 tools/dev/dev.py finish x"), "merge")
         self.assertEqual(c("git commit -m x"), "git")
         self.assertEqual(c("cat /data/x/y.json"), "read")
+        self.assertNotEqual(c("python3 -c 'print(1)'  # probe"), "experiment")      # the word alone is not an experiment
+        self.assertEqual(c("python3 x.py --out /data/sheffield/wp3-batch2-e2e-probe-iou85"), "experiment")
 
     def test_hook_never_breaks_a_session(self):
         r = subprocess.run([sys.executable, str(HOOK)], input="not json", capture_output=True, text=True,
