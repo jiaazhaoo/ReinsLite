@@ -314,3 +314,36 @@ class SelfStaged(Runner):
         res = runner.start(self.con, b, runner.SELF, ["sh", "-c", script], self.tmp)
         self.assertTrue(self.wait(lambda: batches.get(self.con, b)["status"] == "done"), Path(res["log"]).read_text())
         self.assertTrue(self.con.execute("SELECT 1 FROM notification WHERE key=?", (f"done:{b}",)).fetchone())
+
+
+class FakeGoogle(BaseHTTPRequestHandler):
+    seen = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        FakeGoogle.seen.append(self.path)
+        out = json.dumps({"status": "OK", "results": [{"formatted_address": "1 X St", "geometry": {"location": {"lat": 53.4, "lng": -1.5}, "location_type": "ROOFTOP"}}]}).encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
+
+
+class GoogleMaps(Gateway):
+    def test_geocode_through_gateway_is_counted_and_priced(self):
+        fake = ThreadingHTTPServer(("127.0.0.1", 0), FakeGoogle)
+        threading.Thread(target=fake.serve_forever, daemon=True).start()
+        self.gw.GOOGLE_MAPS = f"http://127.0.0.1:{fake.server_port}"
+        self.gw.KEYS["google"] = "GKEY"
+        b = self.open(["georef:paid"], cap=1.0)
+        batches.stage_start(self.con, b, "georef")
+        url = f"http://127.0.0.1:{self.srv.server_port}/p/google_maps/maps/api/geocode/json?address=1+X+St&region=uk&key={b}"
+        with urllib.request.urlopen(url, timeout=10) as r:
+            d = json.loads(r.read())
+        self.assertEqual(d["status"], "OK")
+        self.assertIn("key=GKEY", FakeGoogle.seen[-1])                     # the real key, never the token
+        row = self.con.execute("SELECT provider, model, amount, priced FROM spend ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertEqual(tuple(row), ("google", "geocode", 0.005, "table"))
+        with urllib.request.urlopen(url, timeout=10):
+            pass
+        self.assertEqual(len(FakeGoogle.seen), 1)                          # identical request: cache
+        fake.shutdown()

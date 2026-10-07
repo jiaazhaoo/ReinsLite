@@ -227,7 +227,7 @@ async function load(){const s=await (await fetch('/api/state')).json();document.
  document.getElementById('cost').innerHTML=s.cost.map(c=>`<div class="cost"><div class="name">${esc(c.provider)} ${!c.key_present?'<span class="pill">未配置 key</span>':!c.has_endpoint?'<span class="pill">无余额接口</span>':c.error?'<span class="pill bad">查询失败</span>':''}</div>
   <div class="bal ${c.balance!=null&&c.balance<10?'low':''}">${c.has_endpoint?usd(c.balance):'—'}</div>
   <div class="row2"><span>今日 <b>${usd(c.spent_today)}</b></span><span>本周 <b>${usd(c.spent_week)}</b></span><span>今日调用 <b>${c.calls_today}</b></span></div>
-  <div class="row2 small"><span>${c.spend_source==='balance'?'按余额变化计，含未经网关的调用':'仅网关记账'}</span>${c.balance_at?`<span>余额 ${d(c.balance_at)}</span>`:''}</div>
+  <div class="row2 small"><span>${c.spend_source==='balance'?'按余额变化计，含未经网关的调用':c.provider==='google'?'无余额接口：按调用数 × 牌价估算（geocode $5/1000）':'仅网关记账'}</span>${c.balance_at?`<span>余额 ${d(c.balance_at)}</span>`:''}</div>
   ${c.by_batch.length?`<div class="small mute">本周按批次：${c.by_batch.map(b=>esc(b.batch_id)+' '+usd(b.usd)).join('；')}</div>`:''}</div>`).join('');
  document.getElementById('costnote').textContent='余额每 10 分钟查一次（免费接口）';
  document.getElementById('inprogress').innerHTML=s.in_progress.length?s.in_progress.map(p=>`<div class="card ${p.conflicts.length?'red':(p.registered?'green':'yellow')}">

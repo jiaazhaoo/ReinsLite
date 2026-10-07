@@ -18,6 +18,7 @@ Environment given to the command:
     OPENROUTER_API_KEY  = <batch>:<stage>            (a token the gateway understands; not a real key;
                                                       self-staged: <batch>, the gateway uses the running stage)
     DEEPSEEK_BASE_URL   = http://127.0.0.1:<gateway_port>/p/deepseek/v1, DEEPSEEK_API_KEY = the same token
+    GOOGLE_MAPS_BASE_URL = http://127.0.0.1:<gateway_port>/p/google_maps, GOOGLE_MAPS_API_KEY = the same token
 """
 from __future__ import annotations
 
@@ -86,7 +87,8 @@ def _env(spec: dict) -> dict:
             "REINS_MODULE_VERSION": spec["module_version"] or "", "PYTHONUNBUFFERED": "1",
             "REINS_BIN": str(Path(__file__).resolve().parents[1] / "bin" / "reins"),
             "OPENROUTER_BASE_URL": f"http://127.0.0.1:{port}/api/v1", "OPENROUTER_API_KEY": token,
-            "DEEPSEEK_BASE_URL": f"http://127.0.0.1:{port}/p/deepseek/v1", "DEEPSEEK_API_KEY": token}
+            "DEEPSEEK_BASE_URL": f"http://127.0.0.1:{port}/p/deepseek/v1", "DEEPSEEK_API_KEY": token,
+            "GOOGLE_MAPS_BASE_URL": f"http://127.0.0.1:{port}/p/google_maps", "GOOGLE_MAPS_API_KEY": token}
 
 
 def supervise(spec: dict) -> int:

@@ -175,7 +175,8 @@ def cost_view(con) -> list[dict]:
             spent_today = round(first_today["balance"] - latest["balance"], 2); src = "balance"
         if latest and first_week:
             spent_week = round(first_week["balance"] - latest["balance"], 2)
-        out.append({"provider": p, "balance": latest["balance"] if latest else None,
+        est = con.execute("SELECT COUNT(*) FROM spend WHERE provider=? AND priced='table' AND at>=?", (p, today)).fetchone()[0]
+        out.append({"provider": p, "estimated_calls_today": est, "balance": latest["balance"] if latest else None,
                     "balance_at": latest["at"] if latest else None, "has_endpoint": p in ("openrouter", "deepseek"),
                     "key_present": _key(p) is not None,
                     "spent_today": spent_today if spent_today is not None else round(led_today[0], 2),

@@ -33,6 +33,10 @@ UPSTREAM = "https://openrouter.ai/api/v1"
 # path prefix -> (provider, upstream base). OpenRouter at /api/v1 (its own path), others under /p/<provider>/v1.
 PROVIDERS = {"openrouter": "https://openrouter.ai/api/v1", "deepseek": "https://api.deepseek.com/v1"}
 KEYS: dict[str, str] = {}
+# Google Maps Platform: GET with the key as a query parameter; priced per call (USD, list prices 2026)
+GOOGLE_MAPS = "https://maps.googleapis.com"
+GOOGLE_CALL_PRICE = {"geocode": 0.005, "place/findplacefromtext": 0.017, "place/details": 0.017,
+                     "place/textsearch": 0.032, "staticmap": 0.002, "distancematrix": 0.005}
 _local = threading.local()
 
 
@@ -119,7 +123,62 @@ class Handler(BaseHTTPRequestHandler):
                            f"both are running"); return None
         return batch, stage
 
+    def _google_get(self):
+        """GET /p/google_maps/maps/api/<api>/json?...&key=<batch[:stage]> -> maps.googleapis.com with the real key."""
+        from urllib.parse import parse_qsl, urlencode, urlsplit
+        u = urlsplit(self.path)
+        q = dict(parse_qsl(u.query, keep_blank_values=True))
+        tok = q.pop("key", "") or self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        batch, _, stage = tok.partition(":")
+        con = _con()
+        try:
+            b = batches.get(con, batch)
+        except ReinsError:
+            self._err(401, "key must be the batch token <batch_id>[:<stage>] (the gateway holds the Google key)"); return
+        if not stage:
+            r = con.execute("SELECT stage FROM batch_stage WHERE batch_id=? AND status='running' ORDER BY ord", (batch,)).fetchall()
+            if len(r) != 1:
+                self._err(409, f"{batch}: token names no stage and {len(r)} stages are running"); return
+            stage = r[0][0]
+        if b["status"] != "running":
+            self._err(409, f"{batch} is {b['status']}: paid calls run only while it is running"); return
+        key = KEYS.get("google") or load_key("google", required=False)
+        if not key:
+            self._err(503, f"the gateway has no google key ({home() / 'secrets' / 'google.key'})"); return
+        api = u.path.removeprefix("/p/google_maps/maps/api/").removesuffix("/json").rstrip("/")
+        price = next((p for k, p in GOOGLE_CALL_PRICE.items() if api.startswith(k)), 0.005)
+        sha = hashlib.sha256(("google_maps|" + api + "|" + urlencode(sorted(q.items()))).encode()).hexdigest()
+        mv = con.execute("SELECT module_version FROM batch_stage WHERE batch_id=? AND stage=?", (batch, stage)).fetchone()[0]
+        cp = cache_path(sha)
+        if cp.is_file() and b["type"] != "drift":
+            spend.record_free(con, batch, stage, provider="google", model=api, request_sha=sha, module_version=mv)
+            self._send(200, cp.read_bytes()); return
+        try:
+            rid = spend.reserve(con, batch, stage, price)
+        except spend.CapReached as e:
+            self._on_cap(con, batch, str(e))
+            self._err(402, f"{e}. Batch paused. To continue: reins batch approve {batch} --cap USD && reins ctl resume {batch}"); return
+        except ReinsError as e:
+            self._err(409, str(e)); return
+        url = GOOGLE_MAPS + u.path.removeprefix("/p/google_maps") + "?" + urlencode({**q, "key": key})
+        try:
+            with urllib.request.urlopen(url, timeout=30) as r:
+                raw, code = r.read(), 200
+        except urllib.error.HTTPError as e:
+            raw, code = e.read(), e.code
+        except (urllib.error.URLError, TimeoutError) as e:
+            spend.release(con, rid); self._err(504, f"upstream unreachable: {e}"); return
+        # Google bills a geocode request whatever its status; ZERO_RESULTS is still a call
+        spend.settle(con, rid, provider="google", model=api, amount=price if code == 200 else 0.0, priced="table",
+                     tokens_in=None, tokens_out=None, cache_hit=False, request_sha=sha, http_status=code, module_version=mv)
+        if code == 200 and b["type"] != "drift":
+            cp.parent.mkdir(parents=True, exist_ok=True); cp.write_bytes(raw)
+            self._warn_near_cap(con, batch)
+        self._send(code, raw)
+
     def do_GET(self):
+        if self.path.startswith("/p/google_maps/"):
+            self._google_get(); return
         if self.path.rstrip("/") == "/api/v1/credits":
             req = urllib.request.Request(UPSTREAM + "/credits", headers={"Authorization": "Bearer " + self.key})
             try:
@@ -220,7 +279,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve(port: int | None = None) -> None:
     Handler.key = load_key()
-    for name in PROVIDERS:
+    for name in list(PROVIDERS) + ["google"]:
         if name != "openrouter":
             k = load_key(name, required=False)
             if k:
