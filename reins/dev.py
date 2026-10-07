@@ -186,6 +186,27 @@ def release(con, repo: Path, note: str = "") -> dict:
     return {"name": name, "worktree": str(wt), "versions": versions}
 
 
+def adopt_release(con, repo: Path, tag: str, note: str = "") -> dict:
+    """An existing git tag with its read-only worktree becomes a registered release (name = the tag)."""
+    cfg = project_cfg(repo) if (repo / "reins.toml").is_file() else None
+    project = cfg["project"] if cfg else repo.name
+    commit = git(repo, "rev-parse", f"{tag}^{{commit}}")
+    wt = None
+    for block in git(repo, "worktree", "list", "--porcelain").split("\n\n"):
+        lines = dict(l.split(" ", 1) if " " in l else (l, "") for l in block.splitlines())
+        if lines.get("HEAD") == commit and lines.get("worktree") != str(repo):
+            wt = lines["worktree"]
+    if not wt:
+        raise ReinsError(f"no worktree checked out at {tag} ({commit[:9]}); release trees must exist read-only")
+    with tx(con):
+        if con.execute("SELECT 1 FROM release WHERE name=?", (tag,)).fetchone():
+            raise ReinsError(f"release {tag} already registered")
+        con.execute("INSERT INTO release (name, project, commit_sha, worktree, note, versions, created, session)"
+                    " VALUES (?,?,?,?,?,?,?,?)", (tag, project, commit, wt, note or git(repo, "tag", "-l", "--format=%(contents:subject)", tag),
+                                                  "[]", now(), session()))
+    return {"name": tag, "commit": commit[:9], "worktree": wt}
+
+
 def list_(con, project: str | None = None) -> dict:
     q = "SELECT v.*, m.project FROM module_version v JOIN module m ON m.name=v.module"
     args = ()

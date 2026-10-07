@@ -40,12 +40,14 @@ def state(con) -> dict:
         if any(s["paid"] for s in st["stages"]) and b["spend_cap"] <= 0:
             needs.append(f"approve spend: reins batch approve {b['batch_id']} --cap USD")
         acc = (cur["done"] + cur["skipped"] + cur["failed"]) if cur else 0
+        adopted = bool(cur and cur["note"] == "adopted" and acc == 0)      # stage ran before reins: no per-case ledger yet
         health = "red" if b["status"] == "paused" or needs else "green"
         if cur and cur["failed"] > 0.05 * max(1, acc):
             health = "yellow" if health == "green" else health
         running.append({"batch_id": b["batch_id"], "type": b["type"], "purpose": b["purpose"], "status": b["status"],
                         "stage": cur["stage"] if cur else "-", "stage_ord": f"{cur['ord'] + 1}/{len(st['stages'])}" if cur else "-",
-                        "progress": f"{acc}/{b['n_cases']}", "pct": round(100 * acc / max(1, b["n_cases"])),
+                        "progress": "adopted · ledger not wired" if adopted else f"{acc}/{b['n_cases']}",
+                        "pct": round(100 * acc / max(1, b["n_cases"])),
                         "eta": _eta(con, b["batch_id"], cur["stage"], b["n_cases"], acc) if cur else "-",
                         "health": health, "needs": needs, "spent": st["batch"]["spent"], "cap": b["spend_cap"],
                         "release": b["release_name"], "mixed": bool(b["mixed_version"]), "owner": b["owner_session"],

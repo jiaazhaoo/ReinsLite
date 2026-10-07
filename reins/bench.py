@@ -19,6 +19,7 @@ Labels (one JSON per line): {"oachargeid", "target", "value", "source", "by", "s
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import random
@@ -26,7 +27,7 @@ import shutil
 from pathlib import Path
 
 from . import names
-from .store import ReinsError, config, now, session, tx
+from .store import ReinsError, config, home, now, session, tx
 
 SOURCES = ("golden", "customer_result", "reviewer_verdict", "reference_geometry")
 NOT_PEOPLE = {"", "assistant", "claude", "model", "gemini", "luna", "sol", "pipeline", "auto"}
@@ -220,17 +221,47 @@ def freeze(con, name: str, changelog: str) -> dict:
     return {"name": row["name"], "version": row["version"], "files": len(files), "manifest_sha": msha}
 
 
+def adopt(con, name: str, version: int, project: str, path: Path, case_file: Path, holdout_fraction: float = 0.0,
+          seed: int = 7, about: str = "") -> dict:
+    """An existing benchmark directory becomes bench-<name> v<version>, frozen as it is. Hashes go to
+    $REINS_HOME/bench/<name>-v<version>.files.json (the directory is not written to). No holdout unless asked."""
+    name = full_name(name)
+    if not path.is_dir():
+        raise ReinsError(f"{path} is not a directory")
+    ids = names.read_case_set(case_file)
+    if con.execute("SELECT 1 FROM benchmark WHERE name=? AND version=?", (name, version)).fetchone():
+        raise ReinsError(f"{name} v{version} already registered")
+    rnd = random.Random(seed); shuffled = ids[:]; rnd.shuffle(shuffled)
+    n_hold = round(len(ids) * holdout_fraction); hold = set(shuffled[:n_hold])
+    files = _hash_tree(path)
+    side = home() / "bench"; side.mkdir(parents=True, exist_ok=True)
+    rec = {"name": name, "version": version, "path": str(path), "adopted": now(), "about": about, "files": files,
+           "cases": [{"oachargeid": i, "split": "holdout" if i in hold else "dev"} for i in ids]}
+    (side / f"{name}-v{version}.files.json").write_text(json.dumps(rec, indent=1))
+    msha = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
+    with tx(con):
+        con.execute("INSERT INTO benchmark (name, version, project, path, status, n_cases, n_dev, n_holdout, manifest_sha,"
+                    " created, frozen) VALUES (?,?,?,?, 'frozen', ?,?,?,?,?,?)",
+                    (name, version, project, str(path), len(ids), len(ids) - n_hold, n_hold, msha, now(), now()))
+        _event(con, name, version, "adopted", f"{path}: {len(files)} files hashed; {about}")
+    return {"name": name, "version": version, "files": len(files), "n_cases": len(ids)}
+
+
 def verify(con, name: str, version: int | None = None) -> dict:
     row = _row(con, name, version)
     if row["status"] != "frozen":
         raise ReinsError(f"{row['name']} v{row['version']} is not frozen; nothing to verify against")
     path = Path(row["path"])
     want = _manifest(path).get("files", {})
+    side = home() / "bench" / f"{row['name']}-v{row['version']}.files.json"
+    if not want and side.exists():                               # adopted: hashes live beside the registry
+        want = json.loads(side.read_text())["files"]
     have = _hash_tree(path)
     changed = sorted(k for k in want if have.get(k) != want[k])
     missing = sorted(k for k in want if k not in have)
     extra = sorted(k for k in have if k not in want)
-    ok = not (changed or missing or extra) and names.sha256_file(path / "MANIFEST.json") == row["manifest_sha"]
+    ok = not (changed or missing or extra) and (
+        side.exists() or names.sha256_file(path / "MANIFEST.json") == row["manifest_sha"])
     return {"ok": ok, "changed": changed, "missing": missing, "extra": extra}
 
 
@@ -279,7 +310,11 @@ def holdout(con, name: str, why: str, tuned: bool = False) -> None:
 
 def cases(con, name: str, version: int | None = None, split: str | None = None) -> list[str]:
     row = _row(con, name, version)
-    rows = list(csv.DictReader((Path(row["path"]) / "cases.csv").open()))
+    side = home() / "bench" / f"{row['name']}-v{row['version']}.files.json"
+    if side.exists() and not (Path(row["path"]) / "cases.csv").exists():
+        rows = json.loads(side.read_text())["cases"]
+    else:
+        rows = list(csv.DictReader((Path(row["path"]) / "cases.csv").open()))
     return [r["oachargeid"] for r in rows if split is None or r["split"] == split]
 
 

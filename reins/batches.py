@@ -110,6 +110,46 @@ def open_(con, *, project: str, council: str, wp: str, type_: str, purpose: str,
     return bid
 
 
+def adopt(con, *, project: str, council: str, wp: str, type_: str, purpose: str, case_file: Path, work_dir: str,
+          stages: list[tuple[str, str]], release_name: str | None, owner: str | None, aliases: list[str] | None = None,
+          case_pattern: str = names.DEFAULT_CASE_PATTERN, day: str | None = None, note: str = "") -> str:
+    """Bring a batch that was started outside reins under management. `stages` = [(name, state)] with state in
+    planned | running | done | skipped. Done stages get every case marked done with reason 'adopted' (the real
+    per-case ledger starts from the running stage on). Strict-type checks are relaxed: the batch is a fact."""
+    ids = names.read_case_set(case_file)
+    probs = names.case_problems(ids, case_pattern)
+    if probs:
+        raise ReinsError(f"case set not usable: {probs[:5]}")
+    day = day or today()
+    with tx(con):
+        if release_name and not con.execute("SELECT 1 FROM release WHERE name=?", (release_name,)).fetchone():
+            raise ReinsError(f"release {release_name!r} is not registered")
+        seq = con.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM batch WHERE council=? AND wp=? AND type=? AND day=?",
+                          (council, wp, type_, day)).fetchone()[0]
+        bid = names.batch_id(council, wp, type_, day, seq)
+        running = any(s == "running" for _, s in stages)
+        status = "running" if running else ("done" if all(s in ("done", "skipped") for _, s in stages) else "open")
+        con.execute("INSERT INTO batch (batch_id, project, council, wp, type, day, seq, purpose, case_set_path, case_set_sha,"
+                    " n_cases, release_name, aliases, status, work_dir, owner_session, preflight_ok, created)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)",
+                    (bid, project, council, wp, type_, day, seq, purpose, str(case_file.resolve()), names.sha256_lines(ids),
+                     len(ids), release_name, json.dumps(aliases or [], ensure_ascii=False), status, work_dir, owner, now()))
+        con.executemany("INSERT INTO batch_case VALUES (?,?)", [(bid, i) for i in ids])
+        t = now()
+        for k, (stage, state) in enumerate(stages):
+            names.check_token("stage", stage)
+            con.execute("INSERT INTO batch_stage (batch_id, stage, ord, status, started, ended, note) VALUES (?,?,?,?,?,?,?)",
+                        (bid, stage, k, state, t if state != "planned" else None, t if state in ("done", "skipped") else None,
+                         "adopted" if state != "planned" else None))
+            if state == "done":
+                con.executemany("INSERT INTO case_event (at, batch_id, stage, oachargeid, status, reason) VALUES (?,?,?,?,?,?)",
+                                [(t, bid, stage, i, "done", "adopted: stage finished before reins; per-case ledger not reconstructed") for i in ids])
+        _event(con, bid, "adopted", f"brought under reins from {work_dir}; {note}".strip("; "))
+    if owner:
+        leases.acquire(con, f"batch:{bid}", "owner (adopted)", holder=owner)
+    return bid
+
+
 def approve_spend(con, batch: str, cap: float, who: str = "user") -> None:
     """C7/C9: paid stages run only after a human sets the cap. Recorded as an event."""
     if cap < 0:

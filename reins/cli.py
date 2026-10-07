@@ -113,6 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     x = d.add_parser("finish"); x.add_argument("version"); x.add_argument("--skip-tier"); x.add_argument("--why")
     x = d.add_parser("abandon"); x.add_argument("version"); x.add_argument("--why", required=True)
     x = d.add_parser("release"); x.add_argument("--note", default=""); x.add_argument("--repo")
+    x = d.add_parser("adopt-release"); x.add_argument("tag"); x.add_argument("--note", default=""); x.add_argument("--repo")
     x = d.add_parser("list"); x.add_argument("--project")
 
     b = sub.add_parser("batch").add_subparsers(dest="sub", required=True)
@@ -126,6 +127,13 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--project"); x.add_argument("--work-dir"); x.add_argument("--cap", type=float, default=0.0)
     x.add_argument("--ruleset"); x.add_argument("--env"); x.add_argument("--config", action="append", type=Path)
     x.add_argument("--input", action="append", type=Path, help="mapping tables and other inputs to hash into provenance")
+    x = b.add_parser("adopt", help="bring a batch that already exists on disk under reins")
+    for a in ("--council", "--wp", "--purpose", "--cases", "--work-dir"):
+        x.add_argument(a, required=True)
+    x.add_argument("--type", required=True, choices=names.BATCH_TYPES)
+    x.add_argument("--stage", action="append", required=True, help="NAME:planned|running|done|skipped, in order")
+    x.add_argument("--release"); x.add_argument("--owner", help="session id that owns it"); x.add_argument("--alias", action="append")
+    x.add_argument("--project"); x.add_argument("--note", default="")
     x = b.add_parser("approve"); x.add_argument("batch"); x.add_argument("--cap", type=float, required=True)
     x.add_argument("--by", default="user")
     x = b.add_parser("stage-start"); x.add_argument("batch"); x.add_argument("stage")
@@ -167,6 +175,9 @@ def build_parser() -> argparse.ArgumentParser:
     x = bn.add_parser("init"); x.add_argument("name"); x.add_argument("--cases", required=True, type=Path)
     x.add_argument("--about", required=True); x.add_argument("--holdout-fraction", type=float, default=0.2)
     x.add_argument("--seed", type=int, default=7); x.add_argument("--project")
+    x = bn.add_parser("adopt"); x.add_argument("name"); x.add_argument("version", type=int); x.add_argument("--path", required=True, type=Path)
+    x.add_argument("--cases", required=True, type=Path); x.add_argument("--about", default=""); x.add_argument("--project")
+    x.add_argument("--holdout-fraction", type=float, default=0.0); x.add_argument("--seed", type=int, default=7)
     x = bn.add_parser("add-stage"); x.add_argument("name"); x.add_argument("stage"); x.add_argument("--from", dest="src", required=True, type=Path)
     x.add_argument("--module-version", required=True)
     x = bn.add_parser("add-input"); x.add_argument("name"); x.add_argument("--from", dest="src", required=True, type=Path)
@@ -369,6 +380,8 @@ def _dev(con, args, cfg, cwd) -> int:
         print(f"{r['version']} released; main {r['main']}\n  {r['evidence']}")
     elif args.sub == "abandon":
         dev.abandon(con, args.version, args.why); print("abandoned")
+    elif args.sub == "adopt-release":
+        r = dev.adopt_release(con, repo, args.tag, args.note); print(f"{r['name']} ({r['commit']}) -> {r['worktree']}")
     elif args.sub == "release":
         r = dev.release(con, repo, args.note)
         print(f"{r['name']} -> {r['worktree']} (read-only)\n  contains: {', '.join(r['versions']) or 'no released module versions'}")
@@ -395,6 +408,18 @@ def _batch(con, args, cfg) -> int:
                             case_pattern=cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN),
                             work_dir=args.work_dir, spend_cap=args.cap, ruleset=args.ruleset, env_name=args.env,
                             config_files=args.config, input_files=args.input)
+        print(bid)
+    elif args.sub == "adopt":
+        st = []
+        for s in args.stage:
+            n, _, state = s.partition(":")
+            if state not in ("planned", "running", "done", "skipped"):
+                raise ReinsError(f"--stage {s!r}: NAME:planned|running|done|skipped")
+            st.append((n, state))
+        bid = batches.adopt(con, project=_project(args, cfg), council=args.council, wp=args.wp, type_=args.type,
+                            purpose=args.purpose, case_file=Path(args.cases), work_dir=args.work_dir, stages=st,
+                            release_name=args.release, owner=args.owner, aliases=args.alias,
+                            case_pattern=cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN), note=args.note)
         print(bid)
     elif args.sub == "approve":
         batches.approve_spend(con, args.batch, args.cap, args.by); print(f"{args.batch} cap ${args.cap:.2f}")
@@ -448,6 +473,9 @@ def _measure(con, args, cfg, cwd) -> int:
             r = bench.init(con, args.name, _project(args, cfg), args.cases, args.about, args.holdout_fraction, args.seed,
                            cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN))
             print(f"{r['name']} v1 at {r['path']}  dev={r['n_dev']} holdout={r['n_holdout']}")
+        elif args.sub == "adopt":
+            r = bench.adopt(con, args.name, args.version, _project(args, cfg), args.path, args.cases, args.holdout_fraction, args.seed, args.about)
+            print(f"{r['name']} v{r['version']} adopted (frozen): {r['files']} files, {r['n_cases']} cases")
         elif args.sub == "add-stage":
             print(f"{bench.add_stage(con, args.name, args.stage, args.src, args.module_version)} files added")
         elif args.sub == "add-input":
