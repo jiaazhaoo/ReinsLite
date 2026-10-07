@@ -118,6 +118,8 @@ def build_parser() -> argparse.ArgumentParser:
     x = d.add_parser("release"); x.add_argument("--note", default=""); x.add_argument("--repo")
     x = d.add_parser("adopt-release"); x.add_argument("tag"); x.add_argument("--note", default=""); x.add_argument("--repo")
     x = d.add_parser("list"); x.add_argument("--project")
+    x = d.add_parser("show", help="a module or module version: what it does, its state, and the sessions it came from")
+    x.add_argument("name")
 
     b = sub.add_parser("batch").add_subparsers(dest="sub", required=True)
     x = b.add_parser("open")
@@ -432,6 +434,17 @@ def _dev(con, args, cfg, cwd) -> int:
     elif args.sub == "release":
         r = dev.release(con, repo, args.note)
         print(f"{r['name']} -> {r['worktree']} (read-only)\n  contains: {', '.join(r['versions']) or 'no released module versions'}")
+    elif args.sub == "show":
+        if names.MODULE_VERSION.match(args.name):
+            v = modules.get(con, args.name)
+            print(f"{v['version']}  [{v['status']}]  {v['about']}\n  branch {v['branch'] or '-'}  commit {(v['commit_sha'] or '-')[:9]}")
+            for e in con.execute("SELECT at, event, detail FROM module_event WHERE version=? ORDER BY id", (v["version"],)):
+                print(f"    {e['at'][:16]}  {e['event']:<10} {(e['detail'] or '')[:100]}")
+        else:
+            st = modules.status(con, args.name)
+            print(f"{args.name}: production {st['production']['version'] if st['production'] else '-'}; "
+                  f"candidates {[c['version'] for c in st['candidates']] or '-'}")
+        print(sessions.format_index(sessions.index_for_module(con, args.name)))
     elif args.sub == "list":
         d = dev.list_(con, args.project or cfg.get("project"))
         print("candidates:")
@@ -502,7 +515,11 @@ def _batch(con, args, cfg) -> int:
         batches.close(con, args.batch); print(f"{args.batch} closed")
     elif args.sub == "status":
         st = batches.status(con, args.batch)
-        print(json.dumps(st, ensure_ascii=False, indent=1)) if args.json else _print_status(st)
+        if args.json:
+            print(json.dumps({**st, "sessions": sessions.index_for_batch(con, args.batch)}, ensure_ascii=False, indent=1))
+        else:
+            _print_status(st)
+            print(sessions.format_index(sessions.index_for_batch(con, args.batch)))
     elif args.sub == "list":
         q = "SELECT * FROM batch" + (" WHERE status NOT IN ('closed', 'failed', 'done')" if args.live else "") + " ORDER BY created DESC"
         for r in con.execute(q):

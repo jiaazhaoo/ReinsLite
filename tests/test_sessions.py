@@ -78,6 +78,21 @@ class Sessions(unittest.TestCase):
         self.hook("aaaa1111", "SessionEnd", reason="exit")
         self.assertEqual(self.con.execute("SELECT status FROM session WHERE id='aaaa1111'").fetchone()[0], "ended")
 
+    def test_provenance_index(self):
+        from reins import batches, modules
+        os.environ["REINS_SESSION"] = "dddd4444"
+        cases = self.tmp / "c.txt"; cases.write_text("1\n2\n")
+        b = batches.open_(self.con, project="p", council="x", wp="wp1", type_="experiment", purpose="index test",
+                          case_file=cases, stages=[batches.parse_stage_spec("s")])
+        self.hook("eeee5555", "PreToolUse", tool_name="Bash", tool_input={"command": f"reins ctl pause {b}"})
+        idx = {d["session"]: d for d in sessions.index_for_batch(self.con, b)}
+        self.assertEqual(set(idx), {"dddd4444", "eeee5555"})
+        self.assertIn("run_stop", idx["eeee5555"]["actions"])
+        modules.add(self.con, "georef", "p", "place drawings on the map")
+        v = modules.new(self.con, "georef", "x", "plan road names place the drawing", self.repo)
+        self.assertEqual([d["session"] for d in sessions.index_for_module(self.con, v)], ["dddd4444"])
+        del os.environ["REINS_SESSION"]
+
     def test_classify(self):
         c = sessions.classify
         self.assertEqual(c("reins ctl pause sheffield-wp3-production-20261007-1"), "run_stop")

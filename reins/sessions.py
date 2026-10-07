@@ -1,6 +1,9 @@
-"""C15 sessions: every Claude Code session is a managed object.
+"""C15 sessions: the provenance index of every development and every run.
 
-A session is the unit that changes things. Each one is, at any moment, one of:
+Development items (module versions, or unregistered edits to a module) and runs (batches started, paused, stopped,
+experiments) are what the system manages. A session is only the index saying where an action came from: which
+Claude Code session did it, and where that session's transcript is, so "how did this come about" can be answered.
+Internally a session is classified as one of (used only to attach it to the right item):
   develop      updating one sub-module (registered version, or inferred from the files it edits)
   run          running, pausing or stopping a batch
   experiment   a pilot / experiment batch, or one-off scripts outside the pipeline
@@ -429,3 +432,69 @@ def unregistered_runs(con, hours: int = 12) -> list[dict]:
         cmd = (r["detail"] or "").strip().splitlines()[0][:140]
         out.append({"at": r["at"], "kind": "实验" if r["kind"] == "experiment" else "运行", "what": cmd})
     return out
+
+
+# ------------------------------------------------------------------ provenance index
+def _find_transcript(sid: str) -> str | None:
+    """A session seen before the hook was installed: its transcript is ~/.claude/projects/<dir>/<id>.jsonl."""
+    import glob
+    hits = glob.glob(os.path.expanduser(f"~/.claude/projects/*/{sid}.jsonl"))
+    return hits[0] if hits else None
+
+
+def _index(con, rows) -> list[dict]:
+    by = {}
+    for sid, at, kind in rows:
+        if not sid:
+            continue
+        d = by.setdefault(sid, {"session": sid, "first": at, "last": at, "actions": set()})
+        d["first"], d["last"] = min(d["first"], at), max(d["last"], at)
+        d["actions"].add(kind)
+    out = []
+    for sid, d in by.items():
+        s = con.execute("SELECT transcript, parent FROM session WHERE id=?", (sid,)).fetchone()
+        tr = s["transcript"] if s and s["transcript"] else _find_transcript(sid)
+        out.append({**d, "actions": sorted(d["actions"]), "transcript": tr,
+                    "forked_from": s["parent"] if s else None})
+    return sorted(out, key=lambda x: x["first"])
+
+
+def index_for_batch(con, batch: str) -> list[dict]:
+    """Which sessions opened, started, paused, stopped or otherwise acted on this batch."""
+    rows = [(r[0], r[1], r[2]) for r in con.execute("SELECT session, at, event FROM batch_event WHERE batch_id=?", (batch,))]
+    rows += [(r[0], r[1], r[2]) for r in con.execute(
+        "SELECT session_id, at, kind FROM session_event WHERE batch_id=? AND kind<>'read'", (batch,))]
+    rows += [(r[0], r[1], "process") for r in con.execute("SELECT session, started FROM process WHERE batch_id=?", (batch,))]
+    own = con.execute("SELECT owner_session, created FROM batch WHERE batch_id=?", (batch,)).fetchone()
+    if own and own["owner_session"]:
+        rows.append((own["owner_session"], own["created"], "owner"))   # for an adopted batch: the session that started it
+    return _index(con, rows)
+
+
+def index_for_module(con, name: str) -> list[dict]:
+    """Which sessions created / released a version of this module (or this version), or edited its files."""
+    if re.match(r"^[a-z][a-z0-9_]*-", name):
+        rows = [(r[0], r[1], r[2]) for r in con.execute("SELECT session, at, event FROM module_event WHERE version=?", (name,))]
+        mod = con.execute("SELECT module, worktree FROM module_version WHERE version=?", (name,)).fetchone()
+        if mod and mod["worktree"]:
+            rows += [(r[0], r[1], r[2]) for r in con.execute(
+                "SELECT session_id, at, kind FROM session_event WHERE worktree=? AND kind IN ('edit','git','merge','dev')",
+                (mod["worktree"],))]
+        return _index(con, rows)
+    rows = [(r[0], r[1], r[2]) for r in con.execute(
+        "SELECT e.session, e.at, e.event FROM module_event e JOIN module_version v ON v.version=e.version WHERE v.module=?", (name,))]
+    rows += [(r[0], r[1], r[2]) for r in con.execute(
+        "SELECT session_id, at, kind FROM session_event WHERE module=? AND kind<>'read'", (name,))]
+    return _index(con, rows)
+
+
+def format_index(idx: list[dict]) -> str:
+    if not idx:
+        return "  来源会话：无记录"
+    lines = ["  来源会话："]
+    for d in idx:
+        fork = f"，从 {d['forked_from'][:8]} fork" if d["forked_from"] else ""
+        lines.append(f"    {d['session']}  {d['first'][:16]} → {d['last'][:16]}  {', '.join(d['actions'])}{fork}")
+        if d["transcript"]:
+            lines.append(f"      记录：{d['transcript']}")
+    return "\n".join(lines)
