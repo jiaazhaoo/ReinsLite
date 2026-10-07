@@ -154,7 +154,9 @@ def build_parser() -> argparse.ArgumentParser:
     x = b.add_parser("status"); x.add_argument("batch"); x.add_argument("--json", action="store_true")
     x = b.add_parser("list"); x.add_argument("--live", action="store_true")
 
-    x = sub.add_parser("run"); x.add_argument("batch"); x.add_argument("stage"); x.add_argument("--module-version")
+    x = sub.add_parser("run"); x.add_argument("batch"); x.add_argument("stage", nargs="?", default=None)
+    x.add_argument("--self-staged", action="store_true", help="the command reports its own stage boundaries")
+    x.add_argument("--module-version")
     x.add_argument("--cwd"); x.add_argument("--retries", type=int); x.add_argument("command", nargs=argparse.REMAINDER)
     x = sub.add_parser("ctl"); x.add_argument("verb", choices=["pause", "resume", "stop"]); x.add_argument("batch")
     x.add_argument("--why", default="")
@@ -293,7 +295,10 @@ def main(argv: list[str] | None = None) -> int:
             return _batch(con, args, cfg)
         if args.cmd == "run":
             cmd = args.command[1:] if args.command and args.command[0] == "--" else args.command
-            res = runner.start(con, args.batch, args.stage, cmd, Path(args.cwd or cwd), args.module_version, args.retries)
+            if bool(args.self_staged) == bool(args.stage and args.stage != "--"):
+                raise ReinsError("give either a STAGE or --self-staged")
+            res = runner.start(con, args.batch, runner.SELF if args.self_staged else args.stage, cmd, Path(args.cwd or cwd),
+                               args.module_version, args.retries)
             for w in res["warnings"]:
                 print(f"WARNING {w}", file=sys.stderr)
             print(f"started (supervisor pid {res['supervisor_pid']}); log {res['log']}\n"
@@ -420,6 +425,9 @@ def _batch(con, args, cfg) -> int:
                             case_pattern=cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN),
                             work_dir=args.work_dir, spend_cap=args.cap, ruleset=args.ruleset, env_name=args.env,
                             config_files=args.config, input_files=args.input)
+        probe = cfg.get("run", {}).get("probe")
+        if probe:
+            batches.set_probe(con, bid, probe)
         print(bid)
     elif args.sub == "adopt":
         st = []

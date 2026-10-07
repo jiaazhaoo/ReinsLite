@@ -1,6 +1,9 @@
 """C7 launcher: the only way a batch's stage command is started.
 
     reins run BATCH STAGE [--module-version V] [--cwd DIR] [--retries N] -- CMD ARGS...
+    reins run BATCH --self-staged [--cwd DIR] [--retries N] -- CMD ARGS...
+        the command moves through several stages itself and reports each boundary with
+        `reins batch stage-start / mark / stage-end` (e.g. through a project hook); on exit 0 every stage must be done
     reins ctl pause|resume|stop BATCH
 
 `run` records the stage start, then hands the command to a supervisor that lives in its own session (it survives the
@@ -12,7 +15,9 @@ notifies the user either way.
 Environment given to the command:
     REINS_BATCH, REINS_STAGE, REINS_MODULE_VERSION, REINS_HOME
     OPENROUTER_BASE_URL = http://127.0.0.1:<gateway_port>/api/v1
-    OPENROUTER_API_KEY  = <batch>:<stage>            (a token the gateway understands; not a real key)
+    OPENROUTER_API_KEY  = <batch>:<stage>            (a token the gateway understands; not a real key;
+                                                      self-staged: <batch>, the gateway uses the running stage)
+    DEEPSEEK_BASE_URL   = http://127.0.0.1:<gateway_port>/p/deepseek/v1, DEEPSEEK_API_KEY = the same token
 """
 from __future__ import annotations
 
@@ -37,6 +42,9 @@ def _log_path(b, stage: str) -> Path:
     return base / f"{stage}.log"
 
 
+SELF = "*"                         # stage name of a self-staged run
+
+
 def start(con, batch: str, stage: str, cmd: list[str], cwd: Path, module_version: str | None = None,
           retries: int | None = None) -> dict:
     if not cmd:
@@ -45,9 +53,21 @@ def start(con, batch: str, stage: str, cmd: list[str], cwd: Path, module_version
     running = con.execute("SELECT id FROM process WHERE batch_id=? AND state IN ('running','paused')", (batch,)).fetchone()
     if running:
         raise ReinsError(f"{batch} already has a live process (#{running[0]}); reins ctl stop {batch} first")
-    log = _log_path(b, stage)
-    warnings = batches.stage_start(con, batch, stage, module_version, log_path=str(log))
-    mv = con.execute("SELECT module_version FROM batch_stage WHERE batch_id=? AND stage=?", (batch, stage)).fetchone()[0]
+    if stage == SELF:
+        leases.check(con, f"batch:{batch}")
+        if b["status"] in ("done", "failed", "closed"):
+            raise ReinsError(f"batch {batch} is {b['status']}")
+        if b["type"] in batches.STRICT_TYPES and not b["preflight_ok"]:
+            raise ReinsError(f"{b['type']} batch: run `reins preflight {batch}` (and pass) first")
+        log = _log_path(b, "run")
+        warnings, mv = [], None
+        if b["status"] in ("open", "paused"):
+            batches.set_status(con, batch, "running", "self-staged run started", system=True) if b["status"] == "paused" else \
+                con.execute("UPDATE batch SET status='running' WHERE batch_id=?", (batch,))
+    else:
+        log = _log_path(b, stage)
+        warnings = batches.stage_start(con, batch, stage, module_version, log_path=str(log))
+        mv = con.execute("SELECT module_version FROM batch_stage WHERE batch_id=? AND stage=?", (batch, stage)).fetchone()[0]
     if retries is None:
         retries = DEFAULT_RETRIES.get(b["type"], 0)
     spec = {"batch": batch, "stage": stage, "cmd": cmd, "cwd": str(cwd.resolve()), "module_version": mv,
@@ -61,10 +81,12 @@ def start(con, batch: str, stage: str, cmd: list[str], cwd: Path, module_version
 
 def _env(spec: dict) -> dict:
     port = config()["gateway_port"]
+    token = spec["batch"] if spec["stage"] == SELF else f"{spec['batch']}:{spec['stage']}"
     return {**os.environ, "REINS_BATCH": spec["batch"], "REINS_STAGE": spec["stage"], "REINS_HOME": spec["home"],
             "REINS_MODULE_VERSION": spec["module_version"] or "", "PYTHONUNBUFFERED": "1",
-            "OPENROUTER_BASE_URL": f"http://127.0.0.1:{port}/api/v1",
-            "OPENROUTER_API_KEY": f"{spec['batch']}:{spec['stage']}"}
+            "REINS_BIN": str(Path(__file__).resolve().parents[1] / "bin" / "reins"),
+            "OPENROUTER_BASE_URL": f"http://127.0.0.1:{port}/api/v1", "OPENROUTER_API_KEY": token,
+            "DEEPSEEK_BASE_URL": f"http://127.0.0.1:{port}/p/deepseek/v1", "DEEPSEEK_API_KEY": token}
 
 
 def supervise(spec: dict) -> int:
@@ -92,6 +114,15 @@ def supervise(spec: dict) -> int:
                         " exit_code=?, ended=? WHERE id=?", (code, now(), pid_row))
         if state == "stopped":
             notify.send(con, f"stopped:{batch}", "info", f"{batch}/{stage} stopped by request", "", cooldown_min=0)
+            return 0
+        if code == 0 and stage == SELF:
+            open_ = [r[0] for r in con.execute("SELECT stage FROM batch_stage WHERE batch_id=? AND status NOT IN ('done','skipped')"
+                                               " ORDER BY ord", (batch,))]
+            if open_:
+                notify.send(con, f"stage_incomplete:{batch}", "action", f"{batch}: command exited 0 but stages are not finished",
+                            f"not done: {', '.join(open_)}. log: {spec['log']}", cooldown_min=0)
+            else:
+                notify.send(con, f"done:{batch}", "info", f"{batch}: all stages done", f"log: {spec['log']}", cooldown_min=0)
             return 0
         if code == 0:
             try:

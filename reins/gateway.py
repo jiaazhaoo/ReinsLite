@@ -30,6 +30,9 @@ from . import batches, notify, spend
 from .store import ReinsError, config, connect, home
 
 UPSTREAM = "https://openrouter.ai/api/v1"
+# path prefix -> (provider, upstream base). OpenRouter at /api/v1 (its own path), others under /p/<provider>/v1.
+PROVIDERS = {"openrouter": "https://openrouter.ai/api/v1", "deepseek": "https://api.deepseek.com/v1"}
+KEYS: dict[str, str] = {}
 _local = threading.local()
 
 
@@ -39,14 +42,25 @@ def _con() -> sqlite3.Connection:
     return _local.con
 
 
-def load_key() -> str:
-    f = home() / "secrets" / "openrouter.key"
+def load_key(provider: str = "openrouter", required: bool = True) -> str:
+    f = home() / "secrets" / f"{provider}.key"
     if f.is_file():
         return f.read_text().strip()
-    k = os.environ.get("OPENROUTER_API_KEY")
-    if not k:
-        raise ReinsError(f"no key: write it to {f} (chmod 600) or set OPENROUTER_API_KEY for the gateway process only")
+    k = os.environ.get(f"{provider.upper()}_API_KEY", "")
+    if not k and required:
+        raise ReinsError(f"no {provider} key: write it to {f} (chmod 600) or set {provider.upper()}_API_KEY for the gateway only")
     return k
+
+
+def route(path: str) -> tuple[str, str] | None:
+    """URL path -> (provider, upstream chat-completions URL)."""
+    p = path.rstrip("/")
+    if p == "/api/v1/chat/completions":
+        return "openrouter", UPSTREAM + "/chat/completions"
+    for name, base in PROVIDERS.items():
+        if p == f"/p/{name}/v1/chat/completions":
+            return name, (UPSTREAM if name == "openrouter" else PROVIDERS[name]) + "/chat/completions"
+    return None
 
 
 def canonical_sha(body: dict) -> str:
@@ -86,14 +100,17 @@ class Handler(BaseHTTPRequestHandler):
     def _auth(self) -> tuple[str, str] | None:
         h = self.headers.get("Authorization", "")
         tok = h.removeprefix("Bearer ").strip()
-        if ":" not in tok:
-            self._err(401, "Authorization must be 'Bearer <batch_id>:<stage>' (the gateway holds the real key)")
-            return None
-        batch, stage = tok.split(":", 1)
+        batch, _, stage = tok.partition(":")
         try:
             b = batches.get(_con(), batch)
-        except ReinsError as e:
-            self._err(401, str(e)); return None
+        except ReinsError:
+            self._err(401, "Authorization must be 'Bearer <batch_id>[:<stage>]' (the gateway holds the real key)")
+            return None
+        if not stage:                                           # self-staged run: the stage that is running now
+            r = _con().execute("SELECT stage FROM batch_stage WHERE batch_id=? AND status='running' ORDER BY ord", (batch,)).fetchall()
+            if len(r) != 1:
+                self._err(409, f"{batch}: token names no stage and {len(r)} stages are running"); return None
+            stage = r[0][0]
         st = _con().execute("SELECT status FROM batch_stage WHERE batch_id=? AND stage=?", (batch, stage)).fetchone()
         if not st:
             self._err(401, f"stage {stage!r} is not planned in {batch}"); return None
@@ -116,8 +133,13 @@ class Handler(BaseHTTPRequestHandler):
         self._err(404, "gateway serves POST /api/v1/chat/completions and GET /api/v1/credits")
 
     def do_POST(self):
-        if self.path.rstrip("/") != "/api/v1/chat/completions":
-            self._err(404, "only /api/v1/chat/completions"); return
+        rt = route(self.path)
+        if not rt:
+            self._err(404, "POST /api/v1/chat/completions (OpenRouter) or /p/<provider>/v1/chat/completions"); return
+        provider, upstream_url = rt
+        key = self.key if provider == "openrouter" else KEYS.get(provider) or load_key(provider, required=False)
+        if not key:
+            self._err(503, f"the gateway has no {provider} key ({home() / 'secrets' / (provider + '.key')})"); return
         auth = self._auth()
         if not auth:
             return
@@ -131,12 +153,12 @@ class Handler(BaseHTTPRequestHandler):
         if body.get("stream"):
             self._err(400, "streaming is not supported through the gateway (cost is settled per whole answer)"); return
         model = body.get("model", "")
-        sha = canonical_sha(body)
+        sha = canonical_sha({**body, "_provider": provider})
         mv = con.execute("SELECT module_version FROM batch_stage WHERE batch_id=? AND stage=?", (batch, stage)).fetchone()[0]
         cp = cache_path(sha)
         drift = con.execute("SELECT type FROM batch WHERE batch_id=?", (batch,)).fetchone()[0] == "drift"
         if cp.is_file() and not drift:                     # a drift batch asks the live model on purpose
-            spend.record_free(con, batch, stage, provider="openrouter", model=model, request_sha=sha, module_version=mv)
+            spend.record_free(con, batch, stage, provider=provider, model=model, request_sha=sha, module_version=mv)
             self._send(200, cp.read_bytes()); return
         est = spend.estimate(con, batch, stage, model)
         try:
@@ -147,9 +169,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         except ReinsError as e:
             self._err(409, str(e)); return
-        fwd = dict(body); fwd["usage"] = {"include": True}
-        req = urllib.request.Request(UPSTREAM + "/chat/completions", data=json.dumps(fwd).encode(),
-                                     headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json",
+        fwd = dict(body)
+        if provider == "openrouter":
+            fwd["usage"] = {"include": True}                    # OpenRouter reports the charged cost
+        fwd.pop("timeout", None)
+        req = urllib.request.Request(upstream_url, data=json.dumps(fwd).encode(),
+                                     headers={"Authorization": "Bearer " + key, "Content-Type": "application/json",
                                               "HTTP-Referer": "reins-gateway", "X-Title": "reins"})
         try:
             with urllib.request.urlopen(req, timeout=float(body.get("timeout", 180))) as r:
@@ -165,7 +190,7 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             d = None
         amount, priced = cost_of(con, model, usage) if code == 200 else (0.0, "none")
-        spend.settle(con, rid, provider="openrouter", model=model, amount=amount, priced=priced,
+        spend.settle(con, rid, provider=provider, model=model, amount=amount, priced=priced,
                      tokens_in=usage.get("prompt_tokens"), tokens_out=usage.get("completion_tokens"), cache_hit=False,
                      request_sha=sha, http_status=code, module_version=mv)
         if code == 200 and d is not None:
@@ -195,6 +220,11 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve(port: int | None = None) -> None:
     Handler.key = load_key()
+    for name in PROVIDERS:
+        if name != "openrouter":
+            k = load_key(name, required=False)
+            if k:
+                KEYS[name] = k
     port = port or config()["gateway_port"]
     (home() / "cache").mkdir(parents=True, exist_ok=True)
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)

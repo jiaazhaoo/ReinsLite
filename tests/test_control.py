@@ -69,7 +69,7 @@ class FakeUpstream(BaseHTTPRequestHandler):
         FakeUpstream.calls += 1
         n = int(self.headers["Content-Length"]); body = json.loads(self.rfile.read(n))
         assert self.headers["Authorization"] == "Bearer REALKEY", self.headers["Authorization"]
-        assert body.get("usage") == {"include": True}
+        assert body.get("usage") in ({"include": True}, None)
         out = json.dumps({"choices": [{"message": {"content": "{\"verdict\": \"correct\"}"}}],
                           "usage": {"prompt_tokens": 100, "completion_tokens": 10, "cost": 0.02}}).encode()
         self.send_response(200); self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
@@ -83,6 +83,7 @@ class Gateway(Base):
         self.up = ThreadingHTTPServer(("127.0.0.1", 0), FakeUpstream)
         threading.Thread(target=self.up.serve_forever, daemon=True).start()
         gateway.UPSTREAM = f"http://127.0.0.1:{self.up.server_port}"
+        gateway.PROVIDERS["openrouter"] = gateway.UPSTREAM
         gateway.Handler.key = "REALKEY"
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
@@ -280,3 +281,36 @@ class Drift(Gateway):
         batches.stage_start(self.con, d, "judge")
         self.post(f"{d}:judge", body); self.post(f"{d}:judge", body)
         self.assertEqual(FakeUpstream.calls, 3)                   # drift asks the live model every time
+
+
+class Providers(Gateway):
+    def test_batch_token_uses_running_stage_and_deepseek_route(self):
+        b = self.open(["ocr", "judge:paid"], cap=1.0)
+        batches.stage_start(self.con, b, "ocr")
+        batches.mark(self.con, b, "ocr", [(c, "done", None) for c in ("101", "102", "103")])
+        batches.stage_end(self.con, b, "ocr")
+        batches.stage_start(self.con, b, "judge")
+        code, d = self.post(b, {"model": "m", "messages": [{"role": "user", "content": "x"}]})
+        self.assertEqual(code, 200)
+        self.assertEqual(self.con.execute("SELECT stage FROM spend").fetchone()[0], "judge")
+        self.gw.PROVIDERS["deepseek"] = self.gw.UPSTREAM                # fake upstream answers both
+        self.gw.KEYS["deepseek"] = "REALKEY"
+        req = urllib.request.Request(f"http://127.0.0.1:{self.srv.server_port}/p/deepseek/v1/chat/completions",
+                                     data=json.dumps({"model": "deepseek-chat", "messages": []}).encode(),
+                                     headers={"Authorization": f"Bearer {b}", "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            self.assertEqual(r.status, 200)
+        self.assertEqual(self.con.execute("SELECT provider FROM spend ORDER BY id DESC LIMIT 1").fetchone()[0], "deepseek")
+
+
+class SelfStaged(Runner):
+    def test_command_drives_stages(self):
+        b = self.open(["prepare", "work"])
+        R = str(REPO_ROOT / "bin" / "reins")
+        script = (f"{R} batch stage-start {b} prepare && {R} batch mark {b} prepare --file {self.tmp}/m.tsv && "
+                  f"{R} batch stage-end {b} prepare && {R} batch stage-start {b} work && "
+                  f"{R} batch mark {b} work --file {self.tmp}/m.tsv && {R} batch stage-end {b} work")
+        (self.tmp / "m.tsv").write_text("oachargeid\tstatus\treason\n101\tdone\t\n102\tdone\t\n103\tskipped\tno scans\n")
+        res = runner.start(self.con, b, runner.SELF, ["sh", "-c", script], self.tmp)
+        self.assertTrue(self.wait(lambda: batches.get(self.con, b)["status"] == "done"), Path(res["log"]).read_text())
+        self.assertTrue(self.con.execute("SELECT 1 FROM notification WHERE key=?", (f"done:{b}",)).fetchone())
