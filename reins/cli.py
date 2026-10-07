@@ -461,6 +461,9 @@ def _batch(con, args, cfg) -> int:
     elif args.sub == "stage-end":
         led = batches.stage_end(con, args.batch, args.stage)
         print(f"{args.stage} done: {led['done']} done, {led['skipped']} skipped, {led['failed']} failed")
+        if led.get("without_input"):
+            print(f"WARNING {len(led['without_input'])} cases done in {args.stage} were skipped or failed earlier "
+                  f"(first: {', '.join(led['without_input'][:5])})", file=sys.stderr)
     elif args.sub == "skip-stage":
         batches.skip_stage(con, args.batch, args.stage, args.why)
     elif args.sub in ("pause", "resume", "fail"):

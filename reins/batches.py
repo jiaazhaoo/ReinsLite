@@ -307,6 +307,11 @@ def stage_end(con, batch: str, stage: str) -> dict:
                              f"outcome (first: {', '.join(led['missing'][:10])}). Mark them done/skipped/failed.")
         con.execute("UPDATE batch_stage SET status='done', ended=? WHERE batch_id=? AND stage=?", (now(), batch, stage))
         _event(con, batch, "stage_end", f"{stage} done={led['done']} skipped={led['skipped']} failed={led['failed']}")
+        orphans = without_input(con, batch, stage)
+        led["without_input"] = orphans
+        if orphans:
+            _event(con, batch, "outcome_without_input",
+                   f"{stage}: {len(orphans)} cases done here were skipped or failed in an earlier stage (first: {orphans[:5]})")
         _maybe_done(con, batch)
     return led
 
@@ -317,6 +322,17 @@ def _maybe_done(con, batch: str) -> None:
     if left == 0:
         con.execute("UPDATE batch SET status='done' WHERE batch_id=?", (batch,))
         _event(con, batch, "done", "all stages finished")
+
+
+def without_input(con, batch: str, stage: str) -> list[str]:
+    """Cases with a `done` outcome in this stage whose outcome in some earlier stage was skipped or failed:
+    a result produced without the input it should rest on (batch2: 689 cases that never entered the pipeline got lanes)."""
+    ord_ = _stage(con, batch, stage)["ord"]
+    return [r[0] for r in con.execute(
+        "SELECT DISTINCT c.oachargeid FROM case_current c JOIN case_current e ON e.batch_id=c.batch_id AND e.oachargeid=c.oachargeid"
+        " JOIN batch_stage s ON s.batch_id=e.batch_id AND s.stage=e.stage"
+        " WHERE c.batch_id=? AND c.stage=? AND c.status='done' AND s.ord<? AND e.status IN ('skipped','failed') ORDER BY 1",
+        (batch, stage, ord_))]
 
 
 def skip_stage(con, batch: str, stage: str, why: str) -> None:

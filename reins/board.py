@@ -79,6 +79,10 @@ def state(con) -> dict:
             "SELECT reason, COUNT(*) FROM case_current WHERE batch_id=? AND status='skipped' GROUP BY reason ORDER BY 2 DESC",
             (b["batch_id"],))]
         aliases = json.loads(b["aliases"])
+        orphan_ev = con.execute("SELECT detail FROM batch_event WHERE batch_id=? AND event='outcome_without_input' ORDER BY id DESC LIMIT 1",
+                                (b["batch_id"],)).fetchone()
+        if orphan_ev:
+            needs.append(f"有结果但缺输入：{orphan_ev[0]}")
         running.append({"batch_id": b["batch_id"], "type": b["type"], "purpose": b["purpose"], "status": b["status"],
                         "title": aliases[0] if aliases else b["purpose"], "aliases": aliases,
                         "n_cases": b["n_cases"], "n_skipped": skipped_total, "skip_reasons": skip_reasons,

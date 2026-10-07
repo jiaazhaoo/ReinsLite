@@ -252,3 +252,17 @@ class About(Base):
         old = modules.describe(self.con, v, "plan road names first; geocode only breaks ties")
         self.assertEqual(old, "plan road names place the drawing first")
         self.assertTrue(self.con.execute("SELECT 1 FROM module_event WHERE version=? AND event='described'", (v,)).fetchone())
+
+
+class WithoutInput(Base):
+    def test_done_later_after_skipped_earlier_is_flagged(self):
+        # incident: batch2's 689 cases never entered the pipeline, yet got lanes (441 auto-passed)
+        b = self.open(specs=("prepare", "check"))
+        batches.stage_start(self.con, b, "prepare")
+        batches.mark(self.con, b, "prepare", [("101", "done", None), ("102", "skipped", "no scans"), ("103", "done", None)])
+        batches.stage_end(self.con, b, "prepare")
+        batches.stage_start(self.con, b, "check")
+        batches.mark(self.con, b, "check", [(c, "done", None) for c in ("101", "102", "103")])
+        led = batches.stage_end(self.con, b, "check")
+        self.assertEqual(led["without_input"], ["102"])
+        self.assertTrue(self.con.execute("SELECT 1 FROM batch_event WHERE event='outcome_without_input'").fetchone())
