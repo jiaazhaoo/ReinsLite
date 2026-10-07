@@ -242,6 +242,10 @@ def release(con, repo: Path, note: str = "") -> dict:
         wt = repo.parent / (f"{repo.name}-{name}" if name.startswith("rel-") else f"{repo.name}-rel-{name}")
         git(repo, "worktree", "add", "--detach", str(wt), name)
         subprocess.run(["chmod", "-R", "a-w", str(wt)], check=False)
+        probe = next((f for f in wt.rglob("*") if f.is_file()), None)
+        if probe is not None and os.access(probe, os.W_OK):
+            # /env is NTFS through fuseblk: chmod is accepted and ignored. The tree is protected by the hook alone.
+            note = (note + "; " if note else "") + "filesystem ignores chmod: release tree guarded by the reins hook only"
         versions = [r[0] for r in con.execute(
             "SELECT version FROM module_version v JOIN module m ON m.name=v.module WHERE m.project=? AND v.status='released'"
             " AND v.day || '-' || printf('%09d', v.seq) = (SELECT MAX(day || '-' || printf('%09d', seq)) FROM module_version x"

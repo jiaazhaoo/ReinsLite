@@ -27,7 +27,8 @@ HOME = Path(os.environ.get("REINS_HOME", "/data/reins"))
 FROZEN = [re.compile(p) for p in (r"^/data/benchmarks/", r"/[^/ ]+-rel-[^/ ]+/", r"^/data/reins/cache/",
                                   r"^/data/[^/]+/(text|spatial)/delivery/")]
 SWITCH = re.compile(r"git\b[^|;&]*\b(checkout|switch)\b")
-WRITE = re.compile(r"(>>?|\btee\b|\bcp\b|\bmv\b|\brm\b|\bchmod\b|\bmkdir\b|\btouch\b)\s+(-\w+\s+)*(\S+)")
+WRITE_PROGRAMS = {"tee", "cp", "mv", "rm", "chmod", "chown", "mkdir", "touch", "truncate", "ln", "rsync", "sed"}
+MODE_FIRST = {"chmod", "chown"}                 # first positional is a mode / owner, the targets follow
 
 
 def _registry_frozen() -> list[str]:
@@ -251,14 +252,38 @@ def check_bash(cmd: str) -> str | None:
         o = other_sessions_worktree(cwd)
         if o or frozen(cwd + "/"):
             return f"no branch switching inside {o or cwd}: it is a release/batch tree or another session's worktree"
-    for m in WRITE.finditer(cmd):
-        target = os.path.abspath(os.path.join(cwd, m.group(3).strip("'\"")))
+    for target in write_targets(cmd):
+        target = os.path.abspath(os.path.join(cwd, target))
         if frozen(target):
             return f"{target} is frozen (benchmark / release / delivery). Create a new version instead of changing it"
         o = other_sessions_worktree(target)
         if o:
             return f"{target} is inside {o}; start your own: reins dev start MODULE SUFFIX --about ..."
     return None
+
+
+def write_targets(cmd: str) -> list[str]:
+    """Paths a command writes: redirection targets and the file arguments of the writing programs (by argv)."""
+    from reins.sessions import segments
+    out = []
+    for m in re.finditer(r"(?<![<>&])>>?\s*(\S+)", cmd):          # > file, >> file (not 2>&1)
+        t = m.group(1).strip("'\"")
+        if t not in ("/dev/null", "&1", "&2") and not t.startswith("&"):
+            out.append(t)
+    for seg in segments(cmd):
+        a = seg["argv"]
+        prog = Path(a[0]).name
+        if prog not in WRITE_PROGRAMS:
+            continue
+        args = [x for x in a[1:] if not x.startswith("-")]
+        if prog in MODE_FIRST:
+            args = args[1:]
+        if prog == "sed" and "-i" not in a[1:]:
+            continue                                            # sed without -i only prints
+        if prog == "sed":
+            args = args[1:] if args and not Path(args[0]).exists() else args   # drop the script argument
+        out += args
+    return out
 
 
 def check_edit(path: str) -> str | None:
