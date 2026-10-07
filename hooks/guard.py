@@ -97,13 +97,13 @@ def merges_main(cmd: str) -> str | None:
             continue
         if Path(a[0]).name != "git":
             continue
+        from reins.sessions import git_verb
         rest, where = a[1:], cwd
         if "-C" in rest:
             i = rest.index("-C")
             where = (cwd / rest[i + 1]).resolve() if i + 1 < len(rest) else cwd
-            rest = rest[:i] + rest[i + 2:]
-        args = [x for x in rest if not x.startswith("-")]
-        if args and ((args[0] == "push" and "--dry-run" not in rest) or args[0] == "merge"):
+        verb = git_verb(rest)
+        if (verb == "push" and "--dry-run" not in rest) or verb == "merge":
             return str(where)                        # merging is done by reins dev finish in a managed repo
     return None
 

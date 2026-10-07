@@ -48,34 +48,69 @@ READ_PROGRAMS = {"ls", "cat", "head", "tail", "grep", "rg", "find", "wc", "du", 
                  "readlink", "realpath", "date", "test", "true", "sleep", "printf", "cd", "[", "column", "xargs"}
 
 
+def _unquoted_lines(cmd: str) -> list[str]:
+    """Split on newlines that are outside quotes (a newline inside a quoted commit message is text)."""
+    out, buf, q, esc = [], [], None, False
+    for ch in cmd:
+        if esc:
+            buf.append(ch); esc = False; continue
+        if ch == "\\" and q != "'":
+            buf.append(ch); esc = True; continue
+        if q:
+            if ch == q:
+                q = None
+            buf.append(ch); continue
+        if ch in ("'", '"'):
+            q = ch; buf.append(ch); continue
+        if ch == "\n":
+            out.append("".join(buf)); buf = []; continue
+        buf.append(ch)
+    out.append("".join(buf))
+    return out
+
+
 def segments(cmd: str) -> list[dict]:
-    """Each command segment: {"argv": [program, args...], "detached": bool} after env assignments and wrappers."""
+    """Each command segment: {"argv": [program, args...], "detached": bool} after env assignments and wrappers.
+    Operators are recognised only outside quotes; here-doc bodies are data, not commands."""
     import shlex
     cmd = re.split(r"<<-?\s*['\"]?\w+['\"]?", cmd, maxsplit=1)[0]
     out = []
-    # `&` separates (backgrounds) a command, but not inside a redirection: 2>&1, >&2, &>file
-    for raw, sep in re.findall(r"(.*?)(;|&&|\|\||(?<!>)\|(?!&)|\n|(?<![<>])&(?![&>])|$)", cmd):
-        if not raw.strip():
+    for line in _unquoted_lines(cmd):
+        if not line.strip():
             continue
+        lex = shlex.shlex(line, posix=True, punctuation_chars=";&|<>()")
+        lex.whitespace_split = True
         try:
-            toks = shlex.split(raw, comments=True)
+            toks = list(lex)
         except ValueError:
-            toks = raw.split()
-        detached = sep == "&"
-        while toks:
-            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]):
-                toks = toks[1:]
-            elif toks[0] in WRAPPERS or toks[0] in DETACHERS:
-                detached |= toks[0] in DETACHERS
-                toks = toks[1:]
-            elif toks[0] == "timeout":
-                toks = toks[1:]
-                while toks and re.match(r"^(-\S+|\d+(\.\d+)?[smhd]?)$", toks[0]):
-                    toks = toks[1:]
+            toks = line.split()
+        cur, detached = [], False
+        def flush(det):
+            nonlocal cur
+            t = cur
+            cur = []
+            while t:
+                if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t[0]):
+                    t = t[1:]
+                elif t[0] in WRAPPERS or t[0] in DETACHERS:
+                    det |= t[0] in DETACHERS
+                    t = t[1:]
+                elif t[0] == "timeout":
+                    t = t[1:]
+                    while t and re.match(r"^(-\S+|\d+(\.\d+)?[smhd]?)$", t[0]):
+                        t = t[1:]
+                else:
+                    break
+            if t:
+                out.append({"argv": t, "detached": det})
+        for tok in toks:
+            if tok in (";", "&&", "||", "|", "&"):
+                flush(tok == "&")
+            elif tok in ("(", ")"):
+                continue
             else:
-                break
-        if toks:
-            out.append({"argv": toks, "detached": detached})
+                cur.append(tok)
+        flush(False)
     return out
 
 
@@ -87,6 +122,23 @@ def runs_pipeline(argv: list[str]) -> bool:
             return argv[2] in RUN_MODULES
         return Path(argv[1]).name in RUN_PROGRAMS
     return False
+
+
+GIT_VALUE_OPTS = {"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+
+
+def git_verb(rest: list[str]) -> str:
+    """The git subcommand: skip options, and the values of options that take one (-c key=value, -C path)."""
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a in GIT_VALUE_OPTS:
+            i += 2
+        elif a.startswith("-"):
+            i += 1
+        else:
+            return a
+    return ""
 
 
 def _kind(argv: list[str]) -> str:
@@ -114,12 +166,7 @@ def _kind(argv: list[str]) -> str:
     if runs_pipeline(argv):
         return "experiment" if re.search(r"-probe-|/experiments?/|\btryrun\b", " ".join(argv)) else "run_start"
     if p == "git":
-        args = [a for a in rest if not a.startswith("-")]
-        # git -C PATH ...: the path is an argument of -C, not the verb
-        if "-C" in rest:
-            i = rest.index("-C")
-            args = [a for a in rest[:i] + rest[i + 2:] if not a.startswith("-")]
-        verb = args[0] if args else ""
+        verb = git_verb(rest)
         if verb == "merge":
             return "merge"
         if verb in ("commit", "checkout", "switch", "worktree", "rebase", "reset", "push", "branch", "tag"):
@@ -509,7 +556,8 @@ def unregistered_runs(con, hours: int = 12) -> list[dict]:
     for r in con.execute("SELECT e.at, e.kind, e.detail FROM session_event e JOIN session s ON s.id=e.session_id"
                          " WHERE e.kind IN ('run_start','experiment') AND e.batch_id IS NULL AND e.at>? AND s.status<>'ended'"
                          " AND e.detail NOT LIKE '%reins run%' ORDER BY e.id DESC LIMIT 10", (since,)):
-        cmd = (r["detail"] or "").strip().splitlines()[0][:140]
+        segs = [" ".join(sg["argv"]) for sg in segments(r["detail"] or "") if runs_pipeline(sg["argv"])]
+        cmd = (segs[0] if segs else (r["detail"] or "").strip().splitlines()[0])[:140]
         out.append({"at": r["at"], "kind": "实验" if r["kind"] == "experiment" else "运行", "what": cmd})
     return out
 
