@@ -53,6 +53,7 @@ class Enforce(unittest.TestCase):
         wt = self.code / "proj-wt-old"
         git(self.repo, "worktree", "add", "-q", "-b", "feat/old", str(wt), "main")
         self.assertIn("reins dev adopt", g.check_edit(str(wt / "georef" / "a.py")))       # made by a legacy tool
+        self.assertNotIn("main worktree", g.check_edit(str(wt / "georef" / "a.py")))     # a worktree is not the main repo
         dev.adopt(self.con, wt, "georef", "old", "roads before geocode in the old branch")
         self.assertIsNone(g.check_edit(str(wt / "georef" / "a.py")))                      # now this session's candidate
         os.environ["REINS_SESSION"] = "sess-B"

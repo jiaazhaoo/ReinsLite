@@ -53,7 +53,8 @@ def segments(cmd: str) -> list[dict]:
     import shlex
     cmd = re.split(r"<<-?\s*['\"]?\w+['\"]?", cmd, maxsplit=1)[0]
     out = []
-    for raw, sep in re.findall(r"(.*?)(;|&&|\|\||\||\n|&(?!&)|$)", cmd):
+    # `&` separates (backgrounds) a command, but not inside a redirection: 2>&1, >&2, &>file
+    for raw, sep in re.findall(r"(.*?)(;|&&|\|\||(?<!>)\|(?!&)|\n|(?<![<>])&(?![&>])|$)", cmd):
         if not raw.strip():
             continue
         try:

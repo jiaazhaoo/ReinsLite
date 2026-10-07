@@ -115,6 +115,8 @@ def projects() -> list[tuple[Path, dict]]:
         import tomllib
         _PROJECTS = []
         for f in Path(os.environ.get("REINS_CODE_ROOT", "/env/code")).glob("*/reins.toml"):
+            if not (f.parent / ".git").is_dir():                # a linked worktree is a checkout, not the project
+                continue
             try:
                 _PROJECTS.append((f.parent, tomllib.loads(f.read_text(encoding="utf-8"))))
             except Exception:                                               # noqa: BLE001
