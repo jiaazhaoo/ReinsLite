@@ -19,8 +19,8 @@ class Base(unittest.TestCase):
         os.environ["REINS_SESSION"] = "sess-A"
         (self.tmp / "config.toml").write_text(f'bench_root = "{self.tmp / "benchmarks"}"\n')
         self.con = connect(self.tmp)
-        modules.add(self.con, "judge", "e2e", "judges")
-        self.v = modules.new(self.con, "judge", "x", "t", self.tmp)
+        modules.add(self.con, "judge", "e2e", "model judges of a polygon")
+        self.v = modules.new(self.con, "judge", "x", "a test version that does t", self.tmp)
         self.cases = self.tmp / "cases.txt"
         self.ids = [str(100 + i) for i in range(20)]
         self.cases.write_text("\n".join(self.ids) + "\n")

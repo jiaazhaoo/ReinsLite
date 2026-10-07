@@ -16,8 +16,22 @@ def _git(cwd: Path, *args: str) -> str | None:
         return None
 
 
+GENERIC = ("adopted", "as on main", "update", "fix", "wip", "test", "changes", "misc", "tmp", "new version")
+
+
+def check_about(about: str, what: str = "version") -> str:
+    """A version's about is read on the board instead of the code: it must say what the thing does."""
+    a = about.strip()
+    low = a.lower()
+    if len(a) < 8 or any(low == g or low.startswith(g + " ") or low.startswith(g + ":") for g in GENERIC):
+        raise ReinsError(f"{what} --about {about!r} does not say what it does. Write one short phrase a person can read "
+                         f"on the board, e.g. 'plan road names place the drawing before the geocode is used'")
+    return a
+
+
 def add(con, name: str, project: str, about: str) -> None:
     names.check_token("module", name)
+    check_about(about, "module")
     with tx(con):
         if con.execute("SELECT 1 FROM module WHERE name=?", (name,)).fetchone():
             raise ReinsError(f"module {name!r} already exists (module names are global)")
@@ -32,6 +46,7 @@ def _event(con, version: str, event: str, detail: str | None = None) -> None:
 def new(con, module: str, suffix: str, about: str, cwd: Path, pins: dict | None = None,
         day: str | None = None) -> str:
     """Allocate <module>-<suffix>-<day>-<n>: n counts this module's versions that day, from 1."""
+    check_about(about)
     day = day or today()
     commit, branch, worktree = _git(cwd, "rev-parse", "HEAD"), _git(cwd, "branch", "--show-current"), \
         _git(cwd, "rev-parse", "--show-toplevel")
@@ -75,6 +90,26 @@ def retire(con, version: str, why: str) -> None:
             raise ReinsError(f"{version} is already retired")
         con.execute("UPDATE module_version SET status='retired' WHERE version=?", (version,))
         _event(con, version, "retired", why)
+
+
+def describe(con, version: str, about: str) -> str:
+    """Replace a version's one-line description. The old text stays in module_event."""
+    about = check_about(about)
+    with tx(con):
+        old = get(con, version)["about"]
+        con.execute("UPDATE module_version SET about=? WHERE version=?", (about, version))
+        _event(con, version, "described", f"was: {old}")
+    return old
+
+
+def describe_module(con, module: str, about: str) -> str:
+    about = check_about(about, "module")
+    with tx(con):
+        row = con.execute("SELECT about FROM module WHERE name=?", (module,)).fetchone()
+        if not row:
+            raise ReinsError(f"module {module!r} is not registered")
+        con.execute("UPDATE module SET about=? WHERE name=?", (about, module))
+    return row["about"]
 
 
 def note(con, version: str, event: str, detail: str) -> None:

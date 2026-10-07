@@ -103,6 +103,8 @@ def build_parser() -> argparse.ArgumentParser:
     x = m.add_parser("release"); x.add_argument("version"); x.add_argument("--gate", required=True)
     x = m.add_parser("retire"); x.add_argument("version"); x.add_argument("--why", required=True)
     x = m.add_parser("note"); x.add_argument("version"); x.add_argument("event"); x.add_argument("detail")
+    x = m.add_parser("describe", help="set the one-line description of a module or a module version")
+    x.add_argument("name", help="module name or module version"); x.add_argument("--about", required=True)
     x = m.add_parser("status"); x.add_argument("module")
     m.add_parser("list")
 
@@ -352,6 +354,12 @@ def _module(con, args, cfg) -> int:
         modules.retire(con, args.version, args.why); print(f"{args.version} retired")
     elif args.sub == "note":
         modules.note(con, args.version, args.event, args.detail)
+    elif args.sub == "describe":
+        if names.MODULE_VERSION.match(args.name):
+            old = modules.describe(con, args.name, args.about)
+        else:
+            old = modules.describe_module(con, args.name, args.about)
+        print(f"{args.name}: {args.about}\n  (was: {old})")
     elif args.sub == "status":
         st = modules.status(con, args.module)
         p = st["production"]
@@ -361,7 +369,7 @@ def _module(con, args, cfg) -> int:
     elif args.sub == "list":
         for r in con.execute("SELECT v.version, v.status, m.project, v.about FROM module_version v"
                              " JOIN module m ON m.name = v.module ORDER BY v.module, v.day, v.seq"):
-            print(f"{r['version']:<45} {r['status']:<10} {r['project']:<20} {r['about']}")
+            print(f"{r['version']:<34} {r['status']:<10} {r['about']}")
     return 0
 
 

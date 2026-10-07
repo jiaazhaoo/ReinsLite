@@ -63,14 +63,14 @@ class Names(unittest.TestCase):
 
 class Modules(Base):
     def test_same_day_numbering(self):
-        a = modules.new(self.con, "georef", "roadnames", "first", self.tmp, day="20261002")
-        b = modules.new(self.con, "georef", "roadfit", "second", self.tmp, day="20261002")
-        c = modules.new(self.con, "georef", "roadfit", "next day", self.tmp, day="20261003")
+        a = modules.new(self.con, "georef", "roadnames", "a test version that does first", self.tmp, day="20261002")
+        b = modules.new(self.con, "georef", "roadfit", "a test version that does second", self.tmp, day="20261002")
+        c = modules.new(self.con, "georef", "roadfit", "a test version that does next day", self.tmp, day="20261003")
         self.assertEqual((a, b, c), ("georef-roadnames-20261002-1", "georef-roadfit-20261002-2",
                                      "georef-roadfit-20261003-1"))
 
     def test_release_needs_gate_and_candidate(self):
-        v = modules.new(self.con, "georef", "x", "t", self.tmp)
+        v = modules.new(self.con, "georef", "x", "a test version that does t", self.tmp)
         with self.assertRaises(ReinsError):
             modules.release(self.con, v, "  ")
         modules.release(self.con, v, "judges tier green on bench-sheffield-wp3-359-v6")
@@ -80,7 +80,7 @@ class Modules(Base):
 
     def test_unregistered_module(self):
         with self.assertRaises(ReinsError):
-            modules.new(self.con, "judge", "x", "t", self.tmp)
+            modules.new(self.con, "judge", "x", "a test version that does t", self.tmp)
 
 
 class Batches(Base):
@@ -91,7 +91,7 @@ class Batches(Base):
             self.open(ids=("101", "101"))
 
     def test_production_runs_released_versions_from_a_release(self):
-        v = modules.new(self.con, "georef", "x", "t", self.tmp)
+        v = modules.new(self.con, "georef", "x", "a test version that does t", self.tmp)
         with self.assertRaises(ReinsError):                      # candidate
             self.open(type_="production", specs=[f"georef={v}"])
         modules.release(self.con, v, "gate green")
@@ -142,8 +142,8 @@ class Batches(Base):
 
     def test_mixed_version_flagged(self):
         # incident: batch2 started on one commit, switched release at step 8 and again at step 10
-        v1 = modules.new(self.con, "georef", "a", "t", self.tmp)
-        v2 = modules.new(self.con, "georef", "b", "t", self.tmp)
+        v1 = modules.new(self.con, "georef", "a", "a test version that does t", self.tmp)
+        v2 = modules.new(self.con, "georef", "b", "a test version that does t", self.tmp)
         b = self.open(specs=[f"georef={v1}"])
         warns = batches.stage_start(self.con, b, "georef", module_version=v2)
         self.assertTrue(warns and "MIXED" in warns[0])
@@ -241,3 +241,14 @@ class Store(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class About(Base):
+    def test_version_must_say_what_it_does(self):
+        for bad in ("adopted", "as on main 555b44d", "fix", "wip: stuff", "short"):
+            with self.assertRaises(ReinsError, msg=bad):
+                modules.new(self.con, "georef", "x", bad, self.tmp)
+        v = modules.new(self.con, "georef", "x", "plan road names place the drawing first", self.tmp)
+        old = modules.describe(self.con, v, "plan road names first; geocode only breaks ties")
+        self.assertEqual(old, "plan road names place the drawing first")
+        self.assertTrue(self.con.execute("SELECT 1 FROM module_event WHERE version=? AND event='described'", (v,)).fetchone())

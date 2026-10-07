@@ -25,7 +25,7 @@ class Base(unittest.TestCase):
         os.environ["REINS_SESSION"] = "sess-A"
         os.environ["PYTHONPATH"] = str(REPO_ROOT)
         self.con = connect(self.tmp)
-        modules.add(self.con, "judge", "e2e-plan-extract", "judges")
+        modules.add(self.con, "judge", "e2e-plan-extract", "model judges of a polygon")
         self.cases = self.tmp / "cases.txt"
         self.cases.write_text("101\n102\n103\n")
 
@@ -202,12 +202,12 @@ class Dev(Base):
 
     def test_start_finish_release(self):
         b = self.open(["judge"], type_="experiment")
-        r = dev.start(self.con, self.repo, "judge", "veto", "gemini veto", from_batch=b, cases=["101", "102"])
+        r = dev.start(self.con, self.repo, "judge", "veto", "gemini doubt is never overruled", from_batch=b, cases=["101", "102"])
         wt = Path(r["worktree"])
         self.assertTrue(wt.is_dir() and r["version"].startswith("judge-veto-"))
         self.assertEqual(json.loads(modules.get(self.con, r["version"])["pins"])["pilot_cases"], ["101", "102"])
         with self.assertRaises(ReinsError):                        # pilot cases must belong to the batch
-            dev.start(self.con, self.repo, "judge", "x", "t", from_batch=b, cases=["999"])
+            dev.start(self.con, self.repo, "judge", "x", "a test version that does x", from_batch=b, cases=["999"])
         (wt / "judge" / "a.py").write_text("x = 2\n")
         subprocess.run(["git", "-C", str(wt), "commit", "-qam", "change"], check=True)
         # red gate: not merged
@@ -227,7 +227,7 @@ class Dev(Base):
         self.assertFalse(os.access(Path(rel["worktree"]) / "judge" / "a.py", os.W_OK))
 
     def test_other_sessions_worktree_is_refused(self):
-        r = dev.start(self.con, self.repo, "judge", "a", "t")
+        r = dev.start(self.con, self.repo, "judge", "a", "a test version that does a")
         os.environ["REINS_SESSION"] = "sess-B"
         with self.assertRaises(ReinsError):
             dev.finish(self.con, r["version"])
@@ -235,7 +235,7 @@ class Dev(Base):
 
 class Small(Base):
     def test_gate_record(self):
-        v = modules.new(self.con, "judge", "x", "t", self.tmp)
+        v = modules.new(self.con, "judge", "x", "a test version that does t", self.tmp)
         g = gate.record(self.con, v, benchmark="bench-t-v1", tiers="judges", stages_covered="judges", missed_error=1,
                         review_load=50, base_missed_error=0, base_review_load=96)
         self.assertEqual(g["status"], "red")                        # fewer reviews never excuses one more missed error

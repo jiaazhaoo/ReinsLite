@@ -71,11 +71,16 @@ def state(con) -> dict:
     recent = [dict(r) for r in con.execute("SELECT batch_id, type, status, purpose, closed FROM batch"
                                            " WHERE status IN ('closed','done','failed') ORDER BY created DESC LIMIT 15")]
     production = [dict(r) for r in con.execute(
-        "SELECT module, version, created FROM module_version v WHERE status='released' AND day || '-' || printf('%09d', seq) ="
+        "SELECT v.module, m.about AS module_about, v.version, v.about, v.created FROM module_version v"
+        " JOIN module m ON m.name=v.module WHERE v.status='released' AND v.day || '-' || printf('%09d', v.seq) ="
         " (SELECT MAX(day || '-' || printf('%09d', seq)) FROM module_version x WHERE x.module=v.module AND x.status='released')"
-        " ORDER BY module")]
+        " ORDER BY v.module")]
+    retired = [dict(r) for r in con.execute(
+        "SELECT v.module, v.version, v.status, v.about, (SELECT detail FROM module_event e WHERE e.version=v.version"
+        " AND e.event IN ('retired','abandoned') ORDER BY id DESC LIMIT 1) AS why FROM module_version v"
+        " WHERE v.status IN ('retired','abandoned') ORDER BY v.created DESC LIMIT 10")]
     return {"at": dt.datetime.now().isoformat(timespec="seconds"), "running": running, "developing": developing,
-            "notifications": notify.pending(con, 12), "recent": recent, "production": production,
+            "notifications": notify.pending(con, 12), "recent": recent, "production": production, "retired": retired,
             "spend_weekly": spend.weekly(con)}
 
 
@@ -97,7 +102,7 @@ h1{font-size:18px;margin:0 0 12px}h2{font-size:15px;margin:20px 0 8px;color:var(
 <h1>Reins <span class="mute" id="at"></span></h1>
 <div class="tabs"><button class="on" onclick="tab('now')">运行中 · 开发中</button><button onclick="tab('else')">历史 · 版本 · 花费</button></div>
 <div id="now"><div id="notifs"></div><h2>运行中 Running</h2><div id="running"></div><h2>开发中 Developing</h2><div id="developing"></div></div>
-<div id="else" style="display:none"><h2>生产版本 Production</h2><div id="production"></div><h2>最近关闭 Recent</h2><div id="recent"></div><h2>每周花费 Spend</h2><div id="spend"></div></div>
+<div id="else" style="display:none"><h2>生产版本 Production</h2><div id="production"></div><div id="retired"></div><h2>最近关闭 Recent</h2><div id="recent"></div><h2>每周花费 Spend</h2><div id="spend"></div></div>
 <script>
 function tab(t){for(const x of ['now','else']){document.getElementById(x).style.display=x===t?'':'none'}
  document.querySelectorAll('.tabs button').forEach((b,i)=>b.classList.toggle('on',(i===0)===(t==='now')))}
@@ -116,7 +121,8 @@ async function load(){const s=await (await fetch('/api/state')).json();document.
   <div>${esc(d.about)}</div>
   <div class="row"><span><span class="k">gate</span> ${esc(d.gate)}</span><span><span class="k">branch</span> ${esc(d.branch||'-')}</span><span><span class="k">session</span> ${esc((d.session||'-').slice(0,8))}</span>
   ${d.from_batch?`<span><span class="k">from</span> ${esc(d.from_batch)} (${d.pilot_cases} pilot cases)</span>`:''}<span><span class="k">spend</span> $${d.spent}</span><span><span class="k">idle</span> ${d.idle_h} h</span></div></div>`).join(''):'<div class="mute">nothing in development</div>';
- document.getElementById('production').innerHTML='<table>'+s.production.map(p=>`<tr><td>${esc(p.module)}</td><td class="id">${esc(p.version)}</td><td class="mute">${esc(p.created)}</td></tr>`).join('')+'</table>';
+ document.getElementById('production').innerHTML='<table><tr><th>模块</th><th>模块做什么</th><th>当前版本</th><th>这个版本的功能</th><th>登记</th></tr>'+s.production.map(p=>`<tr><td><b>${esc(p.module)}</b></td><td>${esc(p.module_about)}</td><td class="id">${esc(p.version)}</td><td>${esc(p.about)}</td><td class="mute">${esc(p.created.slice(0,10))}</td></tr>`).join('')+'</table>';
+ document.getElementById('retired').innerHTML=s.retired.length?'<h2>已退役 Retired</h2><table>'+s.retired.map(p=>`<tr><td>${esc(p.module)}</td><td class="id">${esc(p.version)}</td><td>${esc(p.status)}</td><td class="mute">${esc(p.why||'')}</td></tr>`).join('')+'</table>':'';
  document.getElementById('recent').innerHTML='<table>'+s.recent.map(r=>`<tr><td class="id">${esc(r.batch_id)}</td><td>${esc(r.status)}</td><td class="mute">${esc(r.purpose)}</td></tr>`).join('')+'</table>';
  document.getElementById('spend').innerHTML='<table><tr><th>week</th><th>project</th><th>USD</th><th>calls</th><th>cache hits</th></tr>'+s.spend_weekly.map(w=>`<tr><td>${esc(w.week)}</td><td>${esc(w.project)}</td><td>${(w.usd||0).toFixed(2)}</td><td>${w.calls}</td><td>${w.hits}</td></tr>`).join('')+'</table>';}
 load();setInterval(load,30000);
