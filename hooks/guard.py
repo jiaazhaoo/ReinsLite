@@ -67,11 +67,10 @@ def other_sessions_worktree(path: str) -> str | None:
 GIT_C = re.compile(r"git\s+-C\s+(\S+)")
 
 
-def managed_repo(cmd: str) -> bool:
-    """True when the git command acts on a repo managed by reins (its main repo has reins.toml). Other repos,
+def managed_repo(where: str) -> bool:
+    """True when the directory belongs to a repo managed by reins (its main repo has reins.toml). Other repos,
     ReinsLite itself included, keep their own rules."""
-    m = GIT_C.search(cmd)
-    p = Path(m.group(1).strip("'\"")) if m else Path(os.getcwd())
+    p = Path(where)
     for d in (p, *p.parents):
         g = d / ".git"
         if g.is_dir():
@@ -86,23 +85,27 @@ def managed_repo(cmd: str) -> bool:
     return False
 
 
-def merges_main(cmd: str) -> bool:
-    """A git segment that merges into or pushes main (by the program run, not by words in the command)."""
+def merges_main(cmd: str) -> str | None:
+    """The directory a git segment merges or pushes in (following `cd` and `git -C`), or None.
+    Decided by the programs run, not by words in the command."""
     from reins.sessions import segments
+    cwd = Path(os.getcwd())
     for seg in segments(cmd):
         a = seg["argv"]
+        if a[0] == "cd" and len(a) > 1:
+            cwd = (cwd / os.path.expanduser(a[1])).resolve()
+            continue
         if Path(a[0]).name != "git":
             continue
-        rest = a[1:]
+        rest, where = a[1:], cwd
         if "-C" in rest:
             i = rest.index("-C")
+            where = (cwd / rest[i + 1]).resolve() if i + 1 < len(rest) else cwd
             rest = rest[:i] + rest[i + 2:]
         args = [x for x in rest if not x.startswith("-")]
-        if args and args[0] == "push" and "--dry-run" not in rest:
-            return True
-        if args and args[0] == "merge":
-            return True                              # merging is done by reins dev finish in a managed repo
-    return False
+        if args and ((args[0] == "push" and "--dry-run" not in rest) or args[0] == "merge"):
+            return str(where)                        # merging is done by reins dev finish in a managed repo
+    return None
 
 
 _PROJECTS: list[tuple[Path, dict]] | None = None
@@ -240,7 +243,8 @@ def check_bash(cmd: str) -> str | None:
     if detached_pipeline(cmd):
         return "pipeline commands are not started detached by hand. Use: reins run BATCH STAGE -- CMD... " \
                "(supervised, pgid-controlled, survives this session)"
-    if merges_main(cmd) and managed_repo(cmd):
+    where = merges_main(cmd)
+    if where and managed_repo(where):
         return "merging into or pushing main is done by `reins dev finish VERSION` after the gate, never by hand"
     cwd = os.getcwd()
     if SWITCH.search(cmd):
