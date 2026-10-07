@@ -59,8 +59,47 @@ def _ensure_module(con, cfg: dict, module: str) -> None:
     modules.add(con, module, cfg["project"], m.get("about", module))
 
 
+def overlaps(con, repo: Path, version: str | None, files: list[str]) -> list[str]:
+    """Other live candidates whose files overlap these globs."""
+    tracked = git(repo, "ls-files").splitlines()
+    mine = {f for g in files for f in tracked if fnmatch.fnmatch(f, g)}
+    out = []
+    for other in con.execute("SELECT version, pins FROM module_version WHERE status='candidate' AND version IS NOT ?", (version,)):
+        theirs = {f for g in json.loads(other["pins"]).get("files", []) for f in tracked if fnmatch.fnmatch(f, g)}
+        ov = sorted(mine & theirs)
+        if ov:
+            out.append(f"{other['version']} also changes {ov[:5]}")
+    return out
+
+
+def adopt(con, worktree: Path, module: str, suffix: str, about: str, files: list[str] | None = None,
+          overlap_ok: str | None = None) -> dict:
+    """An existing worktree (made before reins, e.g. by a project's own dev tool) becomes a candidate version held by
+    this session, so its edits are allowed and its merge goes through reins dev finish."""
+    w = Path(git(worktree, "rev-parse", "--show-toplevel"))
+    repo = Path(git(w, "rev-parse", "--git-common-dir")).resolve().parent
+    if w == repo:
+        raise ReinsError("the main worktree is never a candidate: reins dev start makes a branch worktree")
+    cfg = project_cfg(repo)
+    _ensure_module(con, cfg, module)
+    if con.execute("SELECT version FROM module_version WHERE worktree=? AND status='candidate'", (str(w),)).fetchone():
+        raise ReinsError(f"{w} is already a registered candidate")
+    files = files or cfg.get("modules", {}).get(module, {}).get("files", [])
+    ov = overlaps(con, repo, None, files)
+    if ov and not overlap_ok:
+        raise ReinsError("overlaps other work: " + "; ".join(ov) + ". Agree an order, or pass --overlap-ok 'why' (recorded)")
+    version = modules.new(con, module, suffix, about, w, {"files": files, "adopted_worktree": str(w),
+                                                          "overlap_ok": overlap_ok})
+    with tx(con):
+        con.execute("UPDATE module_version SET worktree=?, branch=? WHERE version=?",
+                    (str(w), git(w, "branch", "--show-current"), version))
+    leases.acquire(con, f"worktree:{w}", f"develop {version}")
+    modules.note(con, version, "adopted", f"{w}" + (f"; overlap accepted: {overlap_ok}" if overlap_ok else ""))
+    return {"version": version, "worktree": str(w)}
+
+
 def start(con, repo: Path, module: str, suffix: str, about: str, from_batch: str | None = None,
-          cases: list[str] | None = None, files: list[str] | None = None) -> dict:
+          cases: list[str] | None = None, files: list[str] | None = None, overlap_ok: str | None = None) -> dict:
     cfg = project_cfg(repo)
     _ensure_module(con, cfg, module)
     files = files or cfg.get("modules", {}).get(module, {}).get("files", [])
@@ -73,7 +112,11 @@ def start(con, repo: Path, module: str, suffix: str, about: str, from_batch: str
             raise ReinsError(f"cases not in {from_batch}: {', '.join(bad)}")
         if not cases:
             raise ReinsError("--from-batch needs --cases: the failing cases are this version's pilot set")
-    pins = {"files": files, "from_batch": from_batch, "pilot_cases": cases or [], "forked_from_session": session()}
+    ov = overlaps(con, repo, None, files)
+    if ov and not overlap_ok:
+        raise ReinsError("overlaps other work: " + "; ".join(ov) + ". Agree an order, or pass --overlap-ok 'why' (recorded)")
+    pins = {"files": files, "from_batch": from_batch, "pilot_cases": cases or [], "forked_from_session": session(),
+            "overlap_ok": overlap_ok}
     version = modules.new(con, module, suffix, about, repo, pins)
     wt = repo.parent / f"{repo.name}-wt-{version}"
     branch = f"feat/{version}"
@@ -112,6 +155,17 @@ def finish(con, version: str, skip_tier: str | None = None, why: str | None = No
     if r.returncode:
         raise ReinsError(f"merging main into {row['branch']} conflicts; resolve in {wt}, commit, finish again")
     gate_cmd = cfg.get("dev", {}).get("gate")
+    up = cfg.get("dev", {}).get("upstream") or {}
+    base = git(repo, "merge-base", "main", row["branch"])
+    changed = git(repo, "diff", "--name-only", base, row["branch"]).splitlines()
+    up_hit = [f for f in changed if any(fnmatch.fnmatch(f, g) for g in up.get("files", []))]
+    if up_hit and up.get("gate"):
+        if skip_tier == "upstream":
+            if not why:
+                raise ReinsError("--skip-tier upstream needs --why (recorded)")
+        else:
+            gate_cmd = up["gate"]                         # upstream changes need the upstream gate
+    modules.note(con, version, "finish", f"changed {len(changed)} files; upstream {up_hit[:6] or 'none'}; gate {gate_cmd}")
     evidence = ""
     if gate_cmd:
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, prefix="reins-gate-") as tf:
@@ -170,10 +224,14 @@ def release(con, repo: Path, note: str = "") -> dict:
     project = cfg["project"]
     day = today()
     with tx(con):
-        n = con.execute("SELECT COUNT(*) FROM release WHERE project=? AND name LIKE ?", (project, f"rel-{project}-{day}-%")).fetchone()[0] + 1
-        name = f"rel-{project}-{day}-{n}"
+        prefix = cfg.get("dev", {}).get("release_prefix") or f"rel-{project}"
+        taken = set(git(repo, "tag", "-l", f"{prefix}-{day}-*").split())
+        n = 1
+        while f"{prefix}-{day}-{n}" in taken:
+            n += 1
+        name = f"{prefix}-{day}-{n}"
         git(repo, *IDENT, "tag", "-a", name, "-m", note or name, "main")
-        wt = repo.parent / f"{repo.name}-{name}"
+        wt = repo.parent / (f"{repo.name}-{name}" if name.startswith("rel-") else f"{repo.name}-rel-{name}")
         git(repo, "worktree", "add", "--detach", str(wt), name)
         subprocess.run(["chmod", "-R", "a-w", str(wt)], check=False)
         versions = [r[0] for r in con.execute(

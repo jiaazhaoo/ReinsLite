@@ -38,6 +38,12 @@ def check_batches(con, cfg) -> list[str]:
     out = []
     for b in con.execute("SELECT * FROM batch WHERE status='running'"):
         bid = b["batch_id"]
+        if b["time_budget_h"]:
+            used = batches.elapsed_h(con, bid)
+            if used and used > b["time_budget_h"]:
+                notify.send(con, f"overtime:{bid}", "warn", f"{bid}: {used:.1f} h used of a {b['time_budget_h']:g} h budget",
+                            "decide: let it finish, or reins ctl stop", cooldown_min=120)
+                out.append(f"{bid}: over its time budget")
         for p in runner.live_processes(con, bid):
             if p["state"] == "running" and not runner._alive(p["pgid"]):
                 sup_alive = runner._alive(p["supervisor_pid"])

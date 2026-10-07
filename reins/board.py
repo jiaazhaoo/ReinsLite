@@ -104,6 +104,7 @@ def state(con) -> dict:
                         "n_cases": b["n_cases"], "n_skipped": skipped_total, "skip_reasons": skip_reasons,
                         "stage_started": cur["started"] if cur else None, "stage_age": _age(cur["started"]) if cur else "-",
                         "status_reason": b["status_reason"], "probe": probe(b),
+                        "time_used_h": round(batches.elapsed_h(con, b["batch_id"]) or 0, 1), "time_budget_h": b["time_budget_h"],
                         "stage": cur["stage"] if cur else "-", "stage_ord": f"{cur['ord'] + 1}/{len(st['stages'])}" if cur else "-",
                         "progress": "adopted · ledger not wired" if adopted else f"{acc}/{b['n_cases']}",
                         "pct": round(100 * acc / max(1, b["n_cases"])),
@@ -177,7 +178,7 @@ async function load(){const s=await (await fetch('/api/state')).json();document.
   ${r.status_reason?`<div class="needs">⏸ ${esc(r.status_reason)}</div>`:''}${r.needs.filter(n=>!n.startsWith('paused')).map(n=>`<div class="needs">⚠ ${esc(n)}</div>`).join('')}
   ${r.progress.startsWith('adopted')?'':`<div class="bar"><i style="width:${r.pct}%"></i></div><div><span class="k">进度</span> ${esc(r.progress)} · <span class="k">ETA</span> ${esc(r.eta)}</div>`}
   ${r.probe.length?`<pre class="probe">${esc(r.probe.join('\\n'))}</pre>`:''}
-  <div class="row mute small"><span class="id">${esc(r.batch_id)}</span><span>release ${esc(r.release||'-')}</span><span>spend $${r.spent} / $${r.cap}</span>${r.aliases.length>1?`<span>also: ${esc(r.aliases.slice(1).join(', '))}</span>`:''}</div></div>`).join(''):'<div class="mute">nothing running</div>';
+  <div class="row mute small"><span class="id">${esc(r.batch_id)}</span><span>release ${esc(r.release||'-')}</span><span>spend $${r.spent} / $${r.cap}</span><span>时间 ${r.time_used_h} h${r.time_budget_h?' / '+r.time_budget_h+' h':''}</span>${r.aliases.length>1?`<span>also: ${esc(r.aliases.slice(1).join(', '))}</span>`:''}</div></div>`).join(''):'<div class="mute">nothing running</div>';
  document.getElementById('running').innerHTML+=s.unregistered_runs.map(u=>`<div class="card yellow"><div class="big">${esc(u.kind)}（未登记） <span class="pill">${esc(u.at.slice(11,16))}</span></div><div class="mute">${esc(u.what)}</div><div class="needs">⚠ 没有经过 reins 启动：看不到进度、花费和 case 账本</div></div>`).join('');
  document.getElementById('developing').innerHTML=s.developing.length?s.developing.map(d=>`<div class="card ${d.conflicts.length?'red':(d.registered?'green':'yellow')}">
   <div class="big">${esc(d.module)} <span class="pill">${d.registered?esc(d.version):'未登记版本'}</span>${d.stalled?' <span class="needs">停滞 '+d.idle_h+' 小时</span>':''}</div>

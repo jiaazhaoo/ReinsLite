@@ -150,6 +150,24 @@ def adopt(con, *, project: str, council: str, wp: str, type_: str, purpose: str,
     return bid
 
 
+def set_time_budget(con, batch: str, hours: float) -> None:
+    """Wall-clock budget for the whole batch; the watchdog reports when the batch runs past it."""
+    if hours <= 0:
+        raise ReinsError("time budget must be > 0 hours")
+    with tx(con):
+        get(con, batch)
+        con.execute("UPDATE batch SET time_budget_h=? WHERE batch_id=?", (hours, batch))
+        _event(con, batch, "time_budget", f"{hours:g} h")
+
+
+def elapsed_h(con, batch: str) -> float | None:
+    first = con.execute("SELECT MIN(started) FROM batch_stage WHERE batch_id=? AND started IS NOT NULL", (batch,)).fetchone()[0]
+    if not first:
+        return None
+    import datetime as _dt
+    return (_dt.datetime.now() - _dt.datetime.fromisoformat(first)).total_seconds() / 3600
+
+
 def set_probe(con, batch: str, cmd: str) -> None:
     """A project command that prints this batch's progress in plain lines; the board shows its output.
     Used where the per-case ledger is not wired yet. {work_dir} is substituted."""

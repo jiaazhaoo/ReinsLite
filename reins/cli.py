@@ -113,6 +113,10 @@ def build_parser() -> argparse.ArgumentParser:
     x = d.add_parser("start"); x.add_argument("module"); x.add_argument("suffix"); x.add_argument("--about", required=True)
     x.add_argument("--from-batch"); x.add_argument("--cases", help="comma-separated oachargeids: the pilot set")
     x.add_argument("--files", help="space-separated globs this version touches"); x.add_argument("--repo")
+    x.add_argument("--overlap-ok", help="why overlapping another candidate's files is fine (recorded)")
+    x = d.add_parser("adopt", help="register an existing worktree as this session's candidate version")
+    x.add_argument("worktree", type=Path); x.add_argument("module"); x.add_argument("suffix"); x.add_argument("--about", required=True)
+    x.add_argument("--files"); x.add_argument("--overlap-ok")
     x = d.add_parser("finish"); x.add_argument("version"); x.add_argument("--skip-tier"); x.add_argument("--why")
     x = d.add_parser("abandon"); x.add_argument("version"); x.add_argument("--why", required=True)
     x = d.add_parser("release"); x.add_argument("--note", default=""); x.add_argument("--repo")
@@ -132,6 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--project"); x.add_argument("--work-dir"); x.add_argument("--cap", type=float, default=0.0)
     x.add_argument("--ruleset"); x.add_argument("--env"); x.add_argument("--config", action="append", type=Path)
     x.add_argument("--input", action="append", type=Path, help="mapping tables and other inputs to hash into provenance")
+    x.add_argument("--time-budget", type=float, help="hours for the whole batch; the watchdog reports overruns")
     x = b.add_parser("adopt", help="bring a batch that already exists on disk under reins")
     for a in ("--council", "--wp", "--purpose", "--cases", "--work-dir"):
         x.add_argument(a, required=True)
@@ -418,7 +423,8 @@ def _dev(con, args, cfg, cwd) -> int:
     repo = Path(getattr(args, "repo", None) or cfg.get("dev", {}).get("repo") or (project_root(cwd) or cwd))
     if args.sub == "start":
         r = dev.start(con, repo, args.module, args.suffix, args.about, args.from_batch,
-                      [c for c in (args.cases or "").split(",") if c], args.files.split() if args.files else None)
+                      [c for c in (args.cases or "").split(",") if c], args.files.split() if args.files else None,
+                      args.overlap_ok)
         for w in r["warnings"]:
             print(f"WARNING {w}", file=sys.stderr)
         print(f"{r['version']}\n  cd {r['worktree']}      # branch {r['branch']}")
@@ -429,6 +435,10 @@ def _dev(con, args, cfg, cwd) -> int:
         print(f"{r['version']} released; main {r['main']}\n  {r['evidence']}")
     elif args.sub == "abandon":
         dev.abandon(con, args.version, args.why); print("abandoned")
+    elif args.sub == "adopt":
+        r = dev.adopt(con, args.worktree, args.module, args.suffix, args.about,
+                      args.files.split() if args.files else None, args.overlap_ok)
+        print(f"{r['version']} -> {r['worktree']} (held by this session)")
     elif args.sub == "adopt-release":
         r = dev.adopt_release(con, repo, args.tag, args.note); print(f"{r['name']} ({r['commit']}) -> {r['worktree']}")
     elif args.sub == "release":
@@ -471,6 +481,8 @@ def _batch(con, args, cfg) -> int:
         probe = cfg.get("run", {}).get("probe")
         if probe:
             batches.set_probe(con, bid, probe)
+        if args.time_budget:
+            batches.set_time_budget(con, bid, args.time_budget)
         print(bid)
     elif args.sub == "adopt":
         st = []

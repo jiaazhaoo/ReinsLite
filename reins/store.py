@@ -438,7 +438,7 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     return con
 
 
-MIGRATIONS = [("batch", "probe_cmd", "TEXT")]
+MIGRATIONS = [("batch", "probe_cmd", "TEXT"), ("batch", "time_budget_h", "REAL")]
 
 
 def _migrate(con: sqlite3.Connection) -> None:
