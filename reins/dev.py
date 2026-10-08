@@ -215,7 +215,8 @@ def finish(con, version: str, skip_tier: str | None = None, why: str | None = No
     mine = (cfg.get("modules", {}).get(row["module"], {}))
     pinned = [arts[f"prompt:{p}"] for p in mine.get("prompts", []) if f"prompt:{p}" in arts] + \
              [arts[f"model:{m}"] for m in mine.get("models", []) if f"model:{m}" in arts] + \
-             [arts[f"weights:{w}"] for w in mine.get("weights", []) if f"weights:{w}" in arts]
+             [arts[f"weights:{w}"] for w in mine.get("weights", []) if f"weights:{w}" in arts] + \
+             [arts[f"tool:{t}"] for t in mine.get("tools", []) if f"tool:{t}" in arts]
     modules.release(con, version, evidence)
     with tx(con):
         pins = json.loads(con.execute("SELECT pins FROM module_version WHERE version=?", (version,)).fetchone()[0])
@@ -227,6 +228,19 @@ def finish(con, version: str, skip_tier: str | None = None, why: str | None = No
         if artifacts.get(con, name)["status"] == "candidate":
             artifacts.set_status(con, name, "active", f"released with {version}")
     evidence += ("; artifacts " + ", ".join(pinned)) if pinned else ""
+    for m, spec in (project_cfg(repo).get("modules") or {}).items():   # the module line on the board follows reins.toml
+        cur = con.execute("SELECT about FROM module WHERE name=?", (m,)).fetchone()
+        if cur and spec.get("about") and spec["about"] != cur["about"]:
+            try:
+                modules.describe_module(con, m, spec["about"])
+            except ReinsError:
+                pass
+    for wf in (project_cfg(repo).get("workflows") or {}):          # the workflow follows production: new version if anything moved
+        try:
+            fr = artifacts.freeze_workflow(con, repo, project_cfg(repo), wf)
+            evidence += f"; {fr['name']}" + (" (new)" if fr["new"] else "")
+        except ReinsError as e:
+            evidence += f"; workflow {wf} not refrozen: {e}"
     from . import issues
     issues.fixed(con, version)
     git(repo, "worktree", "remove", "--force", str(wt), check=False)

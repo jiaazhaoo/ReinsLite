@@ -69,6 +69,10 @@ def project_checks(b, root: Path | None) -> list[tuple[str, bool, str]]:
         from . import artifacts
         from .store import connect
         out += artifacts.check_weights(connect(), cfg)
+    if cfg.get("tools"):
+        from . import artifacts
+        from .store import connect
+        out += artifacts.check_tools(connect(), root, cfg)
     env = {**os.environ, "REINS_BATCH": b["batch_id"], "REINS_CASES": b["case_set_path"], "REINS_WORK_DIR": b["work_dir"] or ""}
     for c in cfg.get("preflight", []):
         r = subprocess.run(c["cmd"], shell=True, cwd=str(root), env=env, capture_output=True, text=True, timeout=600)

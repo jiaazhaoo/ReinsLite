@@ -31,8 +31,8 @@ from pathlib import Path
 
 from .store import ReinsError, now, session, tx
 
-KINDS = ("prompt", "model", "workflow", "weights")
-NAME = re.compile(r"^(prompt|model|workflow|weights)-([a-z][a-z0-9_]*)-v(\d+)$")
+KINDS = ("prompt", "model", "workflow", "weights", "tool")
+NAME = re.compile(r"^(prompt|model|workflow|weights|tool)-([a-z][a-z0-9_]*)-v(\d+)$")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS artifact (
@@ -80,7 +80,7 @@ def ensure(con) -> None:
 def parse(name: str) -> tuple[str, str, int]:
     m = NAME.match(name)
     if not m:
-        raise ReinsError(f"{name!r} is not <prompt|model|workflow>-<name>-vN")
+        raise ReinsError(f"{name!r} is not <prompt|model|workflow|weights|tool>-<name>-vN")
     return m.group(1), m.group(2), int(m.group(3))
 
 
@@ -148,7 +148,9 @@ def read_symbol(path: Path, symbol: str) -> str:
             if isinstance(v, str):
                 return v
             if isinstance(v, (tuple, list)) and all(isinstance(x, str) for x in v):
-                return "".join(v)
+                return "\n\n---\n\n".join(v)                          # several wordings of one question
+            if isinstance(v, dict) and all(isinstance(x, str) for x in v.values()):
+                return "\n\n".join(f"[{k}]\n{v[k]}" for k in v)        # one wording per slot
     raise ReinsError(f"{path}: no module-level constant {symbol}")
 
 
@@ -309,6 +311,97 @@ def model_body(spec: dict) -> str:
     return json.dumps({"provider": spec["provider"], "id": spec["id"], "params": spec.get("params", {})}, sort_keys=True)
 
 
+# ------------------------------------------------------------------ tools: what a stage picks up besides models and prompts
+TOOL_KINDS = ("code", "api", "data")
+
+
+def tool_body(con, repo: Path, spec: dict) -> tuple[str, dict]:
+    """The identity of one tool. code: the content of its source files (globs in the repo); api: endpoint + fixed
+    parameters; data: a file or directory outside the repo -- its listing (names, sizes, newest change), or with
+    hash = true the content of every file. The version is the identity; the notes (about, title) do not count."""
+    kind = spec.get("kind", "code")
+    if kind not in TOOL_KINDS:
+        raise ReinsError(f"tool kind must be one of {TOOL_KINDS}, not {kind!r}")
+    if kind == "code":
+        rec = {}
+        for pat in spec.get("files") or []:
+            base = Path("/") if pat.startswith("/") else repo              # code that lives in another checkout
+            hits = sorted(p for p in base.glob(pat.lstrip("/")) if p.is_file() and "__pycache__" not in p.parts)
+            if not hits:
+                raise ReinsError(f"tool code {pat!r}: no file in {base}")
+            for f in hits:
+                rec[str(f) if base != repo else str(f.relative_to(repo))] = hashlib.sha256(f.read_bytes()).hexdigest()
+        if not rec:
+            raise ReinsError("a code tool needs files = [...]")
+        return json.dumps(rec, sort_keys=True), {"kind": kind, "files": rec}
+    if kind == "api":
+        if not spec.get("endpoint"):
+            raise ReinsError("an api tool needs endpoint = ...")
+        ident = {"endpoint": spec["endpoint"], "params": spec.get("params", {})}
+        return json.dumps(ident, sort_keys=True), {"kind": kind, **ident, "provider": spec.get("provider")}
+    p = Path(spec.get("path") or "")
+    if not spec.get("path") or not p.exists():
+        raise ReinsError(f"data tool path {p} does not exist")
+    files = [p] if p.is_file() else sorted(f for f in p.rglob("*") if f.is_file() and not f.name.startswith("."))
+    if spec.get("hash"):
+        rec = {str(f.relative_to(p)) if p.is_dir() else f.name: file_sha(con, f)[0] for f in files}
+    else:
+        rec = {str(f.relative_to(p)) if p.is_dir() else f.name: f.stat().st_size for f in files[:5000]}
+    sizes = [f.stat().st_size for f in files]
+    newest = max((f.stat().st_mtime for f in files), default=0)
+    body = {"kind": kind, "path": str(p), "n_files": len(files), "bytes": sum(sizes), "hashed": bool(spec.get("hash")),
+            "newest": __import__("datetime").datetime.fromtimestamp(newest).isoformat(timespec="seconds") if newest else None}
+    return json.dumps({"files": rec, "newest": None if spec.get("hash") else newest}, sort_keys=True), body
+
+
+def register_tool(con, repo: Path, base: str, spec: dict, commit: str | None = None) -> dict:
+    identity, body = tool_body(con, repo, spec)
+    sha = _sha(identity)
+    ensure(con)
+    with tx(con):
+        same = con.execute("SELECT name FROM artifact WHERE kind='tool' AND base=? AND sha=?", (base, sha)).fetchone()
+        if same:
+            return {"name": same["name"], "new": False}
+        v = con.execute("SELECT COALESCE(MAX(version),0)+1 FROM artifact WHERE kind='tool' AND base=?", (base,)).fetchone()[0]
+        name = f"tool-{base}-v{v}"
+        src = f"reins.toml@{commit or 'worktree'}"
+        con.execute("INSERT INTO artifact (name, kind, base, version, sha, status, about, body, source, created, session)"
+                    " VALUES (?,?,?,?,?, 'candidate', ?,?,?,?,?)",
+                    (name, "tool", base, v, sha, spec.get("about"), json.dumps(body, sort_keys=True), src, now(), session()))
+        con.execute("INSERT INTO artifact_event (at, name, event, detail, session) VALUES (?,?,?,?,?)",
+                    (now(), name, "registered", f"{body['kind']} {src}", session()))
+    return {"name": name, "new": True}
+
+
+def check_tools(con, repo: Path, cfg: dict) -> list[tuple[str, bool, str]]:
+    """Before a batch: every data tool is present and unchanged since it was registered (code ships in the release)."""
+    out = []
+    for base, spec in (cfg.get("tools") or {}).items():
+        if spec.get("kind") != "data":
+            continue
+        try:
+            identity, body = tool_body(con, repo, spec)
+        except ReinsError as e:
+            out.append((f"tool_{base}", False, str(e))); continue
+        row = con.execute("SELECT name FROM artifact WHERE kind='tool' AND base=? AND sha=?", (base, _sha(identity))).fetchone()
+        out.append((f"tool_{base}", bool(row), row["name"] if row else
+                    f"data under {body['path']} changed since its registered version: reins artifact scan, or restore it"))
+    return out
+
+
+def group_of(kind: str, spec: dict, body: dict | None = None) -> str:
+    """Which shelf of the toolbox an artifact sits on (for people; not part of any version)."""
+    if kind == "prompt":
+        return "prompt"
+    if kind == "model":
+        return "pretrained" if spec.get("provider") == "local" else "paid"
+    if kind == "weights":
+        if spec.get("origin") in ("trained", "pretrained"):
+            return spec["origin"]
+        return "trained" if spec.get("config_key") or (body or {}).get("training", {}).get("framework") else "pretrained"
+    return spec.get("kind", "code")
+
+
 def scan(con, repo: Path, cfg: dict, commit: str | None = None) -> dict:
     """Register the prompt and model versions a project declares, as they are now. Returns {name: artifact}."""
     out = {}
@@ -322,6 +415,9 @@ def scan(con, repo: Path, cfg: dict, commit: str | None = None) -> dict:
     for base, spec in (cfg.get("weights") or {}).items():
         r = register_weights(con, base, spec)
         out[f"weights:{base}"] = r["name"]
+    for base, spec in (cfg.get("tools") or {}).items():
+        r = register_tool(con, repo, base, spec, commit)
+        out[f"tool:{base}"] = r["name"]
     return out
 
 
@@ -341,14 +437,27 @@ def freeze_workflow(con, repo: Path, cfg: dict, base: str) -> dict:
             if not p:
                 raise ReinsError(f"module {mod} has no released version; release it before freezing the workflow")
             mv = p["version"]
-        stages.append({"name": st["name"], "module_version": mv, "paid": bool(st.get("paid")),
+        also = []                                          # other modules whose code also runs in this stage (shown, not batch-tracked)
+        for m in st.get("also", []):
+            p = modules.status(con, m)["production"]
+            also.append(p["version"] if p else None)
+        stages.append({"name": st["name"], "module_version": mv, "paid": bool(st.get("paid")), "also": [v for v in also if v],
+                       "title": st.get("title"), "steps": st.get("steps"), "mascot": st.get("mascot"),
                        "prompts": [current[f"prompt:{p}"] for p in st.get("prompts", [])],
                        "models": [current[f"model:{m}"] for m in st.get("models", [])],
-                       "weights": [current[f"weights:{w}"] for w in st.get("weights", [])]})
-    body = json.dumps({"stages": stages}, sort_keys=True)
+                       "weights": [current[f"weights:{w}"] for w in st.get("weights", [])],
+                       "tools": [current[f"tool:{t}"] for t in st.get("tools", [])]})
+    toolbox = {}                                      # shelf + display title of every artifact the stages use
+    for section, kind in (("prompts", "prompt"), ("models", "model"), ("weights", "weights"), ("tools", "tool")):
+        for b, spec in (cfg.get(section) or {}).items():
+            name = current.get(f"{kind}:{b}")
+            if name and any(name in s[section] for s in stages):
+                toolbox[name] = {"group": group_of(kind, spec, json.loads(get(con, name)["body"]) if kind == "weights" else None),
+                                 "title": spec.get("title") or b}
+    body = json.dumps({"project": cfg.get("project"), "stages": stages, "toolbox": toolbox}, sort_keys=True)
     r = register(con, "workflow", base, body, wf.get("about"), "reins.toml", status="active")
     if r["new"]:
-        for name in {a for s in stages for a in s["prompts"] + s["models"] + s["weights"]}:
+        for name in {a for s in stages for a in s["prompts"] + s["models"] + s["weights"] + s["tools"]}:
             row = get(con, name)
             if row["status"] == "candidate":
                 set_status(con, name, "active", f"used by {r['name']}")

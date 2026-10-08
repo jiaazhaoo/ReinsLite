@@ -179,12 +179,89 @@ def run_history(con, limit: int = 15) -> list[dict]:
     return out
 
 
+GROUP_ORDER = ["trained", "pretrained", "paid", "prompt", "code", "api", "data"]
+
+
+def _tool_card(con, name: str, info: dict, used_by: list[str]) -> dict:
+    from . import artifacts
+    row = con.execute("SELECT kind, base, version, status, about, body FROM artifact WHERE name=?", (name,)).fetchone()
+    if not row:
+        return {"name": name, "base": name, "version": "?", "group": info.get("group", "code"), "title": info.get("title"), "detail": ""}
+    body = {} if row["kind"] == "prompt" else json.loads(row["body"])
+    detail = ""
+    if row["kind"] == "weights":
+        m = (body.get("training") or {}).get("metrics") or {}
+        key = next((k for k in ("metrics/mAP50(B)", "metrics/mAP50(M)", "accuracy", "f1", "macro_f1") if k in m), None)
+        detail = f"{body.get('bytes', 0) / 1e6:.0f} MB" + (f" · {key.split('/')[-1]} {float(m[key]):.3g}" if key else "")
+    elif row["kind"] == "model":
+        detail = body.get("id", "")
+    elif row["kind"] == "tool":
+        detail = {"code": f"{len(body.get('files', {}))} 个源文件", "api": body.get("endpoint", ""),
+                  "data": f"{body.get('n_files', 0)} 个文件 · {body.get('bytes', 0) / 1e6:.0f} MB"}.get(body.get("kind"), "")
+    elif row["kind"] == "prompt":
+        detail = f"{len(row['body'])} 字符"
+    latest = con.execute("SELECT MAX(version) FROM artifact WHERE kind=? AND base=?", (row["kind"], row["base"])).fetchone()[0]
+    return {"name": name, "base": row["base"], "version": row["version"], "newer": latest > row["version"],
+            "group": info.get("group") or artifacts.group_of(row["kind"], {}), "title": info.get("title") or row["base"],
+            "about": row["about"] or "", "detail": detail, "used_by": used_by, "status": row["status"]}
+
+
+def pipeline_map(con, running: list[dict], developing: list[dict]) -> list[dict]:
+    """The current workflow of every project, stage by stage: which code version runs there, what it is changing into,
+    which batch is in it now, and the versioned tools it picks up. Source: the newest active workflow version."""
+    from . import artifacts, modules
+    artifacts.ensure(con)
+    out = []
+    for w in con.execute("SELECT name, base, about, body, created FROM artifact WHERE kind='workflow' AND status='active'"
+                         " AND version=(SELECT MAX(version) FROM artifact a WHERE a.kind='workflow' AND a.base=artifact.base)"):
+        body = json.loads(w["body"])
+        box = body.get("toolbox") or {}
+        stages = body["stages"]
+        used = {}
+        for st in stages:
+            for n in st.get("prompts", []) + st.get("models", []) + st.get("weights", []) + st.get("tools", []):
+                used.setdefault(n, []).append(st.get("title") or st["name"])
+        cards = []
+        for i, st in enumerate(stages):
+            mv = st.get("module_version")
+            mod = modules.get(con, mv)["module"] if mv else None
+            now_v = (modules.status(con, mod)["production"] or {}) if mod else {}
+            ver_about = con.execute("SELECT about FROM module_version WHERE version=?", (mv,)).fetchone() if mv else None
+            mod_about = con.execute("SELECT about FROM module WHERE name=?", (mod,)).fetchone() if mod else None
+            code = []
+            for v in ([mv] if mv else []) + st.get("also", []):
+                m_ = modules.get(con, v)["module"]
+                cur = (modules.status(con, m_)["production"] or {}).get("version")
+                va = con.execute("SELECT about FROM module_version WHERE version=?", (v,)).fetchone()
+                code.append({"module": m_, "version": v, "about": va[0] if va else "", "stale": bool(cur and cur != v), "now": cur,
+                             "developing": [{"version": d["version"], "about": d["about"]} for d in developing if d["module"] == m_]})
+            tools = [_tool_card(con, n, box.get(n, {}), used.get(n, []))
+                     for n in st.get("weights", []) + st.get("models", []) + st.get("prompts", []) + st.get("tools", [])]
+            tools.sort(key=lambda t: (GROUP_ORDER.index(t["group"]) if t["group"] in GROUP_ORDER else 99, t["base"]))
+            cards.append({"name": st["name"], "title": st.get("title") or st["name"], "steps": st.get("steps"),
+                          "mascot": st.get("mascot") or ["box", "scissors", "compass", "pencil", "judge", "wrench"][i % 6],
+                          "module": mod, "module_about": mod_about[0] if mod_about else None,
+                          "version": mv, "version_about": ver_about[0] if ver_about else None, "paid": st.get("paid"),
+                          "production_now": now_v.get("version"), "stale": any(c["stale"] for c in code),
+                          "code": code, "developing": [x for c in code for x in c["developing"]],
+                          "batches": [{"title": r["title"], "pct": r["pct"], "status": r["status"], "type": r["type"]}
+                                      for r in running if r["stage"] == st["name"]],
+                          "tools": tools})
+        allt = sorted({n for n in used}, key=lambda n: (GROUP_ORDER.index(box.get(n, {}).get("group", "code"))
+                                                        if box.get(n, {}).get("group", "code") in GROUP_ORDER else 99, n))
+        out.append({"workflow": w["name"], "project": body.get("project"), "about": w["about"], "frozen": w["created"],
+                    "stages": cards, "toolbox": [_tool_card(con, n, box.get(n, {}), used[n]) for n in allt]})
+    return out
+
+
 def state(con) -> dict:
-    return {"at": dt.datetime.now().isoformat(timespec="seconds"),
+    running = running_cards(con)
+    developing = in_progress(con)
+    return {"at": dt.datetime.now().isoformat(timespec="seconds"), "pipelines": pipeline_map(con, running, developing),
             "cost": spend.cost_view(con), "pool": {**spend.pool_usage(con), "limits": config()["pool"]},
             "notifications": _latest_notes(con),
-            "in_progress": in_progress(con), "dev_history": dev_history(con),
-            "running": running_cards(con), "unregistered_runs": sessions.unregistered_runs(con),
+            "in_progress": developing, "dev_history": dev_history(con),
+            "running": running, "unregistered_runs": sessions.unregistered_runs(con),
             "run_history": run_history(con),
             # kept for callers of the previous shape
             "developing": [], "recent": [], "production": [], "retired": [], "spend_weekly": []}
@@ -194,7 +271,7 @@ HTML = """<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>Rein
 <style>
 :root{--bg:#fff;--fg:#1a1a1a;--mute:#666;--line:#ddd;--card:#fafafa;--green:#2e7d32;--yellow:#b26a00;--red:#c62828;--blue:#1565c0}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#121212;--fg:#eee;--mute:#999;--line:#333;--card:#1c1c1c}}
-body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;max-width:1200px}
+body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;max-width:1480px}
 h1{font-size:18px;margin:0 0 12px}h2{font-size:15px;margin:22px 0 8px;color:var(--mute);text-transform:uppercase;letter-spacing:.04em}
 h2 small{text-transform:none;letter-spacing:0;font-weight:400;margin-left:8px}
 .card{border:1px solid var(--line);border-left-width:5px;background:var(--card);border-radius:8px;padding:10px 14px;margin:8px 0}
@@ -211,10 +288,26 @@ h2 small{text-transform:none;letter-spacing:0;font-weight:400;margin-left:8px}
 .row{display:flex;flex-wrap:wrap;gap:4px 18px}.k{color:var(--mute)}.small{font-size:12px;margin-top:4px}
 .probe{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font:12px/1.4 ui-monospace,monospace;overflow-x:auto;margin:6px 0;max-height:260px}
 table{border-collapse:collapse;width:100%;font-size:13px}td,th{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--mute);font-weight:600}
+.flow{display:flex;gap:0;overflow-x:auto;padding:4px 2px 10px;align-items:stretch}
+.stage{flex:1 0 210px;border:1px solid var(--line);background:var(--card);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:5px}
+.stage.busy{border-color:var(--blue)}.stage.dev{box-shadow:inset 0 3px 0 var(--yellow)}
+.link{flex:0 0 26px;display:flex;align-items:center;justify-content:center;color:var(--mute);font-size:18px}
+.crab{display:flex;justify-content:center;height:78px}.crab svg{width:104px;height:78px;shape-rendering:crispEdges}
+.stage.busy .crab svg{animation:bob .9s ease-in-out infinite}@keyframes bob{50%{transform:translateY(-4px)}}
+.stitle{font-size:16px;font-weight:700}.stitle .mono{font:12px ui-monospace,monospace;color:var(--mute);font-weight:400;margin-left:6px}
+.ver{font:12px ui-monospace,monospace;background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:2px 6px;word-break:break-all}
+.shelf{font-size:11px;color:var(--mute);margin-top:4px}.chips{display:flex;flex-wrap:wrap;gap:3px}
+.chip{font-size:11.5px;padding:1px 6px;border-radius:9px;border:1px solid var(--line);background:var(--bg);cursor:default;white-space:nowrap}
+.chip b{font-weight:600}.chip.trained{border-color:#d97757;color:#b4532f}.chip.pretrained{border-color:#5b8def;color:#2f5fbf}
+.chip.paid{border-color:#c0392b;color:#c0392b}.chip.prompt{border-color:#8e6cc8;color:#6c48a8}.chip.code{border-color:#888;color:var(--fg)}
+.chip.api{border-color:#1f9e89;color:#147a6a}.chip.data{border-color:#9a7b2f;color:#7a5f1f}.chip .new{color:var(--yellow)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 10px;font-size:12px;color:var(--mute);margin:2px 0 6px}
+details.box{margin:6px 0}details.box summary{cursor:pointer;color:var(--mute)}
 .notif{padding:6px 10px;border-radius:6px;margin:4px 0;background:var(--card);border:1px solid var(--line)}.notif.action{border-color:var(--red)}.notif.warn{border-color:var(--yellow)}
 </style></head><body>
 <h1>Reins <span class="mute" id="at"></span></h1>
 <div id="notifs"></div>
+<h2>流程图谱 <small id="wfnote">每个阶段现在跑的代码版本，和它从工具箱里拿的东西</small></h2><div id="map"></div>
 <h2>成本 <small id="costnote"></small></h2><div id="pool" class="card none"></div><div class="grid" id="cost"></div>
 <h2>正在开发 <small>会话还在改、还没进生产的</small></h2><div id="inprogress"></div>
 <h2>开发记录 <small>已进生产的版本</small></h2><div id="devhist"></div>
@@ -227,7 +320,41 @@ function d(ts){return ts?esc(ts.slice(5,16).replace('T',' ')):'—'}
 const ST={running:'运行中',paused:'暂停',open:'未开始',closed:'已关闭',done:'完成',failed:'失败'};
 const TYPE={production:'生产',rework:'返工',experiment:'实验',pilot:'试跑',eval:'评测',smoke:'冒烟',drift:'漂移',benchmark_build:'建基准'};
 const DEC={ship:'交付',ship_with_note:'带说明交付',rework:'返工'};
+
+const SHELF={trained:'自训模型',pretrained:'开源模型',paid:'付费模型',prompt:'提示词',code:'代码工具',api:'外部接口',data:'数据'};
+const BODY='#D97757',EYE='#1d1d1f';
+const HATS={cap:[[6,2,8,2,'#3b6fd8'],[13,3,4,1,'#3b6fd8']],beret:[[7,2,7,2,'#7a4fc4'],[10,1,1,1,'#7a4fc4']],
+ explorer:[[7,1,6,2,'#b59a5a'],[5,3,10,1,'#9c8247'],[7,2,6,.5,'#6b5a2e']],headband:[[6,4,8,1,'#d23b3b'],[14,3.5,2,1,'#d23b3b'],[15,4.5,1.5,1,'#d23b3b']],
+ mortar:[[5,2,10,1,'#26262a'],[8,3,4,1,'#26262a'],[14.5,2.5,.6,2.5,'#e0b030']],helmet:[[6,2,8,2,'#f2c230'],[9,1.5,2,.6,'#f2c230']]};
+const ITEMS={clipboard:[[16,5,3.4,5,'#f3efe4'],[17.2,4.4,1,1,'#777'],[16.5,6.5,2.4,.5,'#999'],[16.5,8,2.4,.5,'#999']],
+ scissors:[[1,3,.8,4,'#9aa0a6'],[2.6,3,.8,4,'#9aa0a6'],[.4,7,1.6,1.6,'#d23b3b'],[2.2,7,1.6,1.6,'#d23b3b']],
+ map:[[16,4.5,4,4.5,'#86c58a'],[16.6,6,2.8,.6,'#3b6fd8'],[18.2,5,.6,3.5,'#3b6fd8'],[17,4.7,.9,.9,'#d23b3b']],
+ pencil:[[16.2,2.5,1,6,'#f2c230'],[16.2,8.5,1,1,'#d23b3b'],[1,13.2,18,.6,'#d23b3b']],
+ judge:[[7,5.4,3,3.2,'#26262a'],[7.5,5.9,2,2.2,'#cfe8ff'],[10,5.4,3,3.2,'#26262a'],[10.5,5.9,2,2.2,'#cfe8ff'],[9.6,6.4,.8,.5,'#26262a'],[1.8,3,.6,7,'#777'],[2.4,3,3,2,'#2e9e5b']],
+ wrench:[[16.3,4,1,5,'#9aa0a6'],[15.6,3,2.4,1.3,'#9aa0a6']]};
+const MASCOT={box:['cap','clipboard'],scissors:['beret','scissors'],compass:['explorer','map'],pencil:['headband','pencil'],judge:['mortar','judge'],wrench:['helmet','wrench']};
+function crab(kind){const [h,it]=MASCOT[kind]||MASCOT.wrench;const r=(a)=>a.map(([x,y,w,hh,c])=>`<rect x="${x}" y="${y}" width="${w}" height="${hh}" fill="${c}"/>`).join('');
+ const body=[[6,4,8,6,BODY],[4,6,2,2,BODY],[14,6,2,2,BODY],[6,10,1,2,BODY],[8,10,1,2,BODY],[11,10,1,2,BODY],[13,10,1,2,BODY]];
+ const eyes=[[8,6,1,2,EYE],[11,6,1,2,EYE]];
+ return `<svg viewBox="0 0 20 15" aria-hidden="true">${r(body)}${it==='judge'?r(ITEMS.judge.slice(0,5))+r(eyes):r(eyes)}${r(HATS[h]||[])}${r(it==='judge'?ITEMS.judge.slice(5):ITEMS[it]||[])}</svg>`;}
+function chip(t){const tip=[t.title,t.about,t.detail,t.used_by&&t.used_by.length>1?'也用于：'+t.used_by.join('、'):''].filter(Boolean).join('\\n');
+ return `<span class="chip ${t.group}" title="${esc(tip)}">${esc(t.title)} <b>v${t.version}</b>${t.newer?'<span class="new"> ↑</span>':''}</span>`;}
+function shelves(tools){const g={};tools.forEach(t=>(g[t.group]=g[t.group]||[]).push(t));
+ return Object.keys(SHELF).filter(k=>g[k]).map(k=>`<div class="shelf">${SHELF[k]}</div><div class="chips">${g[k].map(chip).join('')}</div>`).join('');}
+function drawMap(P){if(!P.length){document.getElementById('map').innerHTML='<div class="mute">还没有冻结的工作流：reins workflow freeze NAME</div>';return;}
+ document.getElementById('map').innerHTML=P.map(w=>`<div class="legend"><b style="color:var(--fg)">${esc(w.project||'')}</b><span>${esc(w.about||'')}</span><span class="id">${esc(w.workflow)}</span><span>冻结于 ${d(w.frozen)}</span>${Object.entries(SHELF).map(([k,v])=>`<span class="chip ${k}">${v}</span>`).join('')}</div>
+ <div class="flow">${w.stages.map((st,i)=>`${i?'<div class="link">→</div>':''}<div class="stage ${st.batches.length?'busy':''} ${st.developing.length?'dev':''}">
+  <div class="crab">${crab(st.mascot)}</div>
+  <div class="stitle">${esc(st.title)}<span class="mono">${esc(st.name)}${st.steps?' · 第 '+esc(st.steps)+' 步':''}</span></div>
+  ${st.module_about?`<div class="small">${esc(st.module_about)}</div>`:''}
+  ${st.code.length?st.code.map(c=>`<div class="ver" title="${esc(c.about)}">${esc(c.version)}</div><div class="mute small">${esc(c.about)}</div>${c.stale?`<div class="needs small">生产已是 ${esc(c.now)}，工作流未重新冻结</div>`:''}`).join(''):'<div class="mute small">无代码模块（流水线自带）</div>'}
+  ${st.batches.map(b=>`<div class="small"><span class="pill running">工作中</span> ${esc(b.title)} · ${b.pct}%</div>`).join('')}
+  ${st.developing.map(v=>`<div class="small" style="color:var(--yellow)">🔧 开发中 ${esc(v.version||'')}${v.about?'：'+esc(v.about):''}</div>`).join('')}
+  ${st.paid?'<div class="small mute">付费阶段：先批花费上限</div>':''}
+  ${shelves(st.tools)}</div>`).join('')}</div>
+ <details class="box"><summary>完整工具箱（${w.toolbox.length} 件，按架子分）</summary><table><tr><th>架子</th><th>工具</th><th>版本</th><th>做什么</th><th>细节</th><th>哪些阶段用</th></tr>${w.toolbox.map(t=>`<tr><td>${SHELF[t.group]||esc(t.group)}</td><td><b>${esc(t.title)}</b></td><td class="id">${esc(t.name)}${t.newer?' <span class="pill warn">有新版本</span>':''}</td><td>${esc(t.about)}</td><td class="mute">${esc(t.detail)}</td><td>${esc((t.used_by||[]).join('、'))}</td></tr>`).join('')}</table></details>`).join('');}
 async function load(){const s=await (await fetch('/api/state')).json();document.getElementById('at').textContent='· '+s.at.replace('T',' ');
+ drawMap(s.pipelines||[]);
  document.getElementById('notifs').innerHTML=s.notifications.map(n=>`<div class="notif ${n.level}"><b>${esc(n.title)}</b> <span class="mute">${d(n.at)}</span><br>${esc(n.body)}</div>`).join('');
  document.getElementById('cost').innerHTML=s.cost.map(c=>`<div class="cost"><div class="name">${esc(c.provider)} ${!c.key_present?'<span class="pill">未配置 key</span>':!c.has_endpoint?'<span class="pill">无余额接口</span>':c.error?'<span class="pill bad">查询失败</span>':''}</div>
   <div class="bal ${c.balance!=null&&c.balance<10?'low':''}">${c.has_endpoint?usd(c.balance):'—'}</div>

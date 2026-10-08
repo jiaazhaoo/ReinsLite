@@ -131,6 +131,7 @@ case            oachargeid
 | 模型 | `model-<name>-vN` | `reins.toml [models]`：provider、id、固定参数；参数变了就是新版本 | 同上 |
 | 工作流 | `workflow-<name>-vN` | `reins workflow freeze`：每个阶段的生产模块版本 + 当前提示词 / 模型版本冻成一套 | 批次 `--workflow` 指定跑哪一套；来源元组里带全套 |
 | **机器学习权重**（自训 YOLO / ConvNeXt、MINIMA、Qwen、PaddleOCR） | `weights-<name>-vN` | 按文件内容哈希（目录按全部模型文件）；同一份权重同一个版本，重训出来的新文件就是新版本。训练记录从权重旁边的文件自动采集：ultralytics 的 `args.yaml` / `results.csv`（基座、数据集、epochs、imgsz、mAP），自家训练器的 `history.json` / `metrics.json` / `train_manifest.csv`（精度、样本数）。开批次前 preflight 核对声明的每个权重文件都在、且内容是登记过的版本，杜绝悄悄换模型 | 模块版本的 pins 里写明它加载的是哪些权重版本；工作流版本钉住整套 |
+| **工具**（代码工具、外部接口、数据） | `tool-<name>-vN` | `reins.toml [tools.*]`：`kind = "code"` 按源文件内容哈希（可写仓库外的绝对路径，如 GeoPlanAgent）；`kind = "api"` 按 endpoint + 固定参数；`kind = "data"` 按仓库外文件的清单（名字、大小、最近修改），`hash = true` 时按内容。开批次前 preflight 核对数据类工具没被换掉 | 模块的 `tools` 钉进模块版本；工作流阶段的 `tools` 冻结进工作流版本 |
 | benchmark | `bench-<name>-vN` | C4 | 门禁记录对着哪一版打分 |
 
 状态：`candidate`（登记了还没进生产）→ `active`（被某个 released 模块版本或工作流用上）→ `retired`。
@@ -393,6 +394,13 @@ Watchdog 负责发现，主控路由负责按预案处理。**自动修复只做
 ---
 
 ## C14 主控看板
+
+**默认首屏是流程图谱（2026-10-08）。** 每个项目一行：最新冻结的工作流，按阶段从左到右一张卡。卡上有：一只像素小螃蟹
+（`mascot`：box / scissors / compass / pencil / judge / wrench，不同帽子和道具；有批次在这一阶段时它会动）、阶段名和
+步骤范围、这一阶段跑的每个代码模块的生产版本和一句话说明（主模块 + `also`）、正在跑的批次和进度、开发中的候选版本、
+它从工具箱里拿的东西（按架子分：自训模型 / 开源模型 / 付费模型 / 提示词 / 代码工具 / 外部接口 / 数据，每件带版本号，
+有更新版本时标 ↑）。下面可展开完整工具箱表：每件工具的版本、做什么、细节（大小、主指标、模型 id、文件数）、哪些阶段用。
+图谱的数据只来自工作流版本；`reins dev finish` 发布后自动重新冻结（有变化才出新版本），模块说明也跟着 `reins.toml` 同步。
 
 **只显示两样东西：运行中、开发中。** 其余（历史、已发布版本、成本汇总）收在第二个标签页，平时不看。
 
