@@ -279,6 +279,12 @@ def build_parser() -> argparse.ArgumentParser:
     x = ar.add_parser("show"); x.add_argument("name")
     x = ar.add_parser("diff"); x.add_argument("a"); x.add_argument("b")
     x = ar.add_parser("status"); x.add_argument("name"); x.add_argument("status", choices=["candidate", "active", "retired"]); x.add_argument("--why", default="")
+    wg = sub.add_parser("weights").add_subparsers(dest="sub", required=True)
+    x = wg.add_parser("register", help="a weights file or directory as weights-<name>-vN, with its training record")
+    x.add_argument("name"); x.add_argument("--file"); x.add_argument("--dir"); x.add_argument("--about")
+    x.add_argument("--run-dir", help="training run directory (results, args)"); x.add_argument("--dataset"); x.add_argument("--note")
+    x = wg.add_parser("list")
+    x = wg.add_parser("check", help="declared weights exist and are registered versions"); x.add_argument("--repo")
     wf = sub.add_parser("workflow").add_subparsers(dest="sub", required=True)
     x = wf.add_parser("freeze"); x.add_argument("name"); x.add_argument("--repo")
     x = wf.add_parser("show"); x.add_argument("name")
@@ -402,6 +408,29 @@ def main(argv: list[str] | None = None) -> int:
                 for c in sessions.conflicts(con):
                     print(f"{c['kind']:<16} {', '.join(x[:8] for x in c['sessions']):<20} {c['what']}  {c['detail']}")
             return 0
+        if args.cmd == "weights":
+            if args.sub == "register":
+                spec = {k: v for k, v in (("file", args.file), ("dir", args.dir), ("about", args.about)) if v}
+                tr = {k: v for k, v in (("run_dir", args.run_dir), ("dataset", args.dataset), ("note", args.note)) if v}
+                if tr:
+                    spec["training"] = tr
+                r = artifacts.register_weights(con, args.name, spec, args.about)
+                print(f"{r['name']}  ({'new' if r['new'] else 'already registered'}; {r['bytes'] / 1e6:.0f} MB)")
+            elif args.sub == "check":
+                repo = Path(args.repo or cfg.get("dev", {}).get("repo") or (project_root(cwd) or cwd))
+                res = artifacts.check_weights(con, dev.project_cfg(repo))
+                for n, ok, d in res:
+                    print(f"  {'ok  ' if ok else 'FAIL'} {n:<24} {d}")
+                return 0 if all(ok for _, ok, _ in res) else 1
+            else:
+                for a in artifacts.list_(con, "weights"):
+                    body = json.loads(artifacts.get(con, a["name"])["body"])
+                    tr = body.get("training", {})
+                    m = tr.get("metrics", {})
+                    key = next((k for k in ("metrics/mAP50(B)", "accuracy", "f1", "f1_text", "val_acc") if k in m), None)
+                    print(f"{a['name']:<34} {a['status']:<10} {body['bytes'] / 1e6:>7.0f} MB  {tr.get('framework', '-'):<12}"
+                          f" {key + '=' + str(m[key]) if key else ''}  {a['about'] or ''}")
+            return 0
         if args.cmd in ("artifact", "workflow"):
             repo = Path(getattr(args, "repo", None) or cfg.get("dev", {}).get("repo") or (project_root(cwd) or cwd))
             if args.cmd == "workflow":
@@ -425,8 +454,8 @@ def main(argv: list[str] | None = None) -> int:
                 a = artifacts.get(con, args.name); pin = artifacts.pinned_in(con, args.name)
                 print(f"{a['name']}  [{a['status']}]  {a['about'] or ''}\n  source {a['source']}  sha {a['sha'][:12]}  created {a['created'][:16]}")
                 print(f"  pinned in module versions: {pin['module_versions'] or '-'}; workflows: {pin['workflows'] or '-'}")
-                body = a["body"] if a["kind"] == "prompt" else json.dumps(json.loads(a["body"]), indent=1)
-                print("  ---\n" + "\n".join("  " + l for l in body.splitlines()[:60]))
+                body = a["body"] if a["kind"] == "prompt" else json.dumps(json.loads(a["body"]), indent=1, ensure_ascii=False)
+                print("  ---\n" + "\n".join("  " + l for l in body.splitlines()[:80]))
             elif args.sub == "diff":
                 print(artifacts.diff(con, args.a, args.b) or "(identical)")
             else:

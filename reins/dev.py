@@ -214,7 +214,8 @@ def finish(con, version: str, skip_tier: str | None = None, why: str | None = No
     arts = artifacts.scan(con, wt, cfg, head)                       # prompt / model versions as this candidate has them
     mine = (cfg.get("modules", {}).get(row["module"], {}))
     pinned = [arts[f"prompt:{p}"] for p in mine.get("prompts", []) if f"prompt:{p}" in arts] + \
-             [arts[f"model:{m}"] for m in mine.get("models", []) if f"model:{m}" in arts]
+             [arts[f"model:{m}"] for m in mine.get("models", []) if f"model:{m}" in arts] + \
+             [arts[f"weights:{w}"] for w in mine.get("weights", []) if f"weights:{w}" in arts]
     modules.release(con, version, evidence)
     with tx(con):
         pins = json.loads(con.execute("SELECT pins FROM module_version WHERE version=?", (version,)).fetchone()[0])

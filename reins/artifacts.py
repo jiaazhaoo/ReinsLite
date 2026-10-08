@@ -31,8 +31,8 @@ from pathlib import Path
 
 from .store import ReinsError, now, session, tx
 
-KINDS = ("prompt", "model", "workflow")
-NAME = re.compile(r"^(prompt|model|workflow)-([a-z][a-z0-9_]*)-v(\d+)$")
+KINDS = ("prompt", "model", "workflow", "weights")
+NAME = re.compile(r"^(prompt|model|workflow|weights)-([a-z][a-z0-9_]*)-v(\d+)$")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS artifact (
@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS artifact (
   created  TEXT NOT NULL,
   session  TEXT,
   UNIQUE (kind, base, version)
+);
+CREATE TABLE IF NOT EXISTS file_sha (                   -- hash cache: big weight files are not re-read every scan
+  path   TEXT PRIMARY KEY,
+  size   INTEGER NOT NULL,
+  mtime  REAL NOT NULL,
+  sha    TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS artifact_event (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -149,6 +155,148 @@ def prompt_text(repo: Path, spec: dict) -> tuple[str, str]:
     return f.read_text(encoding="utf-8"), spec["file"]
 
 
+# ------------------------------------------------------------------ weights: ML model files
+def file_sha(con, path: Path) -> tuple[str, int]:
+    """sha256 of a file, cached by (size, mtime); symlinks are followed (the target is the weight)."""
+    p = Path(path).resolve()
+    st = p.stat()
+    row = con.execute("SELECT sha FROM file_sha WHERE path=? AND size=? AND mtime=?", (str(p), st.st_size, st.st_mtime)).fetchone()
+    if row:
+        return row["sha"], st.st_size
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 22), b""):
+            h.update(chunk)
+    with tx(con):
+        con.execute("INSERT OR REPLACE INTO file_sha VALUES (?,?,?,?)", (str(p), st.st_size, st.st_mtime, h.hexdigest()))
+    return h.hexdigest(), st.st_size
+
+
+WEIGHT_EXT = {".pt", ".pth", ".ckpt", ".onnx", ".engine", ".safetensors", ".bin", ".pdiparams", ".pdmodel", ".json", ".yaml", ".yml", ".txt"}
+
+
+def weight_files(spec: dict) -> list[Path]:
+    """The files that make up one weights artifact: a single file, or every model file under a directory."""
+    if spec.get("file"):
+        p = Path(spec["file"])
+        if not p.exists():
+            raise ReinsError(f"weights file {p} does not exist")
+        return [p]
+    if spec.get("dir"):
+        d = Path(spec["dir"])
+        if not d.is_dir():
+            raise ReinsError(f"weights dir {d} does not exist")
+        files = sorted(f for f in d.rglob("*") if f.is_file() and f.suffix.lower() in WEIGHT_EXT and not f.name.startswith("."))
+        if not files:
+            raise ReinsError(f"no model files under {d}")
+        return files
+    raise ReinsError("a weights entry needs file = ... or dir = ...")
+
+
+def _read_json(p: Path, limit: int = 4000):
+    try:
+        return json.loads(p.read_text(encoding="utf-8")[:limit * 50])
+    except Exception:                                                       # noqa: BLE001
+        return None
+
+
+def harvest_training(primary: Path) -> dict:
+    """What a training run left beside its weights: ultralytics (args.yaml, results.csv), the house ConvNeXt trainer
+    (history.json, metrics.json, best_model_test_metrics.json, train_manifest.csv, split_counts.json), a sibling .json."""
+    out: dict = {}
+    d = primary.parent
+    run = d.parent if d.name == "weights" else d                       # ultralytics: <run>/weights/best.pt
+    args = run / "args.yaml"
+    if args.is_file():
+        kv = {}
+        for line in args.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if ":" in line and not line.startswith(" "):
+                k, _, v = line.partition(":")
+                kv[k.strip()] = v.strip()
+        out["framework"] = "ultralytics"
+        out["train"] = {k: kv.get(k) for k in ("task", "model", "data", "epochs", "imgsz", "batch", "seed", "name") if k in kv}
+    res = run / "results.csv"
+    if res.is_file():
+        rows = [l for l in res.read_text(encoding="utf-8", errors="ignore").splitlines() if l.strip()]
+        if len(rows) >= 2:
+            hdr = [h.strip() for h in rows[0].split(",")]
+            last = [v.strip() for v in rows[-1].split(",")]
+            want = {"epoch", "metrics/mAP50(B)", "metrics/mAP50-95(B)", "metrics/precision(B)", "metrics/recall(B)",
+                    "metrics/mAP50(M)", "metrics/mAP50-95(M)"}
+            out["metrics"] = {h: last[i] for i, h in enumerate(hdr) if h in want and i < len(last)}
+            out["epochs_run"] = len(rows) - 1
+    for name in ("metrics.json", "best_model_test_metrics.json"):
+        j = _read_json(d / name)
+        if isinstance(j, dict):
+            out.setdefault("metrics", {}).update({k: v for k, v in j.items() if isinstance(v, (int, float, str))})
+    hist = _read_json(d / "history.json")
+    if isinstance(hist, list) and hist and isinstance(hist[-1], dict):
+        out["framework"] = out.get("framework", "house-trainer")
+        out["epochs_run"] = len(hist)
+        out.setdefault("metrics", {}).update({k: v for k, v in hist[-1].items() if isinstance(v, (int, float))})
+    man = d / "train_manifest.csv"
+    if man.is_file():
+        n = sum(1 for _ in man.open(encoding="utf-8", errors="ignore")) - 1
+        out["dataset"] = {"manifest": str(man), "rows": n}
+    sc = _read_json(d / "split_counts.json")
+    if isinstance(sc, dict):
+        out.setdefault("dataset", {})["splits"] = sc
+    side = d / (primary.stem + ".json")
+    j = _read_json(side)
+    if isinstance(j, dict):
+        out["sidecar"] = {k: j[k] for k in list(j)[:20]}
+    return out
+
+
+def weights_body(con, spec: dict) -> tuple[str, dict]:
+    files = weight_files(spec)
+    root = Path(spec.get("dir") or Path(spec["file"]).parent)
+    rec = {}
+    for f in files:
+        sha, size = file_sha(con, f)
+        rec[str(f.resolve().relative_to(root.resolve())) if spec.get("dir") else f.name] = {"sha256": sha, "size": size}
+    identity = json.dumps(rec, sort_keys=True)                           # the version is the files, not the notes
+    body = {"files": rec, "path": str(root.resolve()), "n_files": len(files), "bytes": sum(v["size"] for v in rec.values()),
+            "config_key": spec.get("config_key"), "training": {**harvest_training(files[0]), **(spec.get("training") or {})}}
+    return identity, body
+
+
+def register_weights(con, base: str, spec: dict, about: str | None = None) -> dict:
+    identity, body = weights_body(con, spec)
+    sha = _sha(identity)
+    ensure(con)
+    with tx(con):
+        same = con.execute("SELECT name FROM artifact WHERE kind='weights' AND base=? AND sha=?", (base, sha)).fetchone()
+        if same:
+            return {"name": same["name"], "new": False, "bytes": body["bytes"]}
+        v = con.execute("SELECT COALESCE(MAX(version),0)+1 FROM artifact WHERE kind='weights' AND base=?", (base,)).fetchone()[0]
+        name = f"weights-{base}-v{v}"
+        con.execute("INSERT INTO artifact (name, kind, base, version, sha, status, about, body, source, created, session)"
+                    " VALUES (?,?,?,?,?, 'candidate', ?,?,?,?,?)",
+                    (name, "weights", base, v, sha, about or spec.get("about"), json.dumps(body, sort_keys=True), body["path"], now(), session()))
+        con.execute("INSERT INTO artifact_event (at, name, event, detail, session) VALUES (?,?,?,?,?)",
+                    (now(), name, "registered", f"{body['n_files']} files, {body['bytes'] / 1e6:.1f} MB", session()))
+    return {"name": name, "new": True, "bytes": body["bytes"]}
+
+
+def check_weights(con, cfg: dict) -> list[tuple[str, bool, str]]:
+    """Before a batch: every declared weights file exists and is a registered version (nothing silently swapped)."""
+    out = []
+    for base, spec in (cfg.get("weights") or {}).items():
+        try:
+            identity, body = weights_body(con, spec)
+        except ReinsError as e:
+            out.append((f"weights_{base}", False, str(e))); continue
+        row = con.execute("SELECT name, status FROM artifact WHERE kind='weights' AND base=? AND sha=?", (base, _sha(identity))).fetchone()
+        if not row:
+            latest = con.execute("SELECT name FROM artifact WHERE kind='weights' AND base=? ORDER BY version DESC LIMIT 1", (base,)).fetchone()
+            out.append((f"weights_{base}", False, f"file content is not a registered version (latest {latest['name'] if latest else 'none'}): "
+                                                   f"run reins artifact scan, or restore the file"))
+        else:
+            out.append((f"weights_{base}", True, f"{row['name']} [{row['status']}] {body['bytes'] / 1e6:.0f} MB"))
+    return out
+
+
 def model_body(spec: dict) -> str:
     if "id" not in spec or "provider" not in spec:
         raise ReinsError("a model needs provider and id")
@@ -165,6 +313,9 @@ def scan(con, repo: Path, cfg: dict, commit: str | None = None) -> dict:
     for base, spec in (cfg.get("models") or {}).items():
         r = register(con, "model", base, model_body(spec), spec.get("about"), "reins.toml")
         out[f"model:{base}"] = r["name"]
+    for base, spec in (cfg.get("weights") or {}).items():
+        r = register_weights(con, base, spec)
+        out[f"weights:{base}"] = r["name"]
     return out
 
 
@@ -186,11 +337,12 @@ def freeze_workflow(con, repo: Path, cfg: dict, base: str) -> dict:
             mv = p["version"]
         stages.append({"name": st["name"], "module_version": mv, "paid": bool(st.get("paid")),
                        "prompts": [current[f"prompt:{p}"] for p in st.get("prompts", [])],
-                       "models": [current[f"model:{m}"] for m in st.get("models", [])]})
+                       "models": [current[f"model:{m}"] for m in st.get("models", [])],
+                       "weights": [current[f"weights:{w}"] for w in st.get("weights", [])]})
     body = json.dumps({"stages": stages}, sort_keys=True)
     r = register(con, "workflow", base, body, wf.get("about"), "reins.toml", status="active")
     if r["new"]:
-        for name in {a for s in stages for a in s["prompts"] + s["models"]}:
+        for name in {a for s in stages for a in s["prompts"] + s["models"] + s["weights"]}:
             row = get(con, name)
             if row["status"] == "candidate":
                 set_status(con, name, "active", f"used by {r['name']}")
@@ -209,6 +361,8 @@ def diff(con, a: str, b: str) -> str:
     if ra["kind"] != rb["kind"] or ra["base"] != rb["base"]:
         raise ReinsError("diff two versions of the same artifact")
     ta = ra["body"] if ra["kind"] == "prompt" else json.dumps(json.loads(ra["body"]), indent=1, sort_keys=True)
+    if ra["kind"] == "weights":                       # for weights the interesting diff is files + training, not hashes alone
+        pass
     tb = rb["body"] if rb["kind"] == "prompt" else json.dumps(json.loads(rb["body"]), indent=1, sort_keys=True)
     return "".join(difflib.unified_diff(ta.splitlines(True), tb.splitlines(True), a, b))
 

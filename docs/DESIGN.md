@@ -130,10 +130,12 @@ case            oachargeid
 | 提示词 | `prompt-<name>-vN` | 按文本内容哈希：同一段文字同一个版本，改一个字就是新版本。文本从 `reins.toml [prompts]` 声明的位置读（Python 常量或文件），代码不用重写 | 模块版本的 pins 里写明它带的是哪个提示词版本 |
 | 模型 | `model-<name>-vN` | `reins.toml [models]`：provider、id、固定参数；参数变了就是新版本 | 同上 |
 | 工作流 | `workflow-<name>-vN` | `reins workflow freeze`：每个阶段的生产模块版本 + 当前提示词 / 模型版本冻成一套 | 批次 `--workflow` 指定跑哪一套；来源元组里带全套 |
+| **机器学习权重**（自训 YOLO / ConvNeXt、MINIMA、Qwen、PaddleOCR） | `weights-<name>-vN` | 按文件内容哈希（目录按全部模型文件）；同一份权重同一个版本，重训出来的新文件就是新版本。训练记录从权重旁边的文件自动采集：ultralytics 的 `args.yaml` / `results.csv`（基座、数据集、epochs、imgsz、mAP），自家训练器的 `history.json` / `metrics.json` / `train_manifest.csv`（精度、样本数）。开批次前 preflight 核对声明的每个权重文件都在、且内容是登记过的版本，杜绝悄悄换模型 | 模块版本的 pins 里写明它加载的是哪些权重版本；工作流版本钉住整套 |
 | benchmark | `bench-<name>-vN` | C4 | 门禁记录对着哪一版打分 |
 
 状态：`candidate`（登记了还没进生产）→ `active`（被某个 released 模块版本或工作流用上）→ `retired`。
 `reins artifact diff prompt-judge-v3 prompt-judge-v4` 看两版差异；`reins artifact show` 看它被哪些模块版本和工作流钉住。
+重训一个模型：`reins weights register panel_yolo --file .../best.pt --run-dir ... --dataset ... --note "..."`（或者只要文件变了，`reins artifact scan` 就会登记新版本）；`reins weights list` 一屏看全部权重、大小、框架、主指标；`reins weights check` 核对当前文件。
 
 ## C3 批次
 

@@ -72,6 +72,8 @@ reins dev start → 改代码 → pilot 批次（问题 case）→ eval 批次�
 
 改提示词 = 改代码：在自己的候选分支里改 `PROMPT` 常量，`reins dev finish` 时 reins 读出新文本、登记 `prompt-<name>-vN`、钉在这个模块版本上。
 改模型或参数：改 `reins.toml [models]`，同样走 finish。
+重训了 YOLO / ConvNeXt：新权重文件自动成为 `weights-<name>-vN`（内容哈希），训练记录从 `results.csv` / `history.json` 采集；
+换权重 = 改 `reins.toml [weights]` 指向的文件或内容，同样走 finish；开批次前 preflight 核对每个权重都是登记过的版本。
 发版前 `reins workflow freeze local_qa`：把每个阶段的生产模块版本、提示词版本、模型版本冻成 `workflow-local_qa-vN`；
 开批次用 `--workflow workflow-local_qa-vN`，批次的来源元组里就有整套。两套并行试验 = 两个工作流版本、两个批次。
 

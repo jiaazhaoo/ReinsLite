@@ -65,6 +65,10 @@ def project_checks(b, root: Path | None) -> list[tuple[str, bool, str]]:
         return []
     cfg = tomllib.loads((root / "reins.toml").read_text(encoding="utf-8"))
     out = []
+    if cfg.get("weights"):
+        from . import artifacts
+        from .store import connect
+        out += artifacts.check_weights(connect(), cfg)
     env = {**os.environ, "REINS_BATCH": b["batch_id"], "REINS_CASES": b["case_set_path"], "REINS_WORK_DIR": b["work_dir"] or ""}
     for c in cfg.get("preflight", []):
         r = subprocess.run(c["cmd"], shell=True, cwd=str(root), env=env, capture_output=True, text=True, timeout=600)
