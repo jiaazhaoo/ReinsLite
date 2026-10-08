@@ -42,7 +42,7 @@ class Weights(unittest.TestCase):
         r = artifacts.register_weights(self.con, "txtdraw", {"file": str(self.cnx)})
         b = json.loads(artifacts.get(self.con, r["name"])["body"])
         self.assertEqual((b["training"]["framework"], b["training"]["epochs_run"], b["training"]["metrics"]["accuracy"],
-                          b["training"]["dataset"]["rows"]), ("house-trainer", 2, 0.97, 120))
+                          b["training"]["dataset"]["rows"]), ("json-history", 2, 0.97, 120))
 
     def test_hash_cache_and_symlink(self):
         link = self.tmp / "link.pt"; link.symlink_to(self.yolo)

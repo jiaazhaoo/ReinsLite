@@ -11,7 +11,7 @@ module / prompt / model versions of every stage, a batch records the workflow ve
 Where the content comes from is declared in the project's reins.toml, so code is not rewritten to be versioned:
     [prompts.judge]        file = "tools/qa_judge.py"   symbol = "PROMPT"      # a Python string constant
     [prompts.crops]        file = "prompts/crops.md"                            # or a whole file
-    [models.judge_primary] provider = "openrouter"  id = "google/gemini-3.8-flash"  params = {temperature = 0}
+    [models.judge_primary] provider = "openrouter"  id = "vendor/model-name"  params = {temperature = 0}
     [workflows.local_qa]   about = "..."  stages = [{name = "check", module = "judge", prompts = ["judge"], models = ["judge_primary"], paid = true}, ...]
 
     reins artifact scan [--repo DIR]                 register the current prompt / model versions declared in reins.toml
@@ -209,8 +209,9 @@ def _read_json(p: Path, limit: int = 4000):
 
 
 def harvest_training(primary: Path) -> dict:
-    """What a training run left beside its weights: ultralytics (args.yaml, results.csv), the house ConvNeXt trainer
-    (history.json, metrics.json, best_model_test_metrics.json, train_manifest.csv, split_counts.json), a sibling .json."""
+    """What a training run left beside its weights, in the common shapes: ultralytics (args.yaml, results.csv); a
+    JSON-logging trainer (history.json = list of per-epoch dicts, metrics.json, *_metrics.json, train_manifest.csv,
+    split_counts.json); a sibling <weights>.json. A project with another layout declares `training = {...}` instead."""
     out: dict = {}
     d = primary.parent
     run = d.parent if d.name == "weights" else d                       # ultralytics: <run>/weights/best.pt
@@ -233,13 +234,13 @@ def harvest_training(primary: Path) -> dict:
                     "metrics/mAP50(M)", "metrics/mAP50-95(M)"}
             out["metrics"] = {h: last[i] for i, h in enumerate(hdr) if h in want and i < len(last)}
             out["epochs_run"] = len(rows) - 1
-    for name in ("metrics.json", "best_model_test_metrics.json"):
+    for name in ["metrics.json"] + sorted(p.name for p in d.glob("*_metrics.json")):
         j = _read_json(d / name)
         if isinstance(j, dict):
             out.setdefault("metrics", {}).update({k: v for k, v in j.items() if isinstance(v, (int, float, str))})
     hist = _read_json(d / "history.json")
     if isinstance(hist, list) and hist and isinstance(hist[-1], dict):
-        out["framework"] = out.get("framework", "house-trainer")
+        out["framework"] = out.get("framework", "json-history")
         out["epochs_run"] = len(hist)
         out.setdefault("metrics", {}).update({k: v for k, v in hist[-1].items() if isinstance(v, (int, float))})
     man = d / "train_manifest.csv"
@@ -265,7 +266,7 @@ def weights_body(con, spec: dict) -> tuple[str, dict]:
         rec[str(f.relative_to(root)) if spec.get("dir") else f.name] = {"sha256": sha, "size": size}
     identity = json.dumps(rec, sort_keys=True)                           # the version is the files, not the notes
     body = {"files": rec, "path": str(root.resolve()), "n_files": len(files), "bytes": sum(v["size"] for v in rec.values()),
-            "config_key": spec.get("config_key"), "training": {**harvest_training(files[0]), **(spec.get("training") or {})}}
+            "training": {**harvest_training(files[0]), **(spec.get("training") or {})}}
     return identity, body
 
 
@@ -398,7 +399,7 @@ def group_of(kind: str, spec: dict, body: dict | None = None) -> str:
     if kind == "weights":
         if spec.get("origin") in ("trained", "pretrained"):
             return spec["origin"]
-        return "trained" if spec.get("config_key") or (body or {}).get("training", {}).get("framework") else "pretrained"
+        return "trained" if (body or {}).get("training", {}).get("framework") else "pretrained"
     return spec.get("kind", "code")
 
 

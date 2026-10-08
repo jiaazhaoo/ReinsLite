@@ -68,7 +68,7 @@ class Artifacts(unittest.TestCase):
         # a batch opened from the workflow carries the whole set in its provenance
         cases = self.tmp / "c.txt"; cases.write_text("1\n2\n")
         self.con.execute("INSERT INTO release VALUES ('rel-p-20261007-1','p','abc',?, '', '[]', '2026', NULL)", (str(self.tmp),))
-        b = batches.open_(self.con, project="p", council="x", wp="wp1", type_="production", purpose="from workflow",
+        b = batches.open_(self.con, project="p", scope="x-wp1", type_="production", purpose="from workflow",
                           case_file=cases, stages=[], release_name="rel-p-20261007-1", workflow="workflow-qa-v1")
         prov = batches.provenance(self.con, b)
         self.assertEqual(prov["workflow"], "workflow-qa-v1")

@@ -97,7 +97,7 @@ def running_cards(con) -> list[dict]:
         health = "red" if b["status"] == "paused" or needs else "green"
         if cur and cur["failed"] > 0.05 * max(1, acc):
             health = "yellow" if health == "green" else health
-        skipped = con.execute("SELECT COUNT(DISTINCT oachargeid) FROM case_current WHERE batch_id=? AND status='skipped'", (b["batch_id"],)).fetchone()[0]
+        skipped = con.execute("SELECT COUNT(DISTINCT case_id) FROM case_current WHERE batch_id=? AND status='skipped'", (b["batch_id"],)).fetchone()[0]
         reasons = [f"{r[1]} × {r[0]}" for r in con.execute(
             "SELECT reason, COUNT(*) FROM case_current WHERE batch_id=? AND status='skipped' GROUP BY reason ORDER BY 2 DESC", (b["batch_id"],))]
         aliases = json.loads(b["aliases"])
@@ -359,7 +359,7 @@ async function load(){const s=await (await fetch('/api/state')).json();document.
  document.getElementById('cost').innerHTML=s.cost.map(c=>`<div class="cost"><div class="name">${esc(c.provider)} ${!c.key_present?'<span class="pill">未配置 key</span>':!c.has_endpoint?'<span class="pill">无余额接口</span>':c.error?'<span class="pill bad">查询失败</span>':''}</div>
   <div class="bal ${c.balance!=null&&c.balance<10?'low':''}">${c.has_endpoint?usd(c.balance):'—'}</div>
   <div class="row2"><span>今日 <b>${usd(c.spent_today)}</b></span><span>本周 <b>${usd(c.spent_week)}</b></span><span>今日调用 <b>${c.calls_today}</b></span></div>
-  <div class="row2 small"><span>${c.spend_source==='balance'?'按余额变化计，含未经网关的调用':c.provider==='google'?'无余额接口：按调用数 × 牌价估算（geocode $5/1000）':'仅网关记账'}</span>${c.balance_at?`<span>余额 ${d(c.balance_at)}</span>`:''}</div>
+  <div class="row2 small"><span>${c.spend_source==='balance'?'按余额变化计，含未经网关的调用':c.per_call?'无余额接口：按调用数 × 牌价估算':'仅网关记账'}</span>${c.balance_at?`<span>余额 ${d(c.balance_at)}</span>`:''}</div>
   ${c.by_batch.length?`<div class="small mute">本周按批次：${c.by_batch.map(b=>esc(b.batch_id)+' '+usd(b.usd)).join('；')}</div>`:''}</div>`).join('');
  document.getElementById('costnote').textContent='余额每 10 分钟查一次（免费接口）';
  const P=s.pool,L=P.limits;const pct=(a,b)=>Math.min(100,Math.round(100*a/b));

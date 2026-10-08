@@ -25,7 +25,8 @@ sys.path.insert(0, str(ROOT / "hooks"))
 
 def log(msg: str) -> None:
     try:
-        home = Path(os.environ.get("REINS_HOME", "/data/reins"))
+        from reins.store import DEFAULT_HOME
+        home = Path(os.environ.get("REINS_HOME", DEFAULT_HOME))
         with (home / "hook.log").open("a") as f:
             f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {msg}\n")
     except OSError:
@@ -63,7 +64,8 @@ def main() -> int:
         tool, inp = data.get("tool_name", ""), data.get("tool_input") or {}
         if ev == "PreToolUse" and tool == "Bash":
             cmd = inp.get("command", "")
-            if (Path(os.environ.get("REINS_HOME", "/data/reins")) / "hook.debug").exists():
+            from reins.store import DEFAULT_HOME
+            if (Path(os.environ.get("REINS_HOME", DEFAULT_HOME)) / "hook.debug").exists():
                 log(f"debug Bash cwd(json)={cwd} getcwd={os.getcwd()} cmd={cmd[:120]!r}")
             import guard
             msg = guard.check_bash(cmd)

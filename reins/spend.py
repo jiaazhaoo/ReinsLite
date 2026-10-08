@@ -147,48 +147,45 @@ def weekly(con, weeks: int = 8) -> list[dict]:
 
 
 # ------------------------------------------------------------------ provider balances (free endpoints)
-PROVIDERS = ("openrouter", "deepseek", "google")
+def _key(ledger: str) -> str | None:
+    from . import providers
+    spec = providers.by_ledger(ledger)
+    k = providers.key(spec) if spec else None
+    return k or None
 
 
-def _key(provider: str) -> str | None:
-    from .store import home
-    f = home() / "secrets" / f"{provider}.key"
-    return f.read_text().strip() if f.is_file() else None
-
-
-def poll_balance(con, provider: str) -> dict | None:
-    """One sample of a provider's balance from its free account endpoint. None when it has none or the key is missing."""
+def poll_balance(con, ledger: str) -> dict | None:
+    """One sample of a provider's balance from the free account endpoint it declares. None when it has none or no key."""
     import json as _json
     import urllib.request
-    k = _key(provider)
-    if not k:
+    from . import providers
+    spec = providers.by_ledger(ledger)
+    k = _key(ledger)
+    if not spec or not spec.get("balance") or not k:
         return None
     try:
-        if provider == "openrouter":
-            req = urllib.request.Request("https://openrouter.ai/api/v1/credits", headers={"Authorization": "Bearer " + k})
-            d = _json.load(urllib.request.urlopen(req, timeout=20))["data"]
-            bal, used = float(d["total_credits"]) - float(d["total_usage"]), float(d["total_usage"])
-            detail = f"credits {d['total_credits']}"
-        elif provider == "deepseek":
-            req = urllib.request.Request("https://api.deepseek.com/user/balance", headers={"Authorization": "Bearer " + k})
-            d = _json.load(urllib.request.urlopen(req, timeout=20))
-            usd = next((b for b in d.get("balance_infos", []) if b.get("currency") == "USD"), None)
-            bal, used = (float(usd["total_balance"]) if usd else None), None
-            detail = ", ".join(f"{b['currency']} {b['total_balance']}" for b in d.get("balance_infos", []))
-        else:
-            return None
+        req = urllib.request.Request(spec["balance"]["url"], headers={"Authorization": "Bearer " + k})
+        bal, used, detail = providers.parse_balance(spec["balance"]["parse"], _json.load(urllib.request.urlopen(req, timeout=20)))
     except Exception as e:                                                      # noqa: BLE001
         with tx(con):
-            con.execute("INSERT INTO balance_sample (at, provider, detail) VALUES (?,?,?)", (now(), provider, f"error: {e!s}"[:200]))
+            con.execute("INSERT INTO balance_sample (at, provider, detail) VALUES (?,?,?)", (now(), ledger, f"error: {e!s}"[:200]))
         return None
     with tx(con):
         con.execute("INSERT INTO balance_sample (at, provider, balance, usage_total, detail) VALUES (?,?,?,?,?)",
-                    (now(), provider, bal, used, detail))
-    return {"provider": provider, "balance": bal, "usage_total": used, "detail": detail}
+                    (now(), ledger, bal, used, detail))
+    return {"provider": ledger, "balance": bal, "usage_total": used, "detail": detail}
+
+
+def ledgers(con) -> list[str]:
+    """Providers worth a card: in use by this installation, or present in the spend ledger."""
+    from . import providers
+    names = [p["ledger"] for p in providers.in_use()]
+    names += [r[0] for r in con.execute("SELECT DISTINCT provider FROM spend") if r[0] and r[0] not in names]
+    return names
 
 
 def poll_balances(con) -> list[dict]:
-    return [r for p in PROVIDERS if (r := poll_balance(con, p))]
+    return [r for p in ledgers(con) if (r := poll_balance(con, p))]
 
 
 def cost_view(con) -> list[dict]:
@@ -198,7 +195,9 @@ def cost_view(con) -> list[dict]:
     today = _dt.date.today().isoformat()
     week = (_dt.date.today() - _dt.timedelta(days=7)).isoformat()
     out = []
-    for p in PROVIDERS:
+    from . import providers
+    for p in ledgers(con):
+        spec = providers.by_ledger(p) or {}
         latest = con.execute("SELECT * FROM balance_sample WHERE provider=? AND balance IS NOT NULL ORDER BY id DESC LIMIT 1", (p,)).fetchone()
         first_today = con.execute("SELECT * FROM balance_sample WHERE provider=? AND balance IS NOT NULL AND at>=? ORDER BY id LIMIT 1",
                                   (p, today)).fetchone()
@@ -216,10 +215,10 @@ def cost_view(con) -> list[dict]:
             spent_week = round(first_week["balance"] - latest["balance"], 2)
         est = con.execute("SELECT COUNT(*) FROM spend WHERE provider=? AND priced='table' AND at>=?", (p, today)).fetchone()[0]
         out.append({"provider": p, "estimated_calls_today": est, "balance": latest["balance"] if latest else None,
-                    "balance_at": latest["at"] if latest else None, "has_endpoint": p in ("openrouter", "deepseek"),
+                    "balance_at": latest["at"] if latest else None, "has_endpoint": bool(spec.get("balance")), "per_call": spec.get("kind") == "get",
                     "key_present": _key(p) is not None,
                     "spent_today": spent_today if spent_today is not None else round(led_today[0], 2),
                     "spent_week": spent_week if spent_week is not None else round(led_week, 2),
                     "spend_source": src, "calls_today": led_today[1], "last_call": led_today[2],
-                    "by_batch": by_batch, "error": (latest is None and _key(p) is not None and p != "google")})
+                    "by_batch": by_batch, "error": (latest is None and _key(p) is not None and bool(spec.get("balance")))})
     return out

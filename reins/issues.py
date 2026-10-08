@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS issue (
   at            TEXT NOT NULL,
   batch_id      TEXT NOT NULL,
   stage         TEXT,
-  cases         TEXT NOT NULL,                        -- JSON list of oachargeid
+  cases         TEXT NOT NULL,                        -- JSON list of case_id
   symptom       TEXT NOT NULL,
   status        TEXT NOT NULL CHECK (status IN ('open','in_progress','fixed','verified','closed')),
   from_session  TEXT,                                 -- who found it (gets told when it is fixed)
@@ -74,7 +74,7 @@ def open_(con, batch: str, cases: list[str], symptom: str, stage: str | None = N
     batches.get(con, batch)
     if not symptom.strip() or len(symptom.strip()) < 8:
         raise ReinsError("symptom: one line saying what is wrong, as seen on the cases")
-    members = {r[0] for r in con.execute("SELECT oachargeid FROM batch_case WHERE batch_id=?", (batch,))}
+    members = {r[0] for r in con.execute("SELECT case_id FROM batch_case WHERE batch_id=?", (batch,))}
     bad = [c for c in cases if c not in members]
     if bad:
         raise ReinsError(f"not in {batch}: {bad[:5]}")

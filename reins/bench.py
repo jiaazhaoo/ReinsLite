@@ -12,8 +12,8 @@
 
 Layout: <bench_root>/bench-<name>/v<N>/{MANIFEST.json, cases.csv, inputs/, stages/<stage>/, labels.jsonl, CHANGELOG.md}
 
-Labels (one JSON per line): {"oachargeid", "target", "value", "source", "by", "saw_drawing", "note"}
-  source ∈ golden | customer_result | reviewer_verdict | reference_geometry   (trust, high to low)
+Labels (one JSON per line): {"case_id", "target", "value", "source", "by", "saw_drawing", "note"}
+  source ∈ golden | customer_result | reviewer_verdict | reference[_<kind>]   (trust, high to low)
   golden: by must be a named person and saw_drawing must be true -- never a model, never an edit made in chat.
 """
 from __future__ import annotations
@@ -29,8 +29,28 @@ from pathlib import Path
 from . import names
 from .store import ReinsError, config, home, now, session, tx
 
-SOURCES = ("golden", "customer_result", "reviewer_verdict", "reference_geometry")
-NOT_PEOPLE = {"", "assistant", "claude", "model", "gemini", "luna", "sol", "pipeline", "auto"}
+SOURCES = ("golden", "customer_result", "reviewer_verdict", "reference")   # reference_<kind> (reference_geometry, ...) is reference
+NOT_PEOPLE = {"", "assistant", "claude", "model", "llm", "ai", "pipeline", "auto", "bot"}
+
+
+def _models(con) -> set[str]:
+    """Names a model goes by in this registry (artifact base, model id and its last part): never a golden labeller."""
+    out = set()
+    try:
+        for r in con.execute("SELECT base, body FROM artifact WHERE kind='model'"):
+            out.add(r["base"].lower())
+            mid = str(json.loads(r["body"]).get("id", "")).lower()
+            if mid:
+                out |= {mid, mid.split("/")[-1]} | set(mid.split("/")[-1].replace("_", "-").split("-"))
+    except Exception:                                                      # noqa: BLE001  (no artifact table yet)
+        pass
+    return {m for m in out if len(m) > 2 and not m.isdigit()}
+
+
+def _cid(row: dict, key: str | None = None) -> str:
+    """Case id of a cases.csv / sidecar row: case_id (or the project's key); reins writes the case column first, so a
+    benchmark frozen before the framework used case_id still reads."""
+    return names.case_of(row, key) or next(iter(row.values()))
 
 
 def full_name(name: str) -> str:
@@ -87,7 +107,7 @@ def init(con, name: str, project: str, case_file: Path, about: str, holdout_frac
     n_hold = round(len(ids) * holdout_fraction)
     holdout = set(shuffled[:n_hold])
     with (path / "cases.csv").open("w", newline="") as f:
-        w = csv.writer(f); w.writerow(["oachargeid", "split"])
+        w = csv.writer(f); w.writerow(["case_id", "split"])
         for i in ids:
             w.writerow([i, "holdout" if i in holdout else "dev"])
     (path / "labels.jsonl").write_text("")
@@ -145,27 +165,35 @@ def add_input(con, name: str, src: Path) -> int:
     return n
 
 
-def check_label(lab: dict, members: set[str]) -> str | None:
-    for k in ("oachargeid", "target", "value", "source", "by"):
+def check_label(lab: dict, members: set[str], key: str | None = None, not_people: set[str] = frozenset()) -> str | None:
+    cid = names.case_of(lab, key)
+    if cid is None:
+        return f"missing case_id{' (or ' + key + ')' if key else ''}"
+    lab["case_id"] = cid                                  # stored under the framework's name
+    if key and key != "case_id":
+        lab.pop(key, None)
+    for k in ("target", "value", "source", "by"):
         if k not in lab or lab[k] in ("", None):
             return f"missing {k}"
-    if lab["oachargeid"] not in members:
-        return f"{lab['oachargeid']} is not in the benchmark"
-    if lab["source"] not in SOURCES:
+    if lab["case_id"] not in members:
+        return f"{lab['case_id']} is not in the benchmark"
+    if lab["source"] not in SOURCES and not str(lab["source"]).startswith("reference_"):
         return f"source {lab['source']!r} not in {SOURCES}"
     if lab["source"] == "golden":
-        if str(lab["by"]).lower() in NOT_PEOPLE:
+        if str(lab["by"]).lower() in NOT_PEOPLE | set(not_people):
             return f"golden needs a named person as `by`, not {lab['by']!r}"
         if lab.get("saw_drawing") is not True:
             return "golden needs saw_drawing: true (judged with the drawing in front of the person)"
     return None
 
 
-def label(con, name: str, file: Path) -> dict:
+def label(con, name: str, file: Path, key: str | None = None) -> dict:
     row = _row(con, name)
     _open(row)
     path = Path(row["path"])
-    members = {r["oachargeid"] for r in csv.DictReader((path / "cases.csv").open())}
+    with (path / "cases.csv").open() as f:
+        members = {_cid(r, key) for r in csv.DictReader(f)}
+    models = _models(con)
     labs, errors = [], []
     for i, line in enumerate(file.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
@@ -174,7 +202,7 @@ def label(con, name: str, file: Path) -> dict:
             lab = json.loads(line)
         except json.JSONDecodeError:
             errors.append(f"line {i}: not JSON"); continue
-        e = check_label(lab, members)
+        e = check_label(lab, members, key, models)
         if e:
             errors.append(f"line {i}: {e}")
         labs.append(lab)
@@ -236,7 +264,7 @@ def adopt(con, name: str, version: int, project: str, path: Path, case_file: Pat
     files = _hash_tree(path)
     side = home() / "bench"; side.mkdir(parents=True, exist_ok=True)
     rec = {"name": name, "version": version, "path": str(path), "adopted": now(), "about": about, "files": files,
-           "cases": [{"oachargeid": i, "split": "holdout" if i in hold else "dev"} for i in ids]}
+           "cases": [{"case_id": i, "split": "holdout" if i in hold else "dev"} for i in ids]}
     (side / f"{name}-v{version}.files.json").write_text(json.dumps(rec, indent=1))
     msha = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
     with tx(con):
@@ -315,7 +343,7 @@ def cases(con, name: str, version: int | None = None, split: str | None = None) 
         rows = json.loads(side.read_text())["cases"]
     else:
         rows = list(csv.DictReader((Path(row["path"]) / "cases.csv").open()))
-    return [r["oachargeid"] for r in rows if split is None or r["split"] == split]
+    return [_cid(r) for r in rows if split is None or r["split"] == split]
 
 
 def list_(con) -> list[dict]:

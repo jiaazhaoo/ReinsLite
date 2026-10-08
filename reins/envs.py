@@ -1,6 +1,6 @@
 """Environment versions: env-<name>-vN = a manifest of what the code ran in (interpreter, packages, CUDA, assets).
 
-    reins env snapshot NAME --python /env/venv/x/bin/python [--asset PATH ...]     -> env-NAME-vN (same content = same version)
+    reins env snapshot NAME --python /path/to/venv/bin/python [--asset PATH ...]     -> env-NAME-vN (same content = same version)
     reins env check NAME --python ... [--asset ...]                                 what differs from the latest snapshot
     reins env list
 
@@ -16,7 +16,10 @@ import subprocess
 from pathlib import Path
 
 from . import names
-from .store import ReinsError, now, tx
+
+CUDA_PROBES = ["import torch; print(torch.version.cuda or '')", "import paddle; print(paddle.version.cuda())",
+               "import jax; print(jax.lib.xla_bridge.get_backend().platform_version)", "import tensorflow as tf; print(tf.sysconfig.get_build_info().get('cuda_version', ''))"]
+from .store import ReinsError, config, now, tx
 
 
 def _run(cmd: list[str]) -> str:
@@ -37,8 +40,11 @@ def manifest(python: str, assets: list[str] | None = None) -> dict:
         elif " @ " in line:
             k, v = line.split(" @ ", 1); pkgs[k.lower()] = v
     nv = _run(["nvidia-smi", "--query-gpu=driver_version,name", "--format=csv,noheader"])
-    cuda = _run([python, "-c", "import torch; print(torch.version.cuda or '')"]) or \
-           _run([python, "-c", "import paddle; print(paddle.version.cuda())"])
+    cuda = ""                           # the first framework present answers (config.toml cuda_probes to change the list)
+    for probe in config().get("cuda_probes") or CUDA_PROBES:
+        cuda = _run([python, "-c", probe])
+        if cuda:
+            break
     asset_shas = {}
     for a in assets or []:
         p = Path(a)

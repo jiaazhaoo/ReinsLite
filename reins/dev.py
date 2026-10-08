@@ -7,15 +7,15 @@
     reins dev list
 
 Project settings come from the repo's reins.toml:
-    project = "e2e-plan-extract"
+    project = "my-pipeline"
     [dev]
-    repo = "/env/code/e2e-plan-extract"            # main worktree
-    gate = "python3 benchmark/qa359/gate.py"       # run in the candidate's worktree; exit 0 = passed. If it writes
+    repo = "/path/to/my-pipeline"                  # main worktree
+    gate = "python3 bench/gate.py"                 # run in the candidate's worktree; exit 0 = passed. If it writes
                                                    # JSON to $REINS_GATE_OUT, that is recorded as the gate_log row
                                                    # and must be green (see reins/gate.py for the fields)
-    [modules.georef]
-    about = "place plan images on the map"
-    files = ["e2e_plan_extract/georef/*"]
+    [modules.extract]
+    about = "pull the fields out of each page"
+    files = ["my_pipeline/extract/*"]
 """
 from __future__ import annotations
 
@@ -113,7 +113,7 @@ def start(con, repo: Path, module: str, suffix: str, about: str, from_batch: str
     if from_batch:
         from . import batches
         b = batches.get(con, from_batch)
-        members = {r[0] for r in con.execute("SELECT oachargeid FROM batch_case WHERE batch_id=?", (from_batch,))}
+        members = {r[0] for r in con.execute("SELECT case_id FROM batch_case WHERE batch_id=?", (from_batch,))}
         bad = [c for c in (cases or []) if c not in members]
         if bad:
             raise ReinsError(f"cases not in {from_batch}: {', '.join(bad)}")

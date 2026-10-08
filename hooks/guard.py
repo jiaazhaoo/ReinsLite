@@ -4,12 +4,12 @@
 Blocks, with the reins command to use instead:
   Bash   setsid / nohup / disown / trailing &  on a pipeline command  -> reins run BATCH STAGE -- CMD
          git merge|push into main, git checkout/switch inside another session's worktree -> reins dev finish
-         writes (> >> tee cp mv rm chmod) into frozen paths: /data/benchmarks/*, *-rel-*, release worktrees
+         writes (> >> tee cp mv rm chmod) into frozen paths: the bench root, release worktrees, config frozen_paths
   Edit/Write/MultiEdit   files in frozen paths or in a worktree leased by another session
 
 Install (in ~/.claude/settings.json):
   "hooks": {"PreToolUse": [{"matcher": "Bash|Edit|Write|MultiEdit",
-             "hooks": [{"type": "command", "command": "python3 /env/code/ReinsLite/hooks/guard.py"}]}]}
+             "hooks": [{"type": "command", "command": "python3 <ReinsLite>/hooks/guard.py"}]}]}
 Exit 2 = blocked (stderr is shown to the model); exit 0 = allowed. Any internal error allows (fail open) and
 logs to $REINS_HOME/guard.log, so a broken guard never stops work silently.
 """
@@ -23,9 +23,25 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-HOME = Path(os.environ.get("REINS_HOME", "/data/reins"))
-FROZEN = [re.compile(p) for p in (r"^/data/benchmarks/", r"/[^/ ]+-rel-[^/ ]+/", r"^/data/reins/cache/",
-                                  r"^/data/[^/]+/(text|spatial)/delivery/")]
+from reins.store import DEFAULT_HOME  # noqa: E402
+
+HOME = Path(os.environ.get("REINS_HOME", DEFAULT_HOME))
+
+
+def _frozen() -> list[re.Pattern]:
+    """Frozen paths: benchmarks, the gateway cache, release trees, plus the machine's own (config.toml frozen_paths)."""
+    pats = [r"/[^/ ]+-rel-[^/ ]+/"]
+    try:
+        from reins.store import config
+        cfg = config()
+        pats += ["^" + re.escape(str(Path(cfg["bench_root"]))) + "/", "^" + re.escape(str(HOME / "cache")) + "/"]
+        pats += list(cfg.get("frozen_paths") or [])
+    except Exception:                                                       # noqa: BLE001  (fail open)
+        pass
+    return [re.compile(p) for p in pats]
+
+
+FROZEN = _frozen()
 SWITCH = re.compile(r"git\b[^|;&]*\b(checkout|switch)\b")
 WRITE_PROGRAMS = {"tee", "cp", "mv", "rm", "chmod", "chown", "mkdir", "touch", "truncate", "ln", "rsync", "sed"}
 MODE_FIRST = {"chmod", "chown"}                 # first positional is a mode / owner, the targets follow
@@ -109,23 +125,10 @@ def merges_main(cmd: str) -> str | None:
     return None
 
 
-_PROJECTS: list[tuple[Path, dict]] | None = None
-
-
 def projects() -> list[tuple[Path, dict]]:
-    """(repo, reins.toml) of every managed project under /env/code."""
-    global _PROJECTS
-    if _PROJECTS is None:
-        import tomllib
-        _PROJECTS = []
-        for f in Path(os.environ.get("REINS_CODE_ROOT", "/env/code")).glob("*/reins.toml"):
-            if not (f.parent / ".git").is_dir():                # a linked worktree is a checkout, not the project
-                continue
-            try:
-                _PROJECTS.append((f.parent, tomllib.loads(f.read_text(encoding="utf-8"))))
-            except Exception:                                               # noqa: BLE001
-                pass
-    return _PROJECTS
+    """(repo, reins.toml) of every managed project under the code root (reins/projects.py)."""
+    from reins.projects import all_
+    return all_()
 
 
 def pipeline_programs() -> set[str]:
@@ -143,7 +146,7 @@ def blocked_tools() -> set[str]:
 
 
 def _script_runs(path: str, progs: set[str], depth: int = 0) -> bool:
-    """A wrapper script that executes a pipeline program (resume_*.sh calling run_local_qa.sh)."""
+    """A wrapper script that executes a pipeline program (a resume script that calls the project's run script)."""
     from reins.sessions import segments
     p = Path(path)
     if depth > 2 or not p.is_file() or p.stat().st_size > 200_000:

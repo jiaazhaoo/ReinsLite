@@ -1,9 +1,10 @@
-"""C9 paid-call gateway: the only process that holds the OpenRouter key.
+"""C9 paid-call gateway: the only process that holds the provider keys (which providers: reins/providers.py).
 
     reins gateway serve [--port 8790]
 
-Pipelines point their OpenAI-compatible client at  http://127.0.0.1:<port>/api/v1  and send
-    Authorization: Bearer <batch_id>:<stage>
+Pipelines point their client at  http://127.0.0.1:<port>/p/<provider>/v1  (chat) or  /p/<provider>  (GET services;
+`reins run` sets <ENV>_BASE_URL for every provider) and send
+    Authorization: Bearer <batch_id>:<stage>      (GET services: the same token as their key parameter)
 instead of a key. For every /chat/completions request the gateway
   1. checks the batch is running and the stage is a planned stage,
   2. looks the exact request up in the cache ($REINS_HOME/cache, key = sha256 of the canonical body),
@@ -12,7 +13,7 @@ instead of a key. For every /chat/completions request the gateway
   4. on a cap: answers 402 with a message naming the reins command to run, pauses the batch, notifies.
 Streaming is refused (the cost is only known at the end; reserve/settle needs the whole answer).
 
-Key: $REINS_HOME/secrets/openrouter.key (one line) or OPENROUTER_API_KEY in the gateway's own environment.
+Keys: $REINS_HOME/secrets/<key_file>.key (one line, chmod 600) or <ENV>_API_KEY in the gateway's own environment.
 """
 from __future__ import annotations
 
@@ -26,17 +27,10 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import batches, notify, spend
+from . import batches, notify, providers, spend
 from .store import ReinsError, config, connect, home
 
-UPSTREAM = "https://openrouter.ai/api/v1"
-# path prefix -> (provider, upstream base). OpenRouter at /api/v1 (its own path), others under /p/<provider>/v1.
-PROVIDERS = {"openrouter": "https://openrouter.ai/api/v1", "deepseek": "https://api.deepseek.com/v1"}
 KEYS: dict[str, str] = {}
-# Google Maps Platform: GET with the key as a query parameter; priced per call (USD, list prices 2026)
-GOOGLE_MAPS = "https://maps.googleapis.com"
-GOOGLE_CALL_PRICE = {"geocode": 0.005, "place/findplacefromtext": 0.017, "place/details": 0.017,
-                     "place/textsearch": 0.032, "staticmap": 0.002, "distancematrix": 0.005}
 _local = threading.local()
 _FAILS: dict[tuple[str, str], int] = {}       # (batch, stage) -> consecutive non-200 upstream answers
 
@@ -47,24 +41,27 @@ def _con() -> sqlite3.Connection:
     return _local.con
 
 
-def load_key(provider: str = "openrouter", required: bool = True) -> str:
-    f = home() / "secrets" / f"{provider}.key"
-    if f.is_file():
-        return f.read_text().strip()
-    k = os.environ.get(f"{provider.upper()}_API_KEY", "")
-    if not k and required:
-        raise ReinsError(f"no {provider} key: write it to {f} (chmod 600) or set {provider.upper()}_API_KEY for the gateway only")
-    return k
+def load_key(spec: dict) -> str:
+    return KEYS.get(spec["name"]) or providers.key(spec)
 
 
-def route(path: str) -> tuple[str, str] | None:
-    """URL path -> (provider, upstream chat-completions URL)."""
+def route(path: str) -> tuple[dict, str] | None:
+    """URL path -> (chat provider, upstream chat-completions URL). /api/v1 is the default chat provider (older clients)."""
     p = path.rstrip("/")
     if p == "/api/v1/chat/completions":
-        return "openrouter", UPSTREAM + "/chat/completions"
-    for name, base in PROVIDERS.items():
-        if p == f"/p/{name}/v1/chat/completions":
-            return name, (UPSTREAM if name == "openrouter" else PROVIDERS[name]) + "/chat/completions"
+        d = providers.default_chat()
+        return (d, d["base"].rstrip("/") + "/chat/completions") if d else None
+    for spec in providers.all_().values():
+        if spec["kind"] == "chat" and p == f"/p/{spec['name']}/v1/chat/completions":
+            return spec, spec["base"].rstrip("/") + "/chat/completions"
+    return None
+
+
+def get_route(path: str) -> dict | None:
+    """URL path -> the GET-kind provider it belongs to (/p/<name>/...)."""
+    for spec in providers.all_().values():
+        if spec["kind"] == "get" and path.startswith(f"/p/{spec['name']}/"):
+            return spec
     return None
 
 
@@ -124,18 +121,19 @@ class Handler(BaseHTTPRequestHandler):
                            f"both are running"); return None
         return batch, stage
 
-    def _google_get(self):
-        """GET /p/google_maps/maps/api/<api>/json?...&key=<batch[:stage]> -> maps.googleapis.com with the real key."""
+    def _metered_get(self, spec: dict):
+        """GET /p/<name>/<path>?...&<key_param>=<batch[:stage]> -> <base>/<path> with the real key, priced per call."""
         from urllib.parse import parse_qsl, urlencode, urlsplit
         u = urlsplit(self.path)
         q = dict(parse_qsl(u.query, keep_blank_values=True))
-        tok = q.pop("key", "") or self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        kp = spec.get("key_param", "key")
+        tok = q.pop(kp, "") or self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
         batch, _, stage = tok.partition(":")
         con = _con()
         try:
             b = batches.get(con, batch)
         except ReinsError:
-            self._err(401, "key must be the batch token <batch_id>[:<stage>] (the gateway holds the Google key)"); return
+            self._err(401, f"{kp} must be the batch token <batch_id>[:<stage>] (the gateway holds the {spec['name']} key)"); return
         if not stage:
             r = con.execute("SELECT stage FROM batch_stage WHERE batch_id=? AND status='running' ORDER BY ord", (batch,)).fetchall()
             if len(r) != 1:
@@ -143,16 +141,18 @@ class Handler(BaseHTTPRequestHandler):
             stage = r[0][0]
         if b["status"] != "running":
             self._err(409, f"{batch} is {b['status']}: paid calls run only while it is running"); return
-        key = KEYS.get("google") or load_key("google", required=False)
+        key = load_key(spec)
+        led = spec["ledger"]
         if not key:
-            self._err(503, f"the gateway has no google key ({home() / 'secrets' / 'google.key'})"); return
-        api = u.path.removeprefix("/p/google_maps/maps/api/").removesuffix("/json").rstrip("/")
-        price = next((p for k, p in GOOGLE_CALL_PRICE.items() if api.startswith(k)), 0.005)
-        sha = hashlib.sha256(("google_maps|" + api + "|" + urlencode(sorted(q.items()))).encode()).hexdigest()
+            self._err(503, f"the gateway has no {spec['name']} key ({home() / 'secrets' / (spec['key_file'] + '.key')})"); return
+        rest = u.path.removeprefix(f"/p/{spec['name']}")
+        api = rest.removeprefix(spec.get("path_prefix", "/")).removesuffix("/json").strip("/")
+        price = next((p for k, p in (spec.get("per_call") or {}).items() if api.startswith(k)), float(spec.get("default_call", 0)))
+        sha = hashlib.sha256((spec["name"] + "|" + api + "|" + urlencode(sorted(q.items()))).encode()).hexdigest()
         mv = con.execute("SELECT module_version FROM batch_stage WHERE batch_id=? AND stage=?", (batch, stage)).fetchone()[0]
         cp = cache_path(sha)
         if cp.is_file() and b["type"] != "drift":
-            spend.record_free(con, batch, stage, provider="google", model=api, request_sha=sha, module_version=mv)
+            spend.record_free(con, batch, stage, provider=led, model=api, request_sha=sha, module_version=mv)
             self._send(200, cp.read_bytes()); return
         try:
             rid = spend.reserve(con, batch, stage, price)
@@ -161,7 +161,7 @@ class Handler(BaseHTTPRequestHandler):
             self._err(402, f"{e}. Batch paused. To continue: reins batch approve {batch} --cap USD && reins ctl resume {batch}"); return
         except ReinsError as e:
             self._err(409, str(e)); return
-        url = GOOGLE_MAPS + u.path.removeprefix("/p/google_maps") + "?" + urlencode({**q, "key": key})
+        url = spec["base"].rstrip("/") + rest + "?" + urlencode({**q, kp: key})
         try:
             with urllib.request.urlopen(url, timeout=30) as r:
                 raw, code = r.read(), 200
@@ -169,8 +169,8 @@ class Handler(BaseHTTPRequestHandler):
             raw, code = e.read(), e.code
         except (urllib.error.URLError, TimeoutError) as e:
             spend.release(con, rid); self._err(504, f"upstream unreachable: {e}"); return
-        # Google bills a geocode request whatever its status; ZERO_RESULTS is still a call
-        spend.settle(con, rid, provider="google", model=api, amount=price if code == 200 else 0.0, priced="table",
+        # a metered GET is billed whatever the answer says (a geocode with ZERO_RESULTS is still a call)
+        spend.settle(con, rid, provider=led, model=api, amount=price if code == 200 else 0.0, priced="table",
                      tokens_in=None, tokens_out=None, cache_hit=False, request_sha=sha, http_status=code, module_version=mv)
         if code == 200 and b["type"] != "drift":
             cp.parent.mkdir(parents=True, exist_ok=True); cp.write_bytes(raw)
@@ -178,10 +178,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, raw)
 
     def do_GET(self):
-        if self.path.startswith("/p/google_maps/"):
-            self._google_get(); return
-        if self.path.rstrip("/") == "/api/v1/credits":
-            req = urllib.request.Request(UPSTREAM + "/credits", headers={"Authorization": "Bearer " + self.key})
+        spec = get_route(self.path)
+        if spec:
+            self._metered_get(spec); return
+        d = providers.default_chat()
+        if self.path.rstrip("/") == "/api/v1/credits" and d and d.get("balance"):
+            req = urllib.request.Request(d["balance"]["url"], headers={"Authorization": "Bearer " + load_key(d)})
             try:
                 with urllib.request.urlopen(req, timeout=30) as r:
                     self._send(200, r.read())
@@ -190,16 +192,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path.rstrip("/") == "/health":
             self._send(200, {"ok": True}); return
-        self._err(404, "gateway serves POST /api/v1/chat/completions and GET /api/v1/credits")
+        self._err(404, "gateway serves POST /p/<provider>/v1/chat/completions and GET /p/<provider>/... (reins/providers.py)")
 
     def do_POST(self):
         rt = route(self.path)
         if not rt:
-            self._err(404, "POST /api/v1/chat/completions (OpenRouter) or /p/<provider>/v1/chat/completions"); return
-        provider, upstream_url = rt
-        key = self.key if provider == "openrouter" else KEYS.get(provider) or load_key(provider, required=False)
+            self._err(404, "POST /p/<provider>/v1/chat/completions (or /api/v1/chat/completions for the default)"); return
+        spec, upstream_url = rt
+        provider = spec["ledger"]
+        key = load_key(spec)
         if not key:
-            self._err(503, f"the gateway has no {provider} key ({home() / 'secrets' / (provider + '.key')})"); return
+            self._err(503, f"the gateway has no {spec['name']} key ({home() / 'secrets' / (spec['key_file'] + '.key')})"); return
         auth = self._auth()
         if not auth:
             return
@@ -229,9 +232,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         except ReinsError as e:
             self._err(409, str(e)); return
-        fwd = dict(body)
-        if provider == "openrouter":
-            fwd["usage"] = {"include": True}                    # OpenRouter reports the charged cost
+        fwd = {**body, **(spec.get("extra_body") or {})}      # e.g. OpenRouter: usage.include -> it reports the charged cost
         fwd.pop("timeout", None)
         req = urllib.request.Request(upstream_url, data=json.dumps(fwd).encode(),
                                      headers={"Authorization": "Bearer " + key, "Content-Type": "application/json",
@@ -286,12 +287,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(port: int | None = None) -> None:
-    Handler.key = load_key()
-    for name in list(PROVIDERS) + ["google"]:
-        if name != "openrouter":
-            k = load_key(name, required=False)
-            if k:
-                KEYS[name] = k
+    for spec in providers.all_().values():
+        k = providers.key(spec)
+        if k:
+            KEYS[spec["name"]] = k
+    if not KEYS:
+        raise ReinsError(f"no provider key found: write one to {home() / 'secrets'}/<provider>.key (chmod 600)")
     port = port or config()["gateway_port"]
     (home() / "cache").mkdir(parents=True, exist_ok=True)
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)

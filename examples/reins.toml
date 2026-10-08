@@ -1,31 +1,120 @@
-# Put this at a project's repo root as reins.toml. `reins` reads the nearest one above the current directory.
+# Template: put this at a project's repo root as reins.toml. `reins` reads the nearest one above the current directory.
+# Everything domain-specific lives here (and in the files it names); the framework knows none of it.
+# The example project pulls fields out of scanned forms. A real adopter: e2e-plan-extract/reins.toml.
 
-project = "e2e-plan-extract"
-case_id_pattern = "^[0-9]+$"            # oachargeid format for this council family (digits; SHF_ is display only)
+project = "form-extract"
+case_key = "form_id"                    # this project's name for the case key column (reins also reads case_id)
+case_id_pattern = "^F[0-9]{6}$"         # what a case id looks like here; a case list that breaks it is refused
+
+[batch]
+scope = ["client", "package"]           # batch names: <client>-<package>-<type>-<YYYYMMDD>-<n>, e.g. acme-q3-pilot-20261008-1
+
+[glossary]
+file = "glossary.toml"                  # this project's own words, linted together with the framework's (examples/glossary.toml)
+
+[deliver]
+forbid_scripts = ["cjk"]                # deliverables must not carry text in these scripts (cjk | cyrillic | arabic)
 
 [dev]
-repo = "/env/code/e2e-plan-extract"     # main worktree; candidates live in <repo>-wt-<version>, releases in <repo>-rel-...
+repo = "/path/to/form-extract"          # main worktree; candidates live in <repo>-wt-<version>, releases in <repo>-rel-...
 # Run inside the candidate's worktree by `reins dev finish`. Exit 0 = passed. If it writes JSON to $REINS_GATE_OUT
-# (fields in reins/gate.py), that becomes the gate_log row and must be green: missed_error not above the baseline,
-# no golden regressions. $REINS_GATE_SKIP carries a tier the user allowed to skip (recorded with the reason).
-gate = "python3 benchmark/qa359/gate.py --tier judges"
+# (fields in reins/gate.py), that becomes the gate_log row and must be green: missed_error not above the baseline.
+gate = "python3 bench/gate.py --tier quick"
+release_prefix = "rel"
+blocked_tools = []                      # project scripts sessions must no longer run (replaced by reins)
 
-[modules.plan_crop]
-about = "find and cut plan_images from scanned pages"
-files = ["e2e_plan_extract/stage_a/*"]
+[dev.upstream]                          # changes here can move every later output: a slower gate tier, or a recorded skip
+files = ["form_extract/ocr/*"]
+gate = "python3 bench/gate.py --tier full"
 
-[modules.georef]
-about = "place plan_images on the map (EPSG:27700)"
-files = ["e2e_plan_extract/georef/*"]
+[run]
+probe = "python3 tools/progress.py {work_dir}"          # one screen of progress, shown on the board
+programs = ["run_all.sh", "form_extract.ocr.batch"]     # only `reins run` may start these (scripts and python -m modules)
+stages = ["prepare", "ocr", "extract", "check"]
 
-[modules.trace]
-about = "trace the drawn boundary"
-files = ["tools/boundary_lab.py", "e2e_plan_extract/stage_b/*"]
+[[preflight]]
+name = "inputs_present"
+cmd = "test -s $REINS_WORK_DIR/forms.csv"
 
-[modules.judge]
-about = "model judges and tie-break of a polygon against its plan_image"
-files = ["tools/qa_judge.py", "tools/qa_final.py"]
+[modules.ocr]
+about = "read every page of a form"
+files = ["form_extract/ocr/*"]
+weights = ["ocr_det"]
 
-[modules.lanes]
-about = "route each case to a lane from its verdicts"
-files = ["tools/qa_review/queues.py"]
+[modules.extract]
+about = "pull the named fields out of the OCR text"
+files = ["form_extract/extract/*"]
+prompts = ["extract"]
+models = ["extractor"]
+tools = ["date_parser"]
+
+[modules.check]
+about = "a second model checks each field against the page; route each form to a lane"
+files = ["form_extract/check/*"]
+models = ["checker"]
+
+[prompts.extract]
+file = "form_extract/extract/llm.py"
+symbol = "PROMPT"                       # a module-level string constant (or a tuple / dict of them)
+title = "extract fields"
+about = "the question the extractor model answers per form"
+
+[models.extractor]
+provider = "openrouter"                 # a provider the gateway knows (reins/providers.py + config.toml [providers.*])
+id = "vendor/model-a"
+params = { temperature = 0 }
+title = "extractor"
+
+[models.checker]
+provider = "deepseek"
+id = "vendor/model-b"
+params = { temperature = 0 }
+
+[weights.ocr_det]
+dir = "/path/to/models/ocr_det"         # or file = ".../best.pt"; versioned by content, training record harvested
+origin = "pretrained"                   # trained = ours
+title = "OCR detector"
+
+[tools.date_parser]
+files = ["form_extract/extract/dates.py"]   # kind = "code" (default): versioned by source content
+title = "date parser"
+
+[tools.postcode_api]
+kind = "api"
+endpoint = "https://api.example.com/postcodes"
+title = "postcode lookup"
+
+[tools.reference_table]
+kind = "data"
+path = "/path/to/data/reference.csv"    # preflight refuses a production batch when it changed since its version
+title = "reference table"
+
+[workflows.main]
+about = "scanned forms in, checked fields out"
+
+[[workflows.main.stages]]
+name = "prepare"
+title = "prepare inputs"
+mascot = "box"                          # box | scissors | compass | pencil | judge | wrench (the board's stage figure)
+
+[[workflows.main.stages]]
+name = "ocr"
+module = "ocr"
+weights = ["ocr_det"]
+mascot = "scissors"
+
+[[workflows.main.stages]]
+name = "extract"
+module = "extract"
+prompts = ["extract"]
+models = ["extractor"]
+tools = ["date_parser", "postcode_api", "reference_table"]
+mascot = "pencil"
+paid = true
+
+[[workflows.main.stages]]
+name = "check"
+module = "check"
+models = ["checker"]
+mascot = "judge"
+paid = true

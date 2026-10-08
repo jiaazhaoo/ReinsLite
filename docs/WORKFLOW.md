@@ -51,8 +51,8 @@ fork 不再起自己的监控；监控是 Watchdog 和运维会话的事。
 运行会话发现问题 → 另一个会话修 → 发版 → 回到运行会话续跑，这条链每天都在发生。交接的载体是**问题单**，挂在批次上：
 
 ```
-reins issue open --batch B --cases 111055,103713 --symptom "路名定位落到别的镇" --stage georef   # 运行会话 / 审核平台（reins issue from-review B）
-reins dev start georef roadnames --about "..." --issue 7        # 接手的会话：问题 case 自动成 pilot 集合，问题单变"修复中"
+reins issue open --batch B --cases 111055,103713 --symptom "定位落到别的镇" --stage extract   # 运行会话 / 审核平台（reins issue from-review B）
+reins dev start extract roadnames --about "..." --issue 7        # 接手的会话：问题 case 自动成 pilot 集合，问题单变"修复中"
 reins dev finish V                                               # 门禁绿 → 问题单变"已修复"，开单的会话收到通知：用 V 续跑 B 的哪个阶段
 reins issue verify 7 --by user --note "..."                       # 运行会话在问题 case 上确认后关闭
 ```
@@ -108,16 +108,16 @@ reins bench init/freeze ──► 门禁打分（C5）──► 批次 ──►
 5. 不在别人的 worktree 或 release 目录里改任何东西（hook 会拦，但拦不住的也不许）。
 6. 改路由规则必须附 `reins rules diff OLD NEW` 的输出。
 7. 每个阈值记录样本量 n；n < 30 标出来。
-8. 不往 `/env/code` 下写数据（`REINS_HOME`、批次 `work_dir` 都在 `/data`）。
+8. 不往代码根目录下写数据（`REINS_HOME`、批次 `work_dir` 都在数据目录；本机位置见 `~/.config/reins/settings.toml`）。
 
 ## 守护进程（systemd --user）
 
 ```bash
-mkdir -p ~/.config/systemd/user && cp /env/code/ReinsLite/systemd/*.service ~/.config/systemd/user/
+mkdir -p ~/.config/systemd/user && cp <ReinsLite>/systemd/*.service ~/.config/systemd/user/
 systemctl --user daemon-reload && systemctl --user enable --now reins-gateway reins-watchdog reins-board
 loginctl enable-linger $USER
 ```
-网关 `127.0.0.1:8790`（key 放在 `/data/reins/secrets/openrouter.key`，chmod 600），看板 `127.0.0.1:8791`，Watchdog 每 60 秒一轮。
+网关 `127.0.0.1:8790`（key 放在 `$REINS_HOME/secrets/<provider>.key`，chmod 600；服务商见 `reins/providers.py` 和 config.toml `[providers.*]`），看板 `127.0.0.1:8791`，Watchdog 每 60 秒一轮。
 
 ## Claude Code hook（会话登记 + 护栏）
 
@@ -131,7 +131,7 @@ loginctl enable-linger $USER
   "Stop":             [{"hooks": [H]}],
   "SessionEnd":       [{"hooks": [H]}]
 }
-H = {"type": "command", "command": "python3 /env/code/ReinsLite/hooks/session_hook.py"}
+H = {"type": "command", "command": "python3 <ReinsLite>/hooks/session_hook.py"}
 ```
 每次 20–50 毫秒。登记每个会话做了什么（C15）；拦：detached 启动流水线、手工 merge/push main、写冻结目录、改别人的 worktree。
 出错时放行并记日志（`fail open`），不会让会话卡住。

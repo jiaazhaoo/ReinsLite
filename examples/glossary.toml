@@ -1,0 +1,20 @@
+# A project's own words (reins.toml [glossary] file). Linted together with the framework glossary (reins/glossary.toml);
+# a term named like a framework term replaces it for this project (to give it this project's values).
+version = 1
+
+[[term]]
+term = "form_id"
+zh = "表单号"
+definition = "This project's case key: the form number printed top right, as received."
+forbidden = ["=formno", "=form_no"]
+
+[[term]]
+term = "field"
+zh = "字段"
+definition = "One named value pulled from a form (date_signed, postcode, ...)."
+
+[[term]]
+term = "customer_result"
+zh = "客户质检结果"
+definition = "The client's own acceptance of a form."
+values = ["Accepted", "Rejected"]

@@ -83,7 +83,7 @@ class Sessions(unittest.TestCase):
         from reins import batches, modules
         os.environ["REINS_SESSION"] = "dddd4444"
         cases = self.tmp / "c.txt"; cases.write_text("1\n2\n")
-        b = batches.open_(self.con, project="p", council="x", wp="wp1", type_="experiment", purpose="index test",
+        b = batches.open_(self.con, project="p", scope="x-wp1", type_="experiment", purpose="index test",
                           case_file=cases, stages=[batches.parse_stage_spec("s")])
         self.hook("eeee5555", "PreToolUse", tool_name="Bash", tool_input={"command": f"reins ctl pause {b}"})
         idx = {d["session"]: d for d in sessions.index_for_batch(self.con, b)}
@@ -98,7 +98,7 @@ class Sessions(unittest.TestCase):
         c = sessions.classify
         self.assertEqual(c("reins ctl pause sheffield-wp3-production-20261007-1"), "run_stop")
         self.assertEqual(c("kill -STOP 4124997"), "run_stop")
-        self.assertEqual(c("reins batch open --type experiment --council x"), "experiment")
+        self.assertEqual(c("reins batch open --type experiment --scope x"), "experiment")
         self.assertEqual(c("python3 tools/dev/dev.py finish x"), "merge")
         self.assertEqual(c("git commit -m x"), "git")
         self.assertEqual(c("cat /data/x/y.json"), "read")

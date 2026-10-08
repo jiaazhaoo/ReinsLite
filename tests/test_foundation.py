@@ -28,7 +28,7 @@ class Base(unittest.TestCase):
         return p
 
     def open(self, ids=("101", "102", "103"), type_="experiment", specs=("ocr", "georef"), **kw):
-        return batches.open_(self.con, project="e2e-plan-extract", council="sheffield", wp="wp3", type_=type_,
+        return batches.open_(self.con, project="e2e-plan-extract", scope="sheffield-wp3", type_=type_,
                              purpose="test", case_file=self.cases(list(ids)), stages=stages(*specs), **kw)
 
 
@@ -41,13 +41,13 @@ class Names(unittest.TestCase):
                 names.parse_module_version(bad)
 
     def test_batch_id_format(self):
-        self.assertEqual(names.batch_id("sheffield", "wp3", "eval", "20261006", 2), "sheffield-wp3-eval-20261006-2")
+        self.assertEqual(names.batch_id("sheffield-wp3", "eval", "20261006", 2), "sheffield-wp3-eval-20261006-2")
         with self.assertRaises(ReinsError):
-            names.batch_id("sheffield", "wp3", "adhoc", "20261006", 1)
+            names.batch_id("sheffield-wp3", "adhoc", "20261006", 1)
 
     def test_case_set_problems(self):
         # a downloader once read the header line as a case; SHF_ ids are display, not the key
-        probs = names.case_problems(["oachargeid", "101", "101", " 102", "SHF_103", ""])
+        probs = names.case_problems(["case_id", "101", "101", " 102", "SHF_103", ""], r"^[0-9]+$")
         text = "\n".join(probs)
         for needle in ("header word", "appears 2 times", "whitespace", "pattern", "empty"):
             self.assertIn(needle, text)
@@ -206,10 +206,20 @@ class Glossary(unittest.TestCase):
         self.assertEqual(self.hits("confidence"), ["confidence"])
         self.assertEqual(self.hits("high"), ["confidence"])
         self.assertEqual(self.hits("ground_truth"), ["golden"])
-        self.assertEqual(self.hits("Plan"), ["plan_image"])
+        self.assertEqual(self.hits("Plan"), [])                            # a project word, not the framework's
+
+    def test_project_glossary_adds_and_overrides(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "glossary.toml").write_text('version = 1\n[[term]]\nterm = "plan_image"\nzh = "x"\ndefinition = "d"\n'
+                                         'forbidden = ["=plan"]\n[[term]]\nterm = "customer_result"\nzh = "x"\n'
+                                         'definition = "d"\nvalues = ["Pass", "Fail"]\n')
+        terms = glossary.load_all(glossary.project_file(d, {"glossary": {"file": "glossary.toml"}}))
+        self.assertEqual([t["term"] for _, t in glossary.check_identifier("Plan", terms)], ["plan_image"])
+        self.assertEqual(next(t for t in terms if t["term"] == "customer_result")["values"], ["Pass", "Fail"])
+        self.assertEqual(sum(1 for t in terms if t["term"] == "customer_result"), 1)
 
     def test_allowed(self):
-        for ok in ("trace_confidence", "oachargeid", "plan_image", "plan_type", "customer_result", "lane",
+        for ok in ("trace_confidence", "case_id", "plan_image", "plan_type", "customer_result", "lane",
                    "module_version", "spend_cap", "eval"):
             self.assertEqual(self.hits(ok), [], ok)
 
@@ -221,7 +231,7 @@ class Glossary(unittest.TestCase):
 
     def test_csv_headers(self):
         d = Path(tempfile.mkdtemp())
-        (d / "t.csv").write_text("oachargeid,confidence,lane\n1,high,review\n")
+        (d / "t.csv").write_text("case_id,confidence,lane\n1,high,review\n")
         self.assertEqual([h.word for h in glossary.lint([d / "t.csv"], self.terms)], ["confidence"])
 
 

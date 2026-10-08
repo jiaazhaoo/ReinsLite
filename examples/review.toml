@@ -1,5 +1,5 @@
 # C6 error taxonomy for human review. Bump `version` whenever a type is added; never rename one in place
 # (reviewers' earlier verdicts would silently change meaning).
 version = 1
-error_types = ["location", "polygon_extent", "wrong_plan_image", "wrong_case", "no_evidence"]
+error_types = ["wrong_value", "missing_field", "wrong_source_page", "wrong_case", "no_evidence"]
 unsure_needs_note = true

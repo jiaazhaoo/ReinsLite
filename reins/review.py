@@ -36,8 +36,8 @@ def taxonomy(path: Path | None) -> dict:
 
 
 def _check(ev: dict, tax: dict, members: set[str]) -> str | None:
-    if ev.get("oachargeid") not in members:
-        return f"{ev.get('oachargeid')!r} is not in this batch"
+    if ev.get("case_id") not in members:
+        return f"{ev.get('case_id')!r} is not in this batch"
     if not ev.get("reviewer", "").strip():
         return "reviewer is required (append-only records are signed)"
     if ev.get("action") not in ("view", "verdict", "draw", "note"):
@@ -57,17 +57,20 @@ def _check(ev: dict, tax: dict, members: set[str]) -> str | None:
     return None
 
 
-def record(con, batch: str, events: list[dict], tax: dict) -> int:
+def record(con, batch: str, events: list[dict], tax: dict, key: str | None = None) -> int:
     batches.get(con, batch)
-    members = {r[0] for r in con.execute("SELECT oachargeid FROM batch_case WHERE batch_id=?", (batch,))}
+    for ev in events:                                     # the project's own name for the case key -> case_id
+        if "case_id" not in ev and key and key in ev:
+            ev["case_id"] = ev.pop(key)
+    members = {r[0] for r in con.execute("SELECT case_id FROM batch_case WHERE batch_id=?", (batch,))}
     errors = [f"event {i}: {e}" for i, ev in enumerate(events, 1) if (e := _check(ev, tax, members))]
     if errors:
         raise ReinsError(f"{len(errors)} problems, nothing recorded:\n  " + "\n  ".join(errors[:20]))
     with tx(con):
         con.executemany(
-            "INSERT INTO review_event (at, batch_id, oachargeid, target, reviewer, action, verdict, error_type, note,"
+            "INSERT INTO review_event (at, batch_id, case_id, target, reviewer, action, verdict, error_type, note,"
             " payload, taxonomy_version, client) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            [(ev.get("at") or now(), batch, ev["oachargeid"], ev.get("target", "case"), ev["reviewer"], ev["action"],
+            [(ev.get("at") or now(), batch, ev["case_id"], ev.get("target", "case"), ev["reviewer"], ev["action"],
               ev.get("verdict"), ev.get("error_type"), ev.get("note"),
               json.dumps(ev["payload"], ensure_ascii=False) if ev.get("payload") is not None else None,
               tax["version"], ev.get("client")) for ev in events])
@@ -77,14 +80,14 @@ def record(con, batch: str, events: list[dict], tax: dict) -> int:
 def assign(con, batch: str, reviewer: str, cases: list[str], queue: str | None, round_: str | None, by: str) -> int:
     """Append-only: new cases go after the reviewer's existing list; nothing already assigned is reordered."""
     batches.get(con, batch)
-    members = {r[0] for r in con.execute("SELECT oachargeid FROM batch_case WHERE batch_id=?", (batch,))}
+    members = {r[0] for r in con.execute("SELECT case_id FROM batch_case WHERE batch_id=?", (batch,))}
     bad = [c for c in cases if c not in members]
     if bad:
         raise ReinsError(f"not in {batch}: {bad[:10]}")
     with tx(con):
         start = con.execute("SELECT COALESCE(MAX(ord),0) FROM review_assignment WHERE batch_id=? AND reviewer=?",
                             (batch, reviewer)).fetchone()[0]
-        con.executemany("INSERT INTO review_assignment (at, batch_id, oachargeid, reviewer, queue, round, ord, by_whom)"
+        con.executemany("INSERT INTO review_assignment (at, batch_id, case_id, reviewer, queue, round, ord, by_whom)"
                         " VALUES (?,?,?,?,?,?,?,?)",
                         [(now(), batch, c, reviewer, queue, round_, start + i, by) for i, c in enumerate(cases, 1)])
     return len(cases)
@@ -94,7 +97,7 @@ def current_verdicts(con, batch: str) -> dict[tuple[str, str, str], dict]:
     """Latest verdict per (case, target, reviewer)."""
     out = {}
     for r in con.execute("SELECT * FROM review_event WHERE batch_id=? AND action='verdict' ORDER BY id", (batch,)):
-        out[(r["oachargeid"], r["target"], r["reviewer"])] = dict(r)
+        out[(r["case_id"], r["target"], r["reviewer"])] = dict(r)
     return out
 
 
@@ -102,8 +105,8 @@ def calibration(con, batch: str) -> dict:
     """Per reviewer: wrong rate per queue; and pairwise disagreement on cases two reviewers both judged."""
     verd = current_verdicts(con, batch)
     queue_of = {}
-    for r in con.execute("SELECT oachargeid, reviewer, queue FROM review_assignment WHERE batch_id=? ORDER BY id", (batch,)):
-        queue_of[(r["oachargeid"], r["reviewer"])] = r["queue"] or "-"
+    for r in con.execute("SELECT case_id, reviewer, queue FROM review_assignment WHERE batch_id=? ORDER BY id", (batch,)):
+        queue_of[(r["case_id"], r["reviewer"])] = r["queue"] or "-"
     per = defaultdict(lambda: defaultdict(lambda: {"n": 0, "wrong": 0, "unsure": 0}))
     for (case, target, rev), v in verd.items():
         q = queue_of.get((case, rev), "-")
@@ -132,7 +135,7 @@ def candidates(con, batch: str) -> list[dict]:
     """Human verdicts as benchmark labels (source reviewer_verdict). A person promotes them to golden on the review page."""
     out = []
     for (case, target, rev), v in sorted(current_verdicts(con, batch).items()):
-        out.append({"oachargeid": case, "target": target, "value": v["verdict"], "source": "reviewer_verdict",
+        out.append({"case_id": case, "target": target, "value": v["verdict"], "source": "reviewer_verdict",
                     "by": rev, "saw_drawing": None, "note": v["note"] or v["error_type"] or "", "batch": batch,
                     "at": v["at"]})
     return out

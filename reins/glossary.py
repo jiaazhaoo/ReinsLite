@@ -36,6 +36,21 @@ def load(path: Path = GLOSSARY) -> list[dict]:
     return terms
 
 
+def load_all(project_file: Path | None = None) -> list[dict]:
+    """Framework terms plus the project's own (its glossary file); a project term of the same name replaces the
+    framework's, so a project can give a shared word its own values."""
+    terms = {t["term"]: t for t in load()}
+    if project_file and project_file.is_file():
+        for t in load(project_file):
+            terms[t["term"]] = {**t, "project": True}
+    return list(terms.values())
+
+
+def project_file(root: Path | None, cfg: dict) -> Path | None:
+    f = (cfg.get("glossary") or {}).get("file")
+    return (root / f) if root and f else None
+
+
 def words(identifier: str) -> list[str]:
     """'TraceConfidence' / 'trace-confidence' / 'trace confidence' -> ['trace', 'confidence']."""
     s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", identifier)
@@ -108,7 +123,7 @@ def lint_markdown(path: Path, terms: list[dict]) -> list[Hit]:
 
 
 def lint(paths: list[Path], terms: list[dict] | None = None) -> list[Hit]:
-    terms = terms or load()
+    terms = terms or load_all()
     hits = []
     for p in paths:
         files = sorted(p.rglob("*")) if p.is_dir() else [p]

@@ -1,4 +1,6 @@
-# C0 glossary: one word, one meaning. The only source of terms for field names, table headers, status values and docs.
+# C0 glossary, framework level: one word, one meaning, for the words every ReinsLite project shares. A project adds its
+# own domain words in its repo (reins.toml: [glossary] file = "glossary.toml"); `reins lint` reads both, and a project
+# term with the same name replaces the framework's (to give it the project's values).
 #
 #   term        canonical English word (what code and headers use)
 #   zh          Chinese gloss, for reading only
@@ -9,55 +11,26 @@
 #
 # Changing a definition = a new term + `retired = "<date>: <why>"` on the old one. Never edit a meaning in place.
 # `version` bumps whenever a term is added or retired; tables and docs linted against a version record which one.
+# v2 (2026-10-08): project-neutral. The first project's words (oachargeid, plan_image, georef, work_package, ...)
+# moved to that project's own glossary; case_id and scope added.
 
-version = 1
+version = 2
 
 [[term]]
 term = "case"
 zh = "案件"
-definition = "One land charge, identified by its oachargeid. Every record is keyed by it."
-forbidden = ["charge", "=chargeid", "=charge_id", "=case_id"]
+definition = "The unit a pipeline processes and a person can check: one record of the project's domain. Every record is keyed by its case_id."
 
 [[term]]
-term = "oachargeid"
+term = "case_id"
 zh = "案件主键"
-definition = "The case key: the originating-authority charge identifier, stored exactly as received. Display prefixes (SHF_) are presentation only."
-forbidden = ["=originating_authority_charge_identifier", "=oaid"]
+definition = "The case key, stored exactly as received. A project names its own column for it (reins.toml case_key) and gives its pattern (case_id_pattern); reins reads either name."
+forbidden = ["=case_key_value", "=item_id"]
 
 [[term]]
-term = "application"
-zh = "规划申请"
-definition = "One planning application (LA reference). A case may refer to one; one application may serve several cases."
-
-[[term]]
-term = "la_reference"
-zh = "申请号"
-definition = "The local authority's application reference, e.g. 96/0220P."
-forbidden = ["=ref", "=reference", "=fir"]
-
-[[term]]
-term = "page"
-zh = "页"
-definition = "One page (frame) of one source file. Belongs to exactly one case by explicit attribution."
-
-[[term]]
-term = "plan_image"
-zh = "图纸图片"
-definition = "An image of a drawing cut from a page."
-forbidden = ["=plan", "=plans"]
-
-[[term]]
-term = "plan_type"
-zh = "图纸类型"
-definition = "What a plan_image shows."
-values = ["site", "location", "block", "floor", "other"]
-
-[[term]]
-term = "capture_route"
-zh = "生产路线"
-definition = "How a delivered polygon was produced, as the customer labels it."
-values = ["link_cleanse", "plan", "draw"]
-forbidden = ["=route"]
+term = "scope"
+zh = "批次范围"
+definition = "What a batch covers: 1-4 parts joined by '-', named by the project (reins.toml [batch] scope, e.g. client-package). The first part of a batch name."
 
 [[term]]
 term = "check"
@@ -87,20 +60,19 @@ definition = "A human looks at a case. Only ever human; a model is never a revie
 [[term]]
 term = "customer_result"
 zh = "客户质检结果"
-definition = "The customer's (HMLR, Landmark) own QC result for a case. Can be wrong; not a golden."
-values = ["Pass", "Fail", "Advisory"]
-forbidden = ["=hmlr_result", "=qc_result"]
+definition = "The customer's own QC result for a case. Can be wrong; not a golden. A project lists its values in its glossary."
+forbidden = ["=qc_result"]
 
 [[term]]
 term = "golden"
 zh = "人工裁定标签"
-definition = "A label a human confirmed on the review page, with who, when and whether the drawing was seen. The highest-trust label."
+definition = "A label a human confirmed on the review page, with who, when and whether the source evidence was seen. The highest-trust label."
 forbidden = ["truth", "=gt", "=gold", "=ground_truth", "=standard_answer"]
 
 [[term]]
-term = "reference_geometry"
-zh = "参考几何"
-definition = "Geometry from an earlier delivery or the customer's input. Not a golden."
+term = "reference"
+zh = "参考数据"
+definition = "Data from an earlier delivery or the customer's input, used as a label of the lowest trust (benchmark source reference or reference_<kind>). Not a golden."
 
 [[term]]
 term = "confidence"
@@ -111,13 +83,13 @@ forbidden = ["=confidence", "=cfd", "=high", "=medium", "=low"]
 [[term]]
 term = "batch"
 zh = "批次"
-definition = "One registered execution of planned stages over a fixed case set for one purpose (C3). Named <council>-<wp>-<type>-<YYYYMMDD>-<n>."
+definition = "One registered execution of planned stages over a fixed case set for one purpose (C3). Named <scope>-<type>-<YYYYMMDD>-<n>."
 forbidden = ["=run", "=run_id", "=eval_dir"]
 
 [[term]]
 term = "eval"
 zh = "评测批次"
-definition = "A batch type: running a pipeline on a benchmark to measure it. Also the short name of a benchmark in prose (eval-359 = bench-sheffield-wp3-359)."
+definition = "A batch type: running a pipeline on a benchmark to measure it."
 
 [[term]]
 term = "attempt"
@@ -125,14 +97,10 @@ zh = "续跑"
 definition = "One start of a batch's processes; a resume after a crash is a new attempt of the same batch."
 
 [[term]]
-term = "work_package"
-zh = "工作包"
-definition = "The customer's unit of work (wp3). Short form wp is allowed inside names."
-
-[[term]]
-term = "customer_batch_label"
-zh = "客户批次标签"
-definition = "What the customer calls a set of cases (HMLR 'Batch-3'). Stored, never used as a key."
+term = "stage"
+zh = "阶段"
+definition = "One step of a workflow, run by one module; the unit the case ledger counts."
+forbidden = ["=phase"]
 
 [[term]]
 term = "module"
@@ -142,7 +110,7 @@ definition = "A replaceable part of a pipeline, registered once, globally unique
 [[term]]
 term = "module_version"
 zh = "子模块版本"
-definition = "<module>-<suffix>-<YYYYMMDD>-<n>, n from 1 per module per day. Pins code, prompts, models, params, assets."
+definition = "<module>-<suffix>-<YYYYMMDD>-<n>, n from 1 per module per day. Pins code, prompts, models, weights, tools."
 forbidden = ["=version", "=v"]
 
 [[term]]
@@ -151,16 +119,25 @@ zh = "发布"
 definition = "A named set of module versions that production batches run."
 
 [[term]]
+term = "workflow"
+zh = "工作流"
+definition = "The ordered stages of a pipeline with what each uses; frozen as workflow-<name>-vN."
+
+[[term]]
+term = "tool"
+zh = "工具"
+definition = "What a stage picks up besides models and prompts: code, an external API, a data file. Versioned as tool-<name>-vN."
+
+[[term]]
+term = "weights"
+zh = "模型权重"
+definition = "The files of a machine-learning model a stage loads; versioned by content as weights-<name>-vN, with the training record."
+
+[[term]]
 term = "benchmark"
 zh = "基准集"
 definition = "A frozen, versioned case set with inputs, per-stage outputs and labels (C4). Named bench-<name>-vN."
 forbidden = ["=eval_set", "=testset", "=test_set"]
-
-[[term]]
-term = "georef"
-zh = "配准"
-definition = "Placing a plan_image on the map (EPSG:27700)."
-forbidden = ["=registration", "=placement"]
 
 [[term]]
 term = "threshold"
@@ -180,9 +157,14 @@ definition = "The most a batch, stage or case may spend (USD). Set by the user."
 forbidden = ["=cap", "=budget"]
 
 [[term]]
+term = "provider"
+zh = "服务商"
+definition = "A metered service the gateway fronts (reins/providers.py presets + config.toml)."
+
+[[term]]
 term = "balance"
 zh = "账户余额"
-definition = "Money left on a paid API account."
+definition = "Money left on a provider account."
 
 [[term]]
 term = "key_limit"

@@ -1,4 +1,4 @@
-"""The one registry every contract writes to: $REINS_HOME/reins.db (default /data/reins).
+"""The one registry every contract writes to: $REINS_HOME/reins.db.
 
 SQLite in WAL mode, so several sessions can read and write at once (the JSON board lost entries to concurrent
 writers). Event tables are append-only; current state is either a column on the parent row or a view over events.
@@ -11,8 +11,20 @@ import sqlite3
 import tomllib
 from pathlib import Path
 
-DEFAULT_HOME = "/data/reins"
-CODE_ROOT = Path("/env/code")
+def _machine() -> dict:
+    """~/.config/reins/settings.toml: where this machine keeps the registry (home) and its code checkouts (code_root).
+    Environment variables REINS_HOME / REINS_CODE_ROOT win; without either, generic defaults."""
+    f = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "reins" / "settings.toml"
+    try:
+        return tomllib.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
+_M = _machine()
+DEFAULT_HOME = _M.get("home") or str(Path.home() / ".local" / "share" / "reins")
+# the directory holding the project checkouts (default: the one ReinsLite itself is checked out in)
+CODE_ROOT = Path(os.environ.get("REINS_CODE_ROOT") or _M.get("code_root") or Path(__file__).resolve().parents[2]).resolve()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS module (
@@ -57,10 +69,9 @@ CREATE TABLE IF NOT EXISTS release (
   session   TEXT
 );
 CREATE TABLE IF NOT EXISTS batch (
-  batch_id       TEXT PRIMARY KEY,                    -- <council>-<wp>-<type>-<YYYYMMDD>-<n>
+  batch_id       TEXT PRIMARY KEY,                    -- <scope>-<type>-<YYYYMMDD>-<n>
   project        TEXT NOT NULL,
-  council        TEXT NOT NULL,
-  wp             TEXT NOT NULL,
+  scope          TEXT NOT NULL,                       -- what the batch covers, 1-4 tokens the project chooses
   type           TEXT NOT NULL,
   day            TEXT NOT NULL,
   seq            INTEGER NOT NULL,
@@ -85,12 +96,12 @@ CREATE TABLE IF NOT EXISTS batch (
   owner_session  TEXT,
   created        TEXT NOT NULL,
   closed         TEXT,
-  UNIQUE (council, wp, type, day, seq)
+  UNIQUE (scope, type, day, seq)
 );
 CREATE TABLE IF NOT EXISTS batch_case (
   batch_id    TEXT NOT NULL REFERENCES batch(batch_id),
-  oachargeid  TEXT NOT NULL,
-  PRIMARY KEY (batch_id, oachargeid)
+  case_id  TEXT NOT NULL,
+  PRIMARY KEY (batch_id, case_id)
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS batch_stage (
   batch_id        TEXT NOT NULL REFERENCES batch(batch_id),
@@ -121,19 +132,19 @@ CREATE TABLE IF NOT EXISTS case_event (                -- append-only; a retry a
   at              TEXT NOT NULL,
   batch_id        TEXT NOT NULL,
   stage           TEXT NOT NULL,
-  oachargeid      TEXT NOT NULL,
+  case_id      TEXT NOT NULL,
   status          TEXT NOT NULL CHECK (status IN ('started', 'done', 'skipped', 'failed')),
   reason          TEXT,
   module_version  TEXT,
-  FOREIGN KEY (batch_id, oachargeid) REFERENCES batch_case(batch_id, oachargeid),
+  FOREIGN KEY (batch_id, case_id) REFERENCES batch_case(batch_id, case_id),
   FOREIGN KEY (batch_id, stage) REFERENCES batch_stage(batch_id, stage)
 );
-CREATE INDEX IF NOT EXISTS case_event_key ON case_event (batch_id, stage, oachargeid, id);
-CREATE INDEX IF NOT EXISTS case_event_case ON case_event (oachargeid);
+CREATE INDEX IF NOT EXISTS case_event_key ON case_event (batch_id, stage, case_id, id);
+CREATE INDEX IF NOT EXISTS case_event_case ON case_event (case_id);
 CREATE VIEW IF NOT EXISTS case_current AS
   SELECT e.* FROM case_event e
   WHERE e.id = (SELECT MAX(id) FROM case_event x
-                WHERE x.batch_id = e.batch_id AND x.stage = e.stage AND x.oachargeid = e.oachargeid);
+                WHERE x.batch_id = e.batch_id AND x.stage = e.stage AND x.case_id = e.case_id);
 
 -- C10 leases: one holder per resource
 CREATE TABLE IF NOT EXISTS lease (
@@ -288,7 +299,7 @@ CREATE TABLE IF NOT EXISTS review_event (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   at          TEXT NOT NULL,
   batch_id    TEXT NOT NULL,
-  oachargeid  TEXT NOT NULL,
+  case_id  TEXT NOT NULL,
   target      TEXT NOT NULL DEFAULT 'case',           -- which output of the case (polygon, address, date, ...)
   reviewer    TEXT NOT NULL,
   action      TEXT NOT NULL CHECK (action IN ('view', 'verdict', 'draw', 'note')),
@@ -299,12 +310,12 @@ CREATE TABLE IF NOT EXISTS review_event (
   taxonomy_version INTEGER,
   client      TEXT
 );
-CREATE INDEX IF NOT EXISTS review_case ON review_event (batch_id, oachargeid, id);
+CREATE INDEX IF NOT EXISTS review_case ON review_event (batch_id, case_id, id);
 CREATE TABLE IF NOT EXISTS review_assignment (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   at         TEXT NOT NULL,
   batch_id   TEXT NOT NULL,
-  oachargeid TEXT NOT NULL,
+  case_id TEXT NOT NULL,
   reviewer   TEXT NOT NULL,
   queue      TEXT,
   round      TEXT,
@@ -320,7 +331,7 @@ CREATE TABLE IF NOT EXISTS acceptance (
   n           INTEGER NOT NULL,
   from_lane   TEXT NOT NULL,
   lanes_sha   TEXT NOT NULL,
-  sample      TEXT NOT NULL,                          -- JSON [{oachargeid, lane}]
+  sample      TEXT NOT NULL,                          -- JSON [{case_id, lane}]
   budget_ideal INTEGER NOT NULL,
   budget_max  INTEGER NOT NULL,
   decision    TEXT CHECK (decision IS NULL OR decision IN ('ship', 'ship_with_note', 'rework')),
@@ -332,7 +343,7 @@ CREATE TABLE IF NOT EXISTS acceptance_grade (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   at          TEXT NOT NULL,
   acceptance_id INTEGER NOT NULL REFERENCES acceptance(id),
-  oachargeid  TEXT NOT NULL,
+  case_id  TEXT NOT NULL,
   grade       TEXT NOT NULL CHECK (grade IN ('P', 'A', 'F')),
   by_whom     TEXT NOT NULL,
   note        TEXT
@@ -422,7 +433,7 @@ class ReinsError(Exception):
 def home() -> Path:
     h = Path(os.environ.get("REINS_HOME", DEFAULT_HOME)).resolve()
     if h == CODE_ROOT or CODE_ROOT in h.parents:
-        raise ReinsError(f"REINS_HOME={h} is inside {CODE_ROOT}: no data in code folders; use /data/...")
+        raise ReinsError(f"REINS_HOME={h} is inside {CODE_ROOT}: no data in code folders (settings.toml home = ...)")
     return h
 
 
@@ -430,7 +441,7 @@ def config() -> dict:
     """$REINS_HOME/config.toml: gateway port, notify command, thresholds. All optional."""
     f = home() / "config.toml"
     cfg = tomllib.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
-    defaults = {"gateway_port": 8790, "board_port": 8791, "bench_root": "/data/benchmarks", "notify_cmd": "", "stall_minutes": 30,
+    defaults = {"gateway_port": 8790, "board_port": 8791, "bench_root": str(home() / "benchmarks"), "notify_cmd": "", "stall_minutes": 30,
                 "disk_pause_pct": 90, "mem_pause_pct": 95, "gpu_warn_pct": 90, "default_call_estimate": 0.05,
                 "spend_warn_fraction": 0.8, "balance_poll_min": 10,
                 "pool": {"daily_cap": 20.0, "weekly_cap": 60.0, "hourly_cap": 6.0, "max_batch_cap": 15.0,
@@ -447,6 +458,7 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA foreign_keys=ON")
     con.execute("PRAGMA busy_timeout=30000")
+    _rename_legacy(con)
     con.executescript(SCHEMA)
     _migrate(con)
     from . import artifacts, issues
@@ -456,6 +468,52 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
 
 
 MIGRATIONS = [("batch", "probe_cmd", "TEXT"), ("batch", "time_budget_h", "REAL"), ("batch", "workflow", "TEXT")]
+
+
+def _rename_legacy(con: sqlite3.Connection) -> None:
+    """Registries made before the framework was made project-neutral (2026-10-08): the case key column was the first
+    project's own word (oachargeid) and a batch was keyed by that project's council + work package. Renamed in place,
+    before SCHEMA runs (its indexes name the new columns). Idempotent; the write lock makes concurrent opens safe."""
+    import re as _re
+    def tables():
+        return {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    def cols(t):
+        return [r[1] for r in con.execute(f"PRAGMA table_info({t})")]
+    have = tables()
+    legacy_key = [t for t in have if "oachargeid" in cols(t)]
+    legacy_batch = "batch" in have and "council" in cols("batch")
+    if not legacy_key and not legacy_batch:
+        return
+    con.execute("PRAGMA foreign_keys=OFF")                  # only outside a transaction; the batch table is rebuilt
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            for t in [t for t in tables() if "oachargeid" in cols(t)]:
+                con.execute(f'ALTER TABLE "{t}" RENAME COLUMN oachargeid TO case_id')
+            if "batch" in tables() and "council" in cols("batch"):
+                sql = con.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='batch'").fetchone()[0]
+                new = _re.sub(r"\n\s*council\s+TEXT NOT NULL,\s*\n\s*wp\s+TEXT NOT NULL,", "\n  scope          TEXT NOT NULL,", sql)
+                new = new.replace("UNIQUE (council, wp, type, day, seq)", "UNIQUE (scope, type, day, seq)")
+                new = _re.sub(r"^CREATE TABLE (IF NOT EXISTS )?\"?batch\"?", "CREATE TABLE batch__new", new)
+                new = new.replace("<council>-<wp>-<type>", "<scope>-<type>")
+                if _re.search(r"\bcouncil\s+TEXT|\bwp\s+TEXT|UNIQUE \(council", new):
+                    raise ReinsError("batch table migration: unexpected table definition, nothing changed")
+                con.execute(new)
+                keep = [c for c in cols("batch") if c not in ("council", "wp")]
+                con.execute(f"INSERT INTO batch__new ({', '.join(keep)}, scope) SELECT {', '.join(keep)}, council || '-' || wp FROM batch")
+                con.execute("DROP TABLE batch")
+                con.execute("ALTER TABLE batch__new RENAME TO batch")
+            if "acceptance" in tables():
+                con.execute("UPDATE acceptance SET sample = REPLACE(sample, '\"oachargeid\"', '\"case_id\"') WHERE sample LIKE '%oachargeid%'")
+            bad = con.execute("PRAGMA foreign_key_check").fetchall()
+            if bad:
+                raise ReinsError(f"migration broke {len(bad)} foreign keys, rolled back")
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+    finally:
+        con.execute("PRAGMA foreign_keys=ON")
 
 
 def _migrate(con: sqlite3.Connection) -> None:

@@ -26,7 +26,7 @@ class Base(unittest.TestCase):
         self.cases.write_text("\n".join(self.ids) + "\n")
 
     def open(self, specs=("ocr",), type_="experiment", **kw):
-        return batches.open_(self.con, project="e2e", council="sheffield", wp="wp3", type_=type_, purpose="t",
+        return batches.open_(self.con, project="e2e", scope="sheffield-wp3", type_=type_, purpose="t",
                              case_file=self.cases, stages=[batches.parse_stage_spec(s) for s in specs], **kw)
 
 
@@ -42,17 +42,17 @@ class Bench(Base):
         labs = self.tmp / "labels.jsonl"
         # golden by a model, golden without the drawing, unknown case, bad source: all refused, nothing appended
         labs.write_text("\n".join(json.dumps(x) for x in [
-            {"oachargeid": "100", "target": "polygon", "value": "correct", "source": "golden", "by": "assistant", "saw_drawing": True},
-            {"oachargeid": "101", "target": "polygon", "value": "correct", "source": "golden", "by": "Jia", "saw_drawing": False},
-            {"oachargeid": "999", "target": "polygon", "value": "correct", "source": "customer_result", "by": "HMLR"},
-            {"oachargeid": "102", "target": "polygon", "value": "x", "source": "truth", "by": "Jia"}]) + "\n")
+            {"case_id": "100", "target": "polygon", "value": "correct", "source": "golden", "by": "assistant", "saw_drawing": True},
+            {"case_id": "101", "target": "polygon", "value": "correct", "source": "golden", "by": "Jia", "saw_drawing": False},
+            {"case_id": "999", "target": "polygon", "value": "correct", "source": "customer_result", "by": "HMLR"},
+            {"case_id": "102", "target": "polygon", "value": "x", "source": "truth", "by": "Jia"}]) + "\n")
         with self.assertRaises(ReinsError) as e:
             bench.label(self.con, "wp3-20", labs)
         self.assertEqual(str(e.exception).count("line "), 4)
         self.assertEqual((path / "labels.jsonl").read_text(), "")
-        labs.write_text(json.dumps({"oachargeid": "100", "target": "polygon", "value": "correct", "source": "golden",
+        labs.write_text(json.dumps({"case_id": "100", "target": "polygon", "value": "correct", "source": "golden",
                                     "by": "Jia", "saw_drawing": True}) + "\n"
-                        + json.dumps({"oachargeid": "101", "target": "polygon", "value": "Fail", "source": "customer_result", "by": "HMLR"}) + "\n")
+                        + json.dumps({"case_id": "101", "target": "polygon", "value": "Fail", "source": "customer_result", "by": "HMLR"}) + "\n")
         r2 = bench.label(self.con, "wp3-20", labs)
         self.assertEqual((r2["labelset"], r2["added"]), (1, 2))
         with self.assertRaises(ReinsError):                      # verify needs frozen
@@ -114,7 +114,7 @@ class Rulesets(Base):
         with self.assertRaises(ReinsError):
             rules.freeze(self.con, rp, "e2e", None, None)
         old = self.tmp / "old.csv"; new = self.tmp / "new.csv"
-        old.write_text("oachargeid,lane\n100,auto_accept\n101,review\n"); new.write_text("oachargeid,lane\n100,review\n101,review\n")
+        old.write_text("case_id,lane\n100,auto_accept\n101,review\n"); new.write_text("case_id,lane\n100,review\n101,review\n")
         r2 = rules.freeze(self.con, rp, "e2e", old, new)
         self.assertEqual((r2["name"], r2["diff_summary"]), ("ruleset-e2e-v2", "auto_accept->review:1"))
         with self.assertRaises(ReinsError):
@@ -132,20 +132,20 @@ class Review(Base):
         self.tax = {"version": 2, "error_types": ["location", "polygon_extent"], "unsure_needs_note": True}
 
     def test_required_fields(self):
-        bad = [{"oachargeid": "100", "reviewer": "Maggie", "action": "verdict", "verdict": "wrong"},
-               {"oachargeid": "100", "reviewer": "Maggie", "action": "verdict", "verdict": "wrong", "error_type": "colour"},
-               {"oachargeid": "100", "reviewer": "Maggie", "action": "verdict", "verdict": "unsure"},
-               {"oachargeid": "100", "reviewer": "", "action": "verdict", "verdict": "correct"},
-               {"oachargeid": "999", "reviewer": "Maggie", "action": "view"}]
+        bad = [{"case_id": "100", "reviewer": "Maggie", "action": "verdict", "verdict": "wrong"},
+               {"case_id": "100", "reviewer": "Maggie", "action": "verdict", "verdict": "wrong", "error_type": "colour"},
+               {"case_id": "100", "reviewer": "Maggie", "action": "verdict", "verdict": "unsure"},
+               {"case_id": "100", "reviewer": "", "action": "verdict", "verdict": "correct"},
+               {"case_id": "999", "reviewer": "Maggie", "action": "view"}]
         with self.assertRaises(ReinsError) as e:
             review.record(self.con, self.b, bad, self.tax)
         self.assertEqual(str(e.exception).count("event "), 5)
         self.assertEqual(self.con.execute("SELECT COUNT(*) FROM review_event").fetchone()[0], 0)
         n = review.record(self.con, self.b, [
-            {"oachargeid": "100", "reviewer": "Maggie", "action": "verdict", "verdict": "wrong", "error_type": "location"},
-            {"oachargeid": "100", "reviewer": "Yishan", "action": "verdict", "verdict": "correct"},
-            {"oachargeid": "101", "reviewer": "Maggie", "action": "verdict", "verdict": "unsure", "note": "need the amended plan"},
-            {"oachargeid": "101", "reviewer": "Yishan", "action": "verdict", "verdict": "correct"}], self.tax)
+            {"case_id": "100", "reviewer": "Maggie", "action": "verdict", "verdict": "wrong", "error_type": "location"},
+            {"case_id": "100", "reviewer": "Yishan", "action": "verdict", "verdict": "correct"},
+            {"case_id": "101", "reviewer": "Maggie", "action": "verdict", "verdict": "unsure", "note": "need the amended plan"},
+            {"case_id": "101", "reviewer": "Yishan", "action": "verdict", "verdict": "correct"}], self.tax)
         self.assertEqual(n, 4)
         cal = review.calibration(self.con, self.b)
         pair = cal["pairs"][0]
@@ -168,7 +168,7 @@ class Accept(Base):
         super().setUp()
         self.b = self.open()
         self.lanes = self.tmp / "lanes.csv"
-        self.lanes.write_text("oachargeid,lane\n" + "\n".join(f"{i},{'auto_accept' if int(i) % 4 else 'review'}" for i in self.ids) + "\n")
+        self.lanes.write_text("case_id,lane\n" + "\n".join(f"{i},{'auto_accept' if int(i) % 4 else 'review'}" for i in self.ids) + "\n")
 
     def test_sample_grade_decide(self):
         r = accept.sample(self.con, self.b, self.lanes, n=6, seed=3, ideal=1, max_=2)
@@ -176,7 +176,7 @@ class Accept(Base):
         s1 = json.loads(self.con.execute("SELECT sample FROM acceptance WHERE id=?", (r["acceptance_id"],)).fetchone()[0])
         s2 = json.loads(self.con.execute("SELECT sample FROM acceptance WHERE id=?", (r_again["acceptance_id"],)).fetchone()[0])
         self.assertEqual(s1, s2)                                  # fixed seed -> same sample
-        picked = [s["oachargeid"] for s in s2]
+        picked = [s["case_id"] for s in s2]
         with self.assertRaises(ReinsError):                      # case outside the sample
             accept.grade(self.con, self.b, [("999", "P", "Jia", None)])
         with self.assertRaises(ReinsError):                      # not all graded
@@ -194,7 +194,7 @@ class Accept(Base):
             accept.decide(self.con, self.b, "Jia")
 
     def test_lanes_must_be_the_batch(self):
-        bad = self.tmp / "bad.csv"; bad.write_text("oachargeid,lane\n999,auto_accept\n")
+        bad = self.tmp / "bad.csv"; bad.write_text("case_id,lane\n999,auto_accept\n")
         with self.assertRaises(ReinsError):
             accept.sample(self.con, self.b, bad)
 
@@ -222,18 +222,18 @@ class Deliver(Base):
         b = self.open(work_dir=str(self.tmp / "wd"))
         import openpyxl
         wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Validation Summary"
-        ws.append(["oachargeid", "lane", "note", "const"])
+        ws.append(["case_id", "lane", "note", "const"])
         for i in self.ids[:-1]:                                   # one case missing
             ws.append([i, "auto_accept", "ok", "same"])
         ws.append([self.ids[0], "auto_accept", "dup", "same"])    # duplicate
         ws.append(["999", "review", "外部", "same"])               # outsider + CJK
         f = self.tmp / "d.xlsx"; wb.save(f)
-        r = deliver.check(self.con, f, b, sheets_expected=["Validation Summary", "Polygon Validation"])
+        r = deliver.check(self.con, f, b, sheets_expected=["Validation Summary", "Polygon Validation"], forbid_scripts=["cjk"])
         text = "\n".join(r["problems"])
-        for needle in ("sheets are", "CJK", "repeated", "not in", "absent", "'const' is constant"):
+        for needle in ("sheets are", "cjk text", "repeated", "not in", "absent", "'const' is constant"):
             self.assertIn(needle, text)
         wb = openpyxl.Workbook(); ws = wb.active; ws.title = "S"
-        ws.append(["oachargeid", "lane"])
+        ws.append(["case_id", "lane"])
         for k, i in enumerate(self.ids):
             ws.append([i, "auto_accept" if k % 2 else "review"])
         wb.save(f)

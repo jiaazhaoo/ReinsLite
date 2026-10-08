@@ -5,7 +5,8 @@
   batch     open | approve | stage-start | mark | stage-end | skip-stage | pause | resume | fail | close | status | list
   run       BATCH STAGE [opts] -- CMD...                                  C7 launcher (supervised, pgid-controlled)
   ctl       pause | resume | stop BATCH                                   C7/C10 control a running batch
-  case      OACHARGEID                                                    C1 one case's whole history
+  config    check                                                         the project's reins.toml is consistent
+  case      CASE_ID                                                       C1 one case's whole history
   spend     summary BATCH | price MODEL IN OUT | weekly                   C9
   gateway   serve                                                         C9 paid-call proxy (holds the key)
   watchdog  once | run                                                    C8
@@ -54,6 +55,31 @@ def project_root(cwd: Path) -> Path | None:
 def project_config(cwd: Path) -> dict:
     r = project_root(cwd)
     return tomllib.loads((r / "reins.toml").read_text(encoding="utf-8")) if r else {}
+
+
+def _key(cfg) -> str | None:
+    """The project's own name for the case key column (reins.toml case_key), read alongside case_id."""
+    return cfg.get("case_key")
+
+
+def _scope_args(x) -> None:
+    x.add_argument("--scope", help="what the batch covers, 1-4 parts joined by '-' (reins.toml [batch] scope names them)")
+    x.add_argument("--council", help=argparse.SUPPRESS); x.add_argument("--wp", help=argparse.SUPPRESS)   # older spelling
+
+
+def _scope(args, cfg) -> str:
+    """--scope, or the older --council X --wp Y (joined); checked against the parts the project declares."""
+    if args.scope:
+        scope = args.scope
+    elif args.council and args.wp:
+        scope = f"{args.council}-{args.wp}"
+    else:
+        parts = (cfg.get("batch") or {}).get("scope") or ["scope"]
+        raise ReinsError(f"--scope is required: {'-'.join(p.upper() for p in parts)}")
+    declared = (cfg.get("batch") or {}).get("scope")
+    if declared and len(scope.split("-")) != len(declared):
+        raise ReinsError(f"--scope {scope!r}: this project's scope has {len(declared)} parts ({'-'.join(declared)})")
+    return names.check_scope(scope)
 
 
 def _project(args, cfg) -> str:
@@ -114,7 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     d = sub.add_parser("dev").add_subparsers(dest="sub", required=True)
     x = d.add_parser("start"); x.add_argument("module"); x.add_argument("suffix"); x.add_argument("--about", required=True)
-    x.add_argument("--from-batch"); x.add_argument("--cases", help="comma-separated oachargeids: the pilot set")
+    x.add_argument("--from-batch"); x.add_argument("--cases", help="comma-separated case_ids: the pilot set")
     x.add_argument("--files", help="space-separated globs this version touches"); x.add_argument("--repo")
     x.add_argument("--overlap-ok", help="why overlapping another candidate's files is fine (recorded)")
     x.add_argument("--issue", type=int, help="the issue this version fixes; its cases become the pilot set")
@@ -129,9 +155,12 @@ def build_parser() -> argparse.ArgumentParser:
     x = d.add_parser("show", help="a module or module version: what it does, its state, and the sessions it came from")
     x.add_argument("name")
 
+    c = sub.add_parser("config", help="check the nearest reins.toml: every name it uses is declared").add_subparsers(dest="sub", required=True)
+    c.add_parser("check")
     b = sub.add_parser("batch").add_subparsers(dest="sub", required=True)
     x = b.add_parser("open")
-    for a in ("--council", "--wp", "--purpose", "--cases"):
+    _scope_args(x)
+    for a in ("--purpose", "--cases"):
         x.add_argument(a, required=True)
     x.add_argument("--type", required=True, choices=names.BATCH_TYPES)
     x.add_argument("--stage", action="append", default=[],
@@ -143,7 +172,8 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--time-budget", type=float, help="hours for the whole batch; the watchdog reports overruns")
     x.add_argument("--workflow", help="workflow-<name>-vN: stages, module versions, prompts and models come from it")
     x = b.add_parser("adopt", help="bring a batch that already exists on disk under reins")
-    for a in ("--council", "--wp", "--purpose", "--cases", "--work-dir"):
+    _scope_args(x)
+    for a in ("--purpose", "--cases", "--work-dir"):
         x.add_argument(a, required=True)
     x.add_argument("--type", required=True, choices=names.BATCH_TYPES)
     x.add_argument("--stage", action="append", required=True, help="NAME:planned|running|done|skipped, in order")
@@ -188,7 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("rules").add_subparsers(dest="sub", required=True)
     x = r.add_parser("list"); x.add_argument("path", nargs="?")
     x = r.add_parser("diff"); x.add_argument("old", type=Path); x.add_argument("new", type=Path)
-    x.add_argument("--key", default="oachargeid"); x.add_argument("--lane", default="lane"); x.add_argument("--json", action="store_true")
+    x.add_argument("--key", help="case column (default: case_id or the project's case_key)"); x.add_argument("--lane", default="lane"); x.add_argument("--json", action="store_true")
     x = r.add_parser("freeze"); x.add_argument("path", type=Path); x.add_argument("--project")
     x.add_argument("--old-lanes", type=Path); x.add_argument("--new-lanes", type=Path)
 
@@ -240,7 +270,7 @@ def build_parser() -> argparse.ArgumentParser:
     dl = sub.add_parser("deliver").add_subparsers(dest="sub", required=True)
     for verb in ("check", "register"):
         x = dl.add_parser(verb); x.add_argument("file", type=Path); x.add_argument("--batch", required=True)
-        x.add_argument("--key", default="oachargeid"); x.add_argument("--sheets"); x.add_argument("--required")
+        x.add_argument("--key", help="case column (default: case_id or the project's case_key)"); x.add_argument("--sheets"); x.add_argument("--required")
         x.add_argument("--allow-missing", type=int, default=0)
     dc = sub.add_parser("decide").add_subparsers(dest="sub", required=True)
     x = dc.add_parser("add"); x.add_argument("text"); x.add_argument("--evidence", required=True); x.add_argument("--by", default="user")
@@ -297,11 +327,21 @@ def main(argv: list[str] | None = None) -> int:
     cfg = project_config(cwd)
     try:
         if args.cmd == "lint":
-            hits = glossary.lint(args.paths)
+            pf = glossary.project_file(project_root(cwd), cfg)
+            hits = glossary.lint(args.paths, glossary.load_all(pf))
             for h in hits:
                 print(f"{h.where}: {h.word!r} -> {h.hint}")
-            print(f"{len(hits)} glossary violations (glossary v{glossary.version()})")
+            print(f"{len(hits)} glossary violations (glossary v{glossary.version()}"
+                  f"{' + ' + str(pf) + ' v' + str(glossary.version(pf)) if pf and pf.is_file() else ''})")
             return 1 if hits else 0
+        if args.cmd == "config":
+            from . import projects
+            probs = projects.check_config(cfg)
+            for p in probs:
+                print(f"  {p}")
+            print(f"{project_root(cwd) / 'reins.toml' if project_root(cwd) else 'no reins.toml'}: "
+                  f"{'ok' if not probs else str(len(probs)) + ' problems'}")
+            return 1 if probs else 0
         if args.cmd == "gateway":
             from . import gateway
             gateway.serve(args.port); return 0
@@ -318,14 +358,14 @@ def main(argv: list[str] | None = None) -> int:
             if args.sub == "list":
                 p = Path(args.path) if args.path else (project_root(cwd) or cwd) / "rules.toml"
                 print(rules.describe(rules.load(p))); return 0
-            d = rules.diff(args.old, args.new, args.key, args.lane)
+            d = rules.diff(args.old, args.new, args.key or _key(cfg), args.lane)
             print(json.dumps(d, ensure_ascii=False, indent=1) if args.json else rules.format_diff(d)); return 0
         if args.cmd == "review" and args.sub == "taxonomy":
             print(json.dumps(review.taxonomy(args.path or (project_root(cwd) or cwd) / "review.toml"), indent=1)); return 0
 
         con = connect()
         if args.cmd == "rules":
-            r = rules.freeze(con, args.path, _project(args, cfg), args.old_lanes, args.new_lanes)
+            r = rules.freeze(con, args.path, _project(args, cfg), args.old_lanes, args.new_lanes, _key(cfg))
             print(f"{r['name']}" + ("" if r["new"] else "  (unchanged rules: same version)")
                   + (f"\n  lane diff: {r['diff_summary']}  -> {r['diff_path']}" if r.get("diff_summary") else ""))
             return 0
@@ -583,11 +623,11 @@ def _dev(con, args, cfg, cwd) -> int:
 
 def _batch(con, args, cfg) -> int:
     if args.sub == "open":
-        bid = batches.open_(con, project=_project(args, cfg), council=args.council, wp=args.wp, type_=args.type,
+        bid = batches.open_(con, project=_project(args, cfg), scope=_scope(args, cfg), type_=args.type,
                             purpose=args.purpose, case_file=Path(args.cases),
                             stages=[batches.parse_stage_spec(s) for s in args.stage], parent=args.parent,
                             release_name=args.release, aliases=args.alias,
-                            case_pattern=cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN),
+                            case_pattern=cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN), case_key=_key(cfg),
                             work_dir=args.work_dir, spend_cap=args.cap, ruleset=args.ruleset, env_name=args.env,
                             config_files=args.config, input_files=args.input, workflow=args.workflow)
         probe = cfg.get("run", {}).get("probe")
@@ -603,15 +643,16 @@ def _batch(con, args, cfg) -> int:
             if state not in ("planned", "running", "done", "skipped"):
                 raise ReinsError(f"--stage {s!r}: NAME:planned|running|done|skipped")
             st.append((n, state))
-        bid = batches.adopt(con, project=_project(args, cfg), council=args.council, wp=args.wp, type_=args.type,
+        bid = batches.adopt(con, project=_project(args, cfg), scope=_scope(args, cfg), type_=args.type,
                             purpose=args.purpose, case_file=Path(args.cases), work_dir=args.work_dir, stages=st,
                             release_name=args.release, owner=args.owner, aliases=args.alias,
-                            case_pattern=cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN), note=args.note)
+                            case_pattern=cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN), note=args.note,
+                            case_key=_key(cfg))
         print(bid)
     elif args.sub == "probe":
         batches.set_probe(con, args.batch, args.cmd); print("probe set")
     elif args.sub == "skip-cases":
-        n = batches.skip_cases(con, args.batch, args.stage, names.read_case_set(args.file), args.why); print(f"{n} cases skipped")
+        n = batches.skip_cases(con, args.batch, args.stage, names.read_case_set(Path(args.file), _key(cfg)), args.why); print(f"{n} cases skipped")
     elif args.sub == "approve":
         batches.approve_spend(con, args.batch, args.cap, args.by); print(f"{args.batch} cap ${args.cap:.2f}")
     elif args.sub == "stage-start":
@@ -619,11 +660,11 @@ def _batch(con, args, cfg) -> int:
             print(f"WARNING {w}", file=sys.stderr)
     elif args.sub == "mark":
         if args.file:
-            rows = batches.read_marks(Path(args.file))
+            rows = batches.read_marks(Path(args.file), _key(cfg))
         elif args.case and args.status:
             rows = [(args.case, args.status, args.reason)]
         else:
-            raise ReinsError("mark needs --file TSV or OACHARGEID STATUS [REASON]")
+            raise ReinsError("mark needs --file TSV or CASE_ID STATUS [REASON]")
         print(f"{batches.mark(con, args.batch, args.stage, rows)} events recorded")
     elif args.sub == "stage-end":
         led = batches.stage_end(con, args.batch, args.stage)
@@ -652,7 +693,7 @@ def _batch(con, args, cfg) -> int:
 
 
 def _case(con, args) -> int:
-    members = [r[0] for r in con.execute("SELECT batch_id FROM batch_case WHERE oachargeid=? ORDER BY batch_id", (args.case_id,))]
+    members = [r[0] for r in con.execute("SELECT batch_id FROM batch_case WHERE case_id=? ORDER BY batch_id", (args.case_id,))]
     if not members:
         print(f"{args.case_id}: in no registered batch"); return 1
     print(f"{args.case_id}: in {len(members)} batches: {', '.join(members)}")
@@ -679,7 +720,7 @@ def _measure(con, args, cfg, cwd) -> int:
         elif args.sub == "add-input":
             print(f"{bench.add_input(con, args.name, args.src)} files added")
         elif args.sub == "label":
-            r = bench.label(con, args.name, args.file); print(f"labelset {r['labelset']}: +{r['added']} {r['by_source']}")
+            r = bench.label(con, args.name, args.file, _key(cfg)); print(f"labelset {r['labelset']}: +{r['added']} {r['by_source']}")
         elif args.sub == "freeze":
             r = bench.freeze(con, args.name, args.changelog); print(f"{r['name']} v{r['version']} frozen: {r['files']} files, manifest {r['manifest_sha'][:12]}")
         elif args.sub == "bump":
@@ -697,7 +738,7 @@ def _measure(con, args, cfg, cwd) -> int:
     elif args.cmd == "threshold":
         if args.sub == "set":
             r = bench.set_threshold(con, args.module, args.name, args.value, args.n, args.split, args.benchmark, args.by, args.note)
-            print(f"{r['module']}.{r['name']} = {r['value']} (n={r['n']}{', LOW N: re-validate on the next council' if r['low_n'] else ''})")
+            print(f"{r['module']}.{r['name']} = {r['value']} (n={r['n']}{', LOW N: re-validate on the next scope' if r['low_n'] else ''})")
         else:
             for t in bench.thresholds(con, args.module):
                 print(f"{t['module']}.{t['name']:<28} = {t['value']:<10} n={t['n']:<5} {t['split']:<7} {t['benchmark'] or '-':<30}"
@@ -719,12 +760,12 @@ def _measure(con, args, cfg, cwd) -> int:
             n = review.assign(con, args.batch, args.reviewer, [c for c in args.cases.split(",") if c], args.queue, args.round, args.by)
             print(f"{n} cases appended to {args.reviewer}'s list")
         elif args.sub == "verdict":
-            review.record(con, args.batch, [{"oachargeid": args.case, "target": args.target, "reviewer": args.reviewer,
+            review.record(con, args.batch, [{"case_id": args.case, "target": args.target, "reviewer": args.reviewer,
                                              "action": "verdict", "verdict": args.verdict, "error_type": args.error_type,
                                              "note": args.note}], tax)
             print("recorded")
         elif args.sub == "import":
-            print(f"{review.record(con, args.batch, review.read_events(args.file), tax)} events recorded")
+            print(f"{review.record(con, args.batch, review.read_events(args.file), tax, _key(cfg))} events recorded")
         elif args.sub == "calibration":
             print(json.dumps(review.calibration(con, args.batch), ensure_ascii=False, indent=1))
         elif args.sub == "candidates":
@@ -736,15 +777,15 @@ def _measure(con, args, cfg, cwd) -> int:
                 print(text, end="")
     elif args.cmd == "accept":
         if args.sub == "sample":
-            r = accept.sample(con, args.batch, args.lanes, args.n, args.seed, args.from_lane, args.ideal, args.max)
+            r = accept.sample(con, args.batch, args.lanes, args.n, args.seed, args.from_lane, args.ideal, args.max, key=_key(cfg))
             print(f"acceptance #{r['acceptance_id']}: {r['n']} of {r['pool']} {args.from_lane} cases, seed {r['seed']} {r['note']}")
         elif args.sub == "grade":
-            print(f"{accept.grade(con, args.batch, accept.read_grades(args.file))} grades recorded")
+            print(f"{accept.grade(con, args.batch, accept.read_grades(Path(args.file), _key(cfg)))} grades recorded")
         elif args.sub == "check":
-            r = accept.check(con, args.batch, args.lanes); print(f"{len(r['stale'])} of {r['n']} sampled cases changed lane: {r['stale'][:10]}")
+            r = accept.check(con, args.batch, args.lanes, key=_key(cfg)); print(f"{len(r['stale'])} of {r['n']} sampled cases changed lane: {r['stale'][:10]}")
             return 1 if r["stale"] else 0
         elif args.sub == "decide":
-            r = accept.decide(con, args.batch, args.by, args.note, args.lanes)
+            r = accept.decide(con, args.batch, args.by, args.note, args.lanes, key=_key(cfg))
             print(f"{r['decision'].upper()}  F={r['F']} A={r['A']} P={r['P']} of {r['graded']} (ideal {r['budget_ideal']}, max {r['budget_max']})")
             print(f"  registry line: {r['registry_line']}")
         else:
@@ -755,7 +796,7 @@ def _measure(con, args, cfg, cwd) -> int:
             print(f"  {'ok  ' if c['ok'] else 'FAIL'} {c['name']:<24} {c['detail']}")
         print("preflight PASS" if r["ok"] else "preflight FAIL"); return 0 if r["ok"] else 1
     elif args.cmd == "deliver":
-        kw = dict(key=args.key, sheets_expected=args.sheets.split(",") if args.sheets else None,
+        kw = dict(key=args.key or _key(cfg), forbid_scripts=(cfg.get("deliver") or {}).get("forbid_scripts"), sheets_expected=args.sheets.split(",") if args.sheets else None,
                   required=args.required.split(",") if args.required else None, allow_missing=args.allow_missing)
         if args.sub == "check":
             r = deliver.check(con, args.file, args.batch, **kw)

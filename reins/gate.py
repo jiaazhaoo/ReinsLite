@@ -1,9 +1,9 @@
 """C5 gate results. Two primary metrics everywhere: missed_error (must not increase) and review_load (a cost).
 
 A project's gate command writes this JSON to $REINS_GATE_OUT:
-    {"benchmark": "bench-sheffield-wp3-359-v6", "tiers": "units,judges", "stages_covered": "judges,lanes",
+    {"benchmark": "bench-demo-v6", "tiers": "units,judges", "stages_covered": "judges,lanes",
      "missed_error": 0, "review_load": 93, "base_missed_error": 0, "base_review_load": 96,
-     "golden_regressions": 0, "diff_path": "/data/.../diff.html"}
+     "golden_regressions": 0, "diff_path": "/path/to/diff.html"}
 """
 from __future__ import annotations
 

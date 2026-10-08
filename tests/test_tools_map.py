@@ -86,3 +86,16 @@ class BoardScript(unittest.TestCase):
         f = Path(tempfile.mkdtemp()) / "b.js"; f.write_text(js)
         r = subprocess.run(["node", "--check", str(f)], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
+
+
+class ConfigCheck(unittest.TestCase):
+    def test_template_is_consistent_and_errors_are_found(self):
+        import tomllib
+        from reins import projects
+        root = Path(__file__).resolve().parents[1]
+        cfg = tomllib.loads((root / "examples" / "reins.toml").read_text())
+        self.assertEqual(projects.check_config(cfg), [])
+        cfg["workflows"]["main"]["stages"][2]["tools"].append("nope")
+        cfg["modules"]["extract"]["prompts"].append("ghost")
+        probs = projects.check_config(cfg)
+        self.assertEqual(len(probs), 2, probs)

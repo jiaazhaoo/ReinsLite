@@ -2,10 +2,10 @@
 
 A project's rules.toml:
     [[rule]]
-    id = "no_plan_never_auto_accept"
+    id = "no_evidence_never_auto_accept"
     lane = "review"
-    when = "the case has no plan_image"
-    evidence = "bench-sheffield-wp3-359-v3, 491 cases were auto-accepted without a drawing"
+    when = "the case has no source evidence"
+    evidence = "bench-demo-v3: 491 cases were auto-accepted without evidence"
     decided = "2026-10-05"
     by = "user"
     cost_per_case_usd = 0.0
@@ -46,9 +46,10 @@ def describe(rules: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _lanes(path: Path, key: str, lane_col: str) -> dict[str, str]:
+def _lanes(path: Path, key: str | None, lane_col: str) -> dict[str, str]:
     with path.open(encoding="utf-8-sig", newline="") as f:
         rd = csv.DictReader(f, delimiter="\t" if path.suffix.lower() == ".tsv" else ",")
+        key = names.case_field(rd.fieldnames, key) or key or names.CASE_KEY
         if key not in (rd.fieldnames or []) or lane_col not in rd.fieldnames:
             raise ReinsError(f"{path}: needs columns {key!r} and {lane_col!r}; has {rd.fieldnames}")
         out = {}
@@ -59,7 +60,7 @@ def _lanes(path: Path, key: str, lane_col: str) -> dict[str, str]:
     return out
 
 
-def diff(old: Path, new: Path, key: str = "oachargeid", lane_col: str = "lane") -> dict:
+def diff(old: Path, new: Path, key: str | None = None, lane_col: str = "lane") -> dict:
     """Which cases moved from which lane to which. Required before a rule change takes effect."""
     a, b = _lanes(old, key, lane_col), _lanes(new, key, lane_col)
     moves: dict[tuple[str, str], list[str]] = {}
@@ -72,7 +73,7 @@ def diff(old: Path, new: Path, key: str = "oachargeid", lane_col: str = "lane") 
             "moves": [{"from": f, "to": t, "n": len(c), "cases": c} for (f, t), c in sorted(moves.items())]}
 
 
-def freeze(con, path: Path, project: str, old_lanes: Path | None, new_lanes: Path | None, key: str = "oachargeid",
+def freeze(con, path: Path, project: str, old_lanes: Path | None, new_lanes: Path | None, key: str | None = None,
            lane_col: str = "lane") -> dict:
     """ruleset-<project>-vN for the rules file as it is now. From v2 on, a lane diff (old vs new lanes) is required:
     a rule change without the list of cases that moved is not allowed to take effect."""

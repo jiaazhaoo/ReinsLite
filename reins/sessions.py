@@ -34,15 +34,12 @@ IDLE_MIN = 30            # no event for this long -> idle
 CONFLICT_WINDOW_H = 24   # edits older than this do not conflict
 
 # Bash commands are classified by the programs they execute, never by words that merely appear in them
-# (`cat tools/run_local_qa.sh` reads the script; it does not run it). Here-doc bodies are data, not commands.
-RUN_PROGRAMS = {"run_local_qa.sh", "run_rework.sh", "run_batch.sh", "run_batch3.sh", "run_portal_part.sh",
-                "boundary_lab.py", "qa_judge.py", "vlm_crops.py", "vet_crops.py", "case_classify.py", "qa_input_polygon.py"}
-RUN_MODULES = {"e2e_plan_extract.georef.batch", "e2e_plan_extract.georef.read_vlm", "e2e_plan_extract.georef.ocr_rotated"}
+# (`cat tools/run.sh` reads the script; it does not run it). Here-doc bodies are data, not commands.
 WRAPPERS = {"nohup", "setsid", "time", "nice", "ionice", "exec", "env", "sudo", "systemd-run", "stdbuf", "(", "{"}
 DETACHERS = {"nohup", "setsid", "disown"}
 INTERPRETERS = re.compile(r"^(python[0-9.]*|\S*/python[0-9.]*|bash|sh|zsh|\$\{?\w*PY\}?)$")
 EXPERIMENT_TYPES = re.compile(r"--type\s+(experiment|pilot|smoke|eval)\b")
-BATCH_IN = re.compile(r"\b([a-z][a-z0-9_]*-[a-z][a-z0-9_]*-(?:production|rework|experiment|pilot|eval|benchmark_build|smoke|drift)-\d{8}-\d+)\b")
+BATCH_IN = re.compile(r"\b((?:[a-z][a-z0-9_]*-){1,4}(?:production|rework|experiment|pilot|eval|benchmark_build|smoke|drift)-\d{8}-\d+)\b")
 READ_PROGRAMS = {"ls", "cat", "head", "tail", "grep", "rg", "find", "wc", "du", "df", "ps", "free", "nvidia-smi", "stat",
                  "file", "which", "echo", "pwd", "sed", "awk", "sort", "uniq", "cut", "tr", "diff", "jq", "less", "curl",
                  "readlink", "realpath", "date", "test", "true", "sleep", "printf", "cd", "[", "column", "xargs"}
@@ -114,13 +111,18 @@ def segments(cmd: str) -> list[dict]:
     return out
 
 
-def runs_pipeline(argv: list[str]) -> bool:
-    if Path(argv[0]).name in RUN_PROGRAMS:
+def runs_pipeline(argv: list[str], programs: tuple[set[str], set[str]] | None = None) -> bool:
+    """Does this argv start one of the managed projects' pipeline programs ([run] programs in their reins.toml)?"""
+    if programs is None:
+        from .projects import run_programs
+        programs = run_programs()
+    scripts, mods = programs
+    if Path(argv[0]).name in scripts:
         return True
     if INTERPRETERS.match(argv[0]) and len(argv) > 1:
         if argv[1] == "-m" and len(argv) > 2:
-            return argv[2] in RUN_MODULES
-        return Path(argv[1]).name in RUN_PROGRAMS
+            return argv[2] in mods
+        return Path(argv[1]).name in scripts
     return False
 
 
@@ -482,7 +484,9 @@ def briefing(con, sid: str) -> str:
     """What a session is told when it starts: who it is, what it owns, who else is working on what."""
     s = con.execute("SELECT * FROM session WHERE id=?", (sid,)).fetchone()
     own = owned(con, sid)
-    lines = [f"[reins] You are session {sid[:8]}. Board: http://127.0.0.1:8791 . Rules: /env/code/ReinsLite/docs/WORKFLOW.md"]
+    from .store import config
+    docs = Path(__file__).resolve().parents[1] / "docs" / "WORKFLOW.md"
+    lines = [f"[reins] You are session {sid[:8]}. Board: http://127.0.0.1:{config()['board_port']} . Rules: {docs}"]
     if s and s["parent"]:
         lines.append(f"[reins] You were FORKED from session {s['parent'][:8]}. You own nothing it owns: its batches and "
                      f"worktrees stay with it. To develop a fix, first run: reins dev start MODULE SUFFIX --about '...' "

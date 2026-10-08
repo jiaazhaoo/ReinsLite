@@ -30,7 +30,7 @@ class Base(unittest.TestCase):
         self.cases.write_text("101\n102\n103\n")
 
     def open(self, specs, type_="experiment", cap=0.0):
-        return batches.open_(self.con, project="e2e-plan-extract", council="sheffield", wp="wp3", type_=type_,
+        return batches.open_(self.con, project="e2e-plan-extract", scope="sheffield-wp3", type_=type_,
                              purpose="test", case_file=self.cases, stages=[batches.parse_stage_spec(s) for s in specs],
                              spend_cap=cap)
 
@@ -82,13 +82,19 @@ class Gateway(Base):
         self.gw = gateway
         self.up = ThreadingHTTPServer(("127.0.0.1", 0), FakeUpstream)
         threading.Thread(target=self.up.serve_forever, daemon=True).start()
-        gateway.UPSTREAM = f"http://127.0.0.1:{self.up.server_port}"
-        gateway.PROVIDERS["openrouter"] = gateway.UPSTREAM
-        gateway.Handler.key = "REALKEY"
+        self.upstream = f"http://127.0.0.1:{self.up.server_port}"
+        self.bases = {"openrouter": self.upstream}
+        self.write_providers()
+        gateway.KEYS.clear(); gateway.KEYS["openrouter"] = "REALKEY"
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.srv.server_port}/api/v1/chat/completions"
         FakeUpstream.calls = 0
+
+    def write_providers(self, **bases):
+        """Providers come from the installation's config.toml, as in production (presets + overrides)."""
+        self.bases.update(bases)
+        (self.tmp / "config.toml").write_text("".join(f'[providers.{n}]\nbase = "{b}"\n' for n, b in self.bases.items()))
 
     def tearDown(self):
         self.srv.shutdown(); self.up.shutdown()
@@ -138,7 +144,7 @@ class Runner(Base):
     def test_run_marks_and_ends_stage(self):
         b = self.open(["ocr"])
         cmd = ["python3", "-m", "reins", "batch", "mark", b, "ocr", "--file", str(self.tmp / "marks.tsv")]
-        (self.tmp / "marks.tsv").write_text("oachargeid\tstatus\treason\n101\tdone\t\n102\tdone\t\n103\tskipped\tno scans\n")
+        (self.tmp / "marks.tsv").write_text("case_id\tstatus\treason\n101\tdone\t\n102\tdone\t\n103\tskipped\tno scans\n")
         res = runner.start(self.con, b, "ocr", cmd, self.tmp)
         self.assertTrue(self.wait(lambda: batches.get(self.con, b)["status"] == "done"), Path(res["log"]).read_text())
         self.assertEqual(self.con.execute("SELECT state, exit_code FROM process").fetchone()[:], ("exited", 0))
@@ -253,8 +259,8 @@ class Small(Base):
 
     def test_rules_diff(self):
         old = self.tmp / "old.csv"; new = self.tmp / "new.csv"
-        old.write_text("oachargeid,lane\n1,auto_accept\n2,auto_accept\n3,review\n")
-        new.write_text("oachargeid,lane\n1,auto_accept\n2,review\n3,review\n4,review\n")
+        old.write_text("case_id,lane\n1,auto_accept\n2,auto_accept\n3,review\n")
+        new.write_text("case_id,lane\n1,auto_accept\n2,review\n3,review\n4,review\n")
         d = rules.diff(old, new)
         self.assertEqual([(m["from"], m["to"], m["n"]) for m in d["moves"]],
                          [("(absent)", "review", 1), ("auto_accept", "review", 1)])
@@ -276,7 +282,7 @@ class Drift(Gateway):
         body = {"model": "m", "messages": [{"role": "user", "content": "same"}]}
         self.post(f"{b}:judge", body); self.post(f"{b}:judge", body)
         self.assertEqual(FakeUpstream.calls, 1)                   # second is a cache hit
-        d = batches.open_(self.con, project="e2e-plan-extract", council="sheffield", wp="wp3", type_="drift",
+        d = batches.open_(self.con, project="e2e-plan-extract", scope="sheffield-wp3", type_="drift",
                           purpose="weekly drift", case_file=self.cases, stages=[batches.parse_stage_spec("judge:paid")], spend_cap=1.0)
         batches.stage_start(self.con, d, "judge")
         self.post(f"{d}:judge", body); self.post(f"{d}:judge", body)
@@ -293,7 +299,7 @@ class Providers(Gateway):
         code, d = self.post(b, {"model": "m", "messages": [{"role": "user", "content": "x"}]})
         self.assertEqual(code, 200)
         self.assertEqual(self.con.execute("SELECT stage FROM spend").fetchone()[0], "judge")
-        self.gw.PROVIDERS["deepseek"] = self.gw.UPSTREAM                # fake upstream answers both
+        self.write_providers(deepseek=self.upstream)                 # fake upstream answers both
         self.gw.KEYS["deepseek"] = "REALKEY"
         req = urllib.request.Request(f"http://127.0.0.1:{self.srv.server_port}/p/deepseek/v1/chat/completions",
                                      data=json.dumps({"model": "deepseek-chat", "messages": []}).encode(),
@@ -310,10 +316,11 @@ class SelfStaged(Runner):
         script = (f"{R} batch stage-start {b} prepare && {R} batch mark {b} prepare --file {self.tmp}/m.tsv && "
                   f"{R} batch stage-end {b} prepare && {R} batch stage-start {b} work && "
                   f"{R} batch mark {b} work --file {self.tmp}/m.tsv && {R} batch stage-end {b} work")
-        (self.tmp / "m.tsv").write_text("oachargeid\tstatus\treason\n101\tdone\t\n102\tdone\t\n103\tskipped\tno scans\n")
+        (self.tmp / "m.tsv").write_text("case_id\tstatus\treason\n101\tdone\t\n102\tdone\t\n103\tskipped\tno scans\n")
         res = runner.start(self.con, b, runner.SELF, ["sh", "-c", script], self.tmp)
         self.assertTrue(self.wait(lambda: batches.get(self.con, b)["status"] == "done"), Path(res["log"]).read_text())
-        self.assertTrue(self.con.execute("SELECT 1 FROM notification WHERE key=?", (f"done:{b}",)).fetchone())
+        # the supervisor writes the status, then the notification: wait for both
+        self.assertTrue(self.wait(lambda: self.con.execute("SELECT 1 FROM notification WHERE key=?", (f"done:{b}",)).fetchone()))
 
 
 class FakeGoogle(BaseHTTPRequestHandler):
@@ -332,8 +339,8 @@ class GoogleMaps(Gateway):
     def test_geocode_through_gateway_is_counted_and_priced(self):
         fake = ThreadingHTTPServer(("127.0.0.1", 0), FakeGoogle)
         threading.Thread(target=fake.serve_forever, daemon=True).start()
-        self.gw.GOOGLE_MAPS = f"http://127.0.0.1:{fake.server_port}"
-        self.gw.KEYS["google"] = "GKEY"
+        self.write_providers(google_maps=f"http://127.0.0.1:{fake.server_port}")
+        self.gw.KEYS["google_maps"] = "GKEY"
         b = self.open(["georef:paid"], cap=1.0)
         batches.stage_start(self.con, b, "georef")
         url = f"http://127.0.0.1:{self.srv.server_port}/p/google_maps/maps/api/geocode/json?address=1+X+St&region=uk&key={b}"
@@ -400,9 +407,9 @@ class Issues(Dev):
         batches.stage_start(self.con, b, "check")
         tax = {"version": 1, "error_types": ["location", "polygon"], "unsure_needs_note": True}
         review.record(self.con, b, [
-            {"oachargeid": "101", "reviewer": "Maggie", "action": "verdict", "verdict": "wrong", "error_type": "location"},
-            {"oachargeid": "102", "reviewer": "Maggie", "action": "verdict", "verdict": "wrong", "error_type": "polygon"},
-            {"oachargeid": "103", "reviewer": "Yishan", "action": "verdict", "verdict": "correct"}], tax)
+            {"case_id": "101", "reviewer": "Maggie", "action": "verdict", "verdict": "wrong", "error_type": "location"},
+            {"case_id": "102", "reviewer": "Maggie", "action": "verdict", "verdict": "wrong", "error_type": "polygon"},
+            {"case_id": "103", "reviewer": "Yishan", "action": "verdict", "verdict": "correct"}], tax)
         ids = issues.from_review(self.con, b)
         self.assertEqual(len(ids), 2)
         self.assertEqual(issues.from_review(self.con, b), [])                  # already covered

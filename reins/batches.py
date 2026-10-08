@@ -47,9 +47,9 @@ def parse_stage_spec(spec: str) -> dict:
     return out
 
 
-def open_(con, *, project: str, council: str, wp: str, type_: str, purpose: str, case_file: Path,
+def open_(con, *, project: str, scope: str, type_: str, purpose: str, case_file: Path,
           stages: list[dict], parent: str | None = None, release_name: str | None = None,
-          aliases: list[str] | None = None, case_pattern: str = names.DEFAULT_CASE_PATTERN,
+          aliases: list[str] | None = None, case_pattern: str = names.DEFAULT_CASE_PATTERN, case_key: str | None = None,
           work_dir: str | None = None, spend_cap: float = 0.0, day: str | None = None,
           ruleset: str | None = None, env_name: str | None = None, config_files: list[Path] | None = None,
           input_files: list[Path] | None = None, workflow: str | None = None) -> str:
@@ -64,13 +64,14 @@ def open_(con, *, project: str, council: str, wp: str, type_: str, purpose: str,
                   for s in wst]
     if not stages:
         raise ReinsError("a batch needs at least one planned stage (or --workflow)")
-    ids = names.read_case_set(case_file)
-    problems = names.case_problems(ids, case_pattern)
+    ids = names.read_case_set(case_file, case_key)
+    problems = names.case_problems(ids, case_pattern, case_key)
     if problems:
         shown = "\n  ".join(problems[:20]) + (f"\n  ... {len(problems) - 20} more" if len(problems) > 20 else "")
         raise ReinsError(f"case set {case_file} is not usable ({len(problems)} problems):\n  {shown}")
-    if work_dir and (Path(work_dir).resolve() == Path("/env/code") or Path("/env/code") in Path(work_dir).resolve().parents):
-        raise ReinsError(f"work_dir {work_dir} is inside /env/code: batch outputs go under /data")
+    from .store import CODE_ROOT
+    if work_dir and (Path(work_dir).resolve() == CODE_ROOT or CODE_ROOT in Path(work_dir).resolve().parents):
+        raise ReinsError(f"work_dir {work_dir} is inside the code root {CODE_ROOT}: batch outputs go to a data directory")
     day = day or today()
     config_sha = names.sha256_lines([f"{p}:{names.sha256_file(p)}" for p in (config_files or [])]) if config_files else None
     input_shas = {str(p): names.sha256_file(p) for p in (input_files or [])}
@@ -96,14 +97,14 @@ def open_(con, *, project: str, council: str, wp: str, type_: str, purpose: str,
                 raise ReinsError(f"{type_} batch: stage {s['stage']!r} needs a module version (stage=<module_version>)")
             if s["spend_cap"] and spend_cap and s["spend_cap"] > spend_cap:
                 raise ReinsError(f"stage {s['stage']} cap {s['spend_cap']} exceeds the batch cap {spend_cap}")
-        seq = con.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM batch WHERE council=? AND wp=? AND type=? AND day=?",
-                          (council, wp, type_, day)).fetchone()[0]
-        bid = names.batch_id(council, wp, type_, day, seq)
-        con.execute("INSERT INTO batch (batch_id, project, council, wp, type, day, seq, purpose, parent, case_set_path,"
+        seq = con.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM batch WHERE scope=? AND type=? AND day=?",
+                          (scope, type_, day)).fetchone()[0]
+        bid = names.batch_id(scope, type_, day, seq)
+        con.execute("INSERT INTO batch (batch_id, project, scope, type, day, seq, purpose, parent, case_set_path,"
                     " case_set_sha, n_cases, release_name, aliases, status, spend_cap, work_dir, ruleset, env_name,"
                     " config_sha, input_shas, owner_session, created)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'open', ?,?,?,?,?,?,?,?)",
-                    (bid, project, council, wp, type_, day, seq, purpose, parent, str(case_file.resolve()),
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'open', ?,?,?,?,?,?,?,?)",
+                    (bid, project, scope, type_, day, seq, purpose, parent, str(case_file.resolve()),
                      names.sha256_lines(ids), len(ids), release_name, json.dumps(aliases or [], ensure_ascii=False),
                      spend_cap, work_dir, ruleset, env_name, config_sha, json.dumps(input_shas), session(), now()))
         con.executemany("INSERT INTO batch_case VALUES (?,?)", [(bid, i) for i in ids])
@@ -119,29 +120,30 @@ def open_(con, *, project: str, council: str, wp: str, type_: str, purpose: str,
     return bid
 
 
-def adopt(con, *, project: str, council: str, wp: str, type_: str, purpose: str, case_file: Path, work_dir: str,
+def adopt(con, *, project: str, scope: str, type_: str, purpose: str, case_file: Path, work_dir: str,
           stages: list[tuple[str, str]], release_name: str | None, owner: str | None, aliases: list[str] | None = None,
-          case_pattern: str = names.DEFAULT_CASE_PATTERN, day: str | None = None, note: str = "") -> str:
+          case_pattern: str = names.DEFAULT_CASE_PATTERN, day: str | None = None, note: str = "",
+          case_key: str | None = None) -> str:
     """Bring a batch that was started outside reins under management. `stages` = [(name, state)] with state in
     planned | running | done | skipped. Done stages get every case marked done with reason 'adopted' (the real
     per-case ledger starts from the running stage on). Strict-type checks are relaxed: the batch is a fact."""
-    ids = names.read_case_set(case_file)
-    probs = names.case_problems(ids, case_pattern)
+    ids = names.read_case_set(case_file, case_key)
+    probs = names.case_problems(ids, case_pattern, case_key)
     if probs:
         raise ReinsError(f"case set not usable: {probs[:5]}")
     day = day or today()
     with tx(con):
         if release_name and not con.execute("SELECT 1 FROM release WHERE name=?", (release_name,)).fetchone():
             raise ReinsError(f"release {release_name!r} is not registered")
-        seq = con.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM batch WHERE council=? AND wp=? AND type=? AND day=?",
-                          (council, wp, type_, day)).fetchone()[0]
-        bid = names.batch_id(council, wp, type_, day, seq)
+        seq = con.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM batch WHERE scope=? AND type=? AND day=?",
+                          (scope, type_, day)).fetchone()[0]
+        bid = names.batch_id(scope, type_, day, seq)
         running = any(s == "running" for _, s in stages)
         status = "running" if running else ("done" if all(s in ("done", "skipped") for _, s in stages) else "open")
-        con.execute("INSERT INTO batch (batch_id, project, council, wp, type, day, seq, purpose, case_set_path, case_set_sha,"
+        con.execute("INSERT INTO batch (batch_id, project, scope, type, day, seq, purpose, case_set_path, case_set_sha,"
                     " n_cases, release_name, aliases, status, work_dir, owner_session, preflight_ok, created)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)",
-                    (bid, project, council, wp, type_, day, seq, purpose, str(case_file.resolve()), names.sha256_lines(ids),
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)",
+                    (bid, project, scope, type_, day, seq, purpose, str(case_file.resolve()), names.sha256_lines(ids),
                      len(ids), release_name, json.dumps(aliases or [], ensure_ascii=False), status, work_dir, owner, now()))
         con.executemany("INSERT INTO batch_case VALUES (?,?)", [(bid, i) for i in ids])
         t = now()
@@ -151,7 +153,7 @@ def adopt(con, *, project: str, council: str, wp: str, type_: str, purpose: str,
                         (bid, stage, k, state, t if state != "planned" else None, t if state in ("done", "skipped") else None,
                          "adopted" if state != "planned" else None))
             if state == "done":
-                con.executemany("INSERT INTO case_event (at, batch_id, stage, oachargeid, status, reason) VALUES (?,?,?,?,?,?)",
+                con.executemany("INSERT INTO case_event (at, batch_id, stage, case_id, status, reason) VALUES (?,?,?,?,?,?)",
                                 [(t, bid, stage, i, "done", "adopted: stage finished before reins; per-case ledger not reconstructed") for i in ids])
         _event(con, bid, "adopted", f"brought under reins from {work_dir}; {note}".strip("; "))
     if owner:
@@ -192,12 +194,12 @@ def skip_cases(con, batch: str, stage: str, cases: list[str], reason: str) -> in
         raise ReinsError("skipping cases needs a reason")
     with tx(con):
         get(con, batch); _stage(con, batch, stage)
-        members = {r[0] for r in con.execute("SELECT oachargeid FROM batch_case WHERE batch_id=?", (batch,))}
+        members = {r[0] for r in con.execute("SELECT case_id FROM batch_case WHERE batch_id=?", (batch,))}
         bad = [c for c in cases if c not in members]
         if bad:
             raise ReinsError(f"not in {batch}: {bad[:5]}")
         t = now()
-        con.executemany("INSERT INTO case_event (at, batch_id, stage, oachargeid, status, reason) VALUES (?,?,?,?, 'skipped', ?)",
+        con.executemany("INSERT INTO case_event (at, batch_id, stage, case_id, status, reason) VALUES (?,?,?,?, 'skipped', ?)",
                         [(t, batch, stage, c, reason) for c in cases])
         _event(con, batch, "cases_skipped", f"{stage}: {len(cases)} cases, {reason}")
     return len(cases)
@@ -278,14 +280,14 @@ def stage_start(con, batch: str, stage: str, module_version: str | None = None, 
 
 
 def mark(con, batch: str, stage: str, rows: list[tuple[str, str, str | None]]) -> int:
-    """Record per-case events: (oachargeid, status, reason). All or nothing."""
+    """Record per-case events: (case_id, status, reason). All or nothing."""
     with tx(con):
         b = get(con, batch)
         _live(b)
         st = _stage(con, batch, stage)
         if st["status"] != "running":
             raise ReinsError(f"stage {stage} is {st['status']}; run: reins batch stage-start {batch} {stage}")
-        members = {r[0] for r in con.execute("SELECT oachargeid FROM batch_case WHERE batch_id=?", (batch,))}
+        members = {r[0] for r in con.execute("SELECT case_id FROM batch_case WHERE batch_id=?", (batch,))}
         seen, errors = set(), []
         for i, (cid, status, reason) in enumerate(rows, 1):
             if cid not in members:
@@ -300,20 +302,22 @@ def mark(con, batch: str, stage: str, rows: list[tuple[str, str, str | None]]) -
         if errors:
             raise ReinsError(f"{len(errors)} problems, nothing recorded:\n  " + "\n  ".join(errors[:20]))
         t = now()
-        con.executemany("INSERT INTO case_event (at, batch_id, stage, oachargeid, status, reason, module_version)"
+        con.executemany("INSERT INTO case_event (at, batch_id, stage, case_id, status, reason, module_version)"
                         " VALUES (?,?,?,?,?,?,?)", [(t, batch, stage, c, s, r, st["module_version"]) for c, s, r in rows])
     return len(rows)
 
 
-def read_marks(path: Path) -> list[tuple[str, str, str | None]]:
-    """TSV with header: oachargeid, status[, reason]."""
+def read_marks(path: Path, key: str | None = None) -> list[tuple[str, str, str | None]]:
+    """TSV with header: <case column>, status[, reason]. The case column is case_id, the project's case_key, or else
+    the first column (a pipeline written before its project named its key keeps working)."""
     import csv
     with path.open(encoding="utf-8-sig") as f:
         rd = csv.DictReader(f, delimiter="\t")
-        need = {"oachargeid", "status"}
-        if not need <= set(rd.fieldnames or []):
-            raise ReinsError(f"{path}: needs columns oachargeid, status[, reason]; has {rd.fieldnames}")
-        return [(r["oachargeid"], r["status"], r.get("reason") or None) for r in rd]
+        fields = rd.fieldnames or []
+        col = names.case_field(fields, key) or (fields[0] if fields and fields[0] not in ("status", "reason") else None)
+        if not col or "status" not in fields:
+            raise ReinsError(f"{path}: needs columns case_id (or the project's case key), status[, reason]; has {fields}")
+        return [(r[col], r["status"], r.get("reason") or None) for r in rd]
 
 
 def ledger(con, batch: str, stage: str) -> dict:
@@ -323,9 +327,9 @@ def ledger(con, batch: str, stage: str) -> dict:
     counts = dict(con.execute("SELECT status, COUNT(*) FROM case_current WHERE batch_id=? AND stage=? GROUP BY status",
                               (batch, stage)).fetchall())
     missing = [r[0] for r in con.execute(
-        "SELECT c.oachargeid FROM batch_case c LEFT JOIN case_current e"
-        " ON e.batch_id=c.batch_id AND e.stage=? AND e.oachargeid=c.oachargeid"
-        " WHERE c.batch_id=? AND (e.status IS NULL OR e.status='started') ORDER BY c.oachargeid",
+        "SELECT c.case_id FROM batch_case c LEFT JOIN case_current e"
+        " ON e.batch_id=c.batch_id AND e.stage=? AND e.case_id=c.case_id"
+        " WHERE c.batch_id=? AND (e.status IS NULL OR e.status='started') ORDER BY c.case_id",
         (stage, batch))]
     return {"n_cases": n, "done": counts.get("done", 0), "skipped": counts.get("skipped", 0),
             "failed": counts.get("failed", 0), "running": counts.get("started", 0), "missing": missing}
@@ -368,7 +372,7 @@ def without_input(con, batch: str, stage: str) -> list[str]:
     a result produced without the input it should rest on (batch2: 689 cases that never entered the pipeline got lanes)."""
     ord_ = _stage(con, batch, stage)["ord"]
     return [r[0] for r in con.execute(
-        "SELECT DISTINCT c.oachargeid FROM case_current c JOIN case_current e ON e.batch_id=c.batch_id AND e.oachargeid=c.oachargeid"
+        "SELECT DISTINCT c.case_id FROM case_current c JOIN case_current e ON e.batch_id=c.batch_id AND e.case_id=c.case_id"
         " JOIN batch_stage s ON s.batch_id=e.batch_id AND s.stage=e.stage"
         " WHERE c.batch_id=? AND c.stage=? AND c.status='done' AND s.ord<? AND e.status IN ('skipped','failed') ORDER BY 1",
         (batch, stage, ord_))]
@@ -439,11 +443,11 @@ def status(con, batch: str) -> dict:
     return {"batch": b, "stages": stages, "recent_events": events, "processes": procs}
 
 
-def case_history(con, oachargeid: str) -> list[dict]:
+def case_history(con, case_id: str) -> list[dict]:
     """C1 record continuity: everything that happened to one case, across batches and stages, in order."""
     return [dict(r) for r in con.execute(
         "SELECT e.at, e.batch_id, b.type, e.stage, e.status, e.reason, e.module_version"
-        " FROM case_event e JOIN batch b USING (batch_id) WHERE e.oachargeid=? ORDER BY e.id", (oachargeid,))]
+        " FROM case_event e JOIN batch b USING (batch_id) WHERE e.case_id=? ORDER BY e.id", (case_id,))]
 
 
 def provenance(con, batch: str) -> dict:

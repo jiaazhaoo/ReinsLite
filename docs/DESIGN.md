@@ -10,7 +10,7 @@
 | 层 | 契约 | 一句话 | 用户方向 |
 |---|---|---|---|
 | 0 语言 | **C0 词表** | 一词一义，禁用词由 lint 拦截 | 第 5 条 |
-| 1 身份 | **C1 Case** | oachargeid 是唯一主键，从输入到交付一条连续的账 | 第 1 条 |
+| 1 身份 | **C1 Case** | case_id 是唯一主键（项目在 reins.toml 里用 case_key 给它起自己的列名），从输入到交付一条连续的账 | 第 1 条 |
 | | **C2 模块版本** | 模块名-后缀-日期；每个产出都盖版本戳 | 第 2 条 |
 | | **C3 批次** | 任何批次先登记再运行；类型、阶段、日志、花费全记录 | 第 3 条 |
 | 2 证据 | **C4 Benchmark** | 冻结、分级标签、开发集/封存集、声明覆盖范围 | 第 4 条 |
@@ -28,7 +28,9 @@
 | | **C17 工件版本** | 提示词、模型、工作流各自有版本，按内容寻址，可多套并存；模块版本钉住它用的提示词和模型，工作流版本钉住整套 | 10-07 追加 |
 | | **C16 问题单** | 运行发现问题 → 开发修 → 回到运行续跑，这条交接链的载体；挂在批次上，绑定修它的版本 | 10-07 追加 |
 
-框架不认识任何领域词（红线、地址、Sheffield）。领域内容都在项目自己的 `reins.toml` 和插件里。
+框架不认识任何领域词（红线、地址、Sheffield）。领域内容都在项目自己的 `reins.toml`、项目词表和插件里。
+下文的事故例子都来自第一个接入项目（e2e-plan-extract，英国规划档案），它们是契约的依据，不是契约的一部分；那个项目的领域词（oachargeid、plan_image、georef、work_package……）在它自己的 `glossary.toml` 里。
+哪些归框架、哪些归项目，见 README 的"接入一个新项目"。
 
 ---
 
@@ -51,7 +53,7 @@
 | `confidence` / `high` | 至少 9 种：`geocode` 可靠、`trace` 置信、交付等级、模型自报、映射分数、`P5` "高置信"… | 每个必须带归属：`<stage>_confidence`，词表里写清是校准概率还是档位；裸的 `high` 禁用 |
 | `batch` / 第一批 | `HMLR` `Batch-3`（=`WP3`） / 运行批次 / `sh.xlsx` `Batch1` / 盲测第一批 / `Qwen` `batching` | `batch`（C3 的对象）；`work_package`；客户标签进 `customer_batch_label` |
 | `plan` | 图纸图片 / `site`·`location`·`floor` 类型 / `Plan` 生产路线 / 计数单位 | `plan_image`、`plan_type`、`capture_route` ∈ `{link_cleanse, plan, draw}`；裸的 `plan` 禁用 |
-| `case` | `charge` / `application` / 文件夹 / `page` / `extent` | `case` = 一个 oachargeid；`application`、`source_folder`、`page` 各是各 |
+| `case` | `charge` / `application` / 文件夹 / `page` / `extent` | `case` = 一个 case_id（该项目叫 oachargeid）；`application`、`source_folder`、`page` 各是各（项目词） |
 | `truth` / `golden` / 标准答案 / 基准 | `HMLR` 结果 / 用户裁定 / 助手自标 / 旧交付几何 / 冻结 `benchmark` | `customer_result`、`golden`（只来自审核页的人工裁定）、`reference_geometry`（不是真值）、`benchmark` |
 | `ref` / 配准 | `georef` / 案卷号 | `georef`；案号用 `la_reference` |
 | 门槛 / `cap` | 分数阈值 / 18 秒截断 / 单次花费上限 / 账户余额 / 每周 `key` 限额 | `threshold`、`time_limit`、`spend_cap`、`balance`、`key_limit` |
@@ -64,22 +66,22 @@
 
 ## C1 Case（唯一身份，三个连贯）
 
-**定义**：`case` = 一个 `oachargeid`（字符串，原样保存，不加前缀、不转数字）。`SHF_` 这类前缀只是显示层。
+**定义**：`case` = 一个 `case_id`（字符串，原样保存，不加前缀、不转数字；格式由项目的 `case_id_pattern` 规定，列名由 `case_key` 规定，reins 两个名字都认）。显示用的前缀（如 `SHF_`）只是显示层。
 case 下面的对象用层级 ID：
 
 ```
-case            oachargeid
-└ source_file   <oachargeid>/file:<sha256 前 12 位>
-  └ page        <oachargeid>/page:<file_sha>:<页码>
-    └ plan_image <oachargeid>/img:<像素 sha 前 12 位>
-└ output        <oachargeid>/out:<stage>:<序号>     （多边形、字段……）
+case            case_id
+└ source_file   <case_id>/file:<sha256 前 12 位>
+  └ page        <case_id>/page:<file_sha>:<页码>
+    └ item      <case_id>/img:<sha 前 12 位>       （项目自己的中间物，如图纸图片）
+└ output        <case_id>/out:<stage>:<序号>       （多边形、字段……）
 ```
 子对象 ID 按内容哈希，不按文件名。
 
 **规则**
 1. **数据连贯（守恒）**：批次的输入 case 集合，在每个阶段的输出里都必须出现，且只能是 `done` / `skipped(reason)` / `failed(reason)` 之一。少一个、多一个、重复一个，阶段都不算完成。
 2. **过程连贯（归属）**：page 归属哪个 case 必须有显式依据（映射表版本 + 规则 id），不能按"在同一个文件夹里"推断。共享文件夹自动标记。
-3. **记录连贯（时间线）**：`reins case <oachargeid>` 能拉出这个 case 的全部历史：在哪些批次、每个阶段用了哪个模块版本、路由到哪、谁审过、审核结论、交付了什么。
+3. **记录连贯（时间线）**：`reins case <case_id>` 能拉出这个 case 的全部历史：在哪些批次、每个阶段用了哪个模块版本、路由到哪、谁审过、审核结论、交付了什么。
 4. 一个 case 有多个输出（多边形 1:N）必须显式声明，读取方不许只留最后一个。
 5. 外部键（LA 号、S3 路径、portal keyVal）只能通过有版本号的映射表关联到 case。
 
@@ -90,15 +92,15 @@ case            oachargeid
 - loader 对 2,674 行 / 2,589 个 case 只保留最后一个多边形。
 - 1148905 拿到了 1061534 的决定通知页，日期碰巧合理，全部合理性检查都通过。
 - site 和 location 两张图同名，OCR 和指北针结果互相覆盖。
-- `Path.stem` 把 `TVN.2959_9` 截成 `TVN`，全部映射到同一个 oachargeid。
+- `Path.stem` 把 `TVN.2959_9` 截成 `TVN`，全部映射到同一个 case_id。
 
 ---
 
 ## C2 模块版本
 
 **定义**
-- `module`：流水线里一个可独立替换的部件，名字在 `reins.toml` 里登记，全局唯一（如 `plan_crop`、`georef`、`judge`）。
-- `module_version` = `<module>-<suffix>-<YYYYMMDD>-<n>`，当天第一份 `-1`，第二份 `-2`。例：`georef-roadnames-20261002-1`。
+- `module`：流水线里一个可独立替换的部件，名字在 `reins.toml` 里登记，全局唯一（如 `extract`、`judge`）。
+- `module_version` = `<module>-<suffix>-<YYYYMMDD>-<n>`，当天第一份 `-1`，第二份 `-2`。例：`extract-roadnames-20261002-1`。
   `module` 和 `suffix` 只用小写字母、数字、下划线（`-` 是分隔符）。
 - 一个模块版本固定以下全部内容（缺一个都不算同一版本）：代码 commit + 文件范围、prompt 文本 sha256、模型 id、参数、外部资产（权重文件 sha256、vendored 代码的上游 commit）、价格表版本。
 - `release` = 一组模块版本的组合，名字 `<pipeline>-<YYYYMMDD>-<n>`。生产批次只能跑 release。
@@ -106,7 +108,7 @@ case            oachargeid
 **规则**
 1. 每条输出记录盖戳：`module_version` + `batch_id`。
 2. 一个批次内同一阶段出现两个模块版本 → 批次标记 `mixed_version`，必须显式确认。
-3. 模块版本状态：`candidate` → `released`（只能经门禁） → `retired`。`reins module status georef` 回答"这个改动进生产了没有"。
+3. 模块版本状态：`candidate` → `released`（只能经门禁） → `retired`。`reins module status extract` 回答"这个改动进生产了没有"。
 4. 运行时缺环境变量导致模型静默退回旧版 = 启动失败，不许继续。
 
 **为什么**
@@ -142,7 +144,7 @@ case            oachargeid
 
 **定义**：`batch` = 为一个目的、对一个确定的 case 集合、用确定的模块版本，执行一组阶段。一次中断后续跑仍是同一个 batch（记为 `attempt`）。
 
-`batch_id` = `<council>-<wp>-<type>-<YYYYMMDD>-<n>`，例：`sheffield-wp3-production-20261004-1`。
+`batch_id` = `<scope>-<type>-<YYYYMMDD>-<n>`。`scope` 是 1 到 4 段、由项目在 `reins.toml [batch] scope` 里命名的范围（e2e 是 客户-工作包：`sheffield-wp3-production-20261004-1`）。
 
 `type` ∈ {`production`, `rework`, `experiment`, `pilot`, `eval`, `benchmark_build`, `smoke`}。
 
@@ -180,7 +182,7 @@ case            oachargeid
 
 **结构**
 ```
-bench-sheffield-wp3-359/v6/
+bench-demo-359/v6/
   MANIFEST.json   版本、创建时间、生成冻结输出的模块版本、各文件 sha256、基线数字、覆盖哪些阶段
   cases.csv       case + split（dev / holdout）
   inputs/         冻结输入
@@ -201,10 +203,10 @@ bench-sheffield-wp3-359/v6/
 **规则**
 1. 冻结后只读（sha256 校验）。改任何东西 = 升版本 + CHANGELOG。
 2. **开发集 / 封存集分离**：调规则、调阈值只能用 dev。holdout 只给门禁用，每次访问记日志；在 holdout 上调过参 = 它降级为 dev，需要补新的封存集。
-3. 每个阈值登记：值、在哪个 split 上定的、样本量 n。n < 30 自动标 `low_n`，换 council 时提示重验。
+3. 每个阈值登记：值、在哪个 split 上定的、样本量 n。n < 30 自动标 `low_n`，换 scope（新客户、新数据源）时提示重验。
 4. 标签只能经审核页进入 golden；在对话里改标签 = 违规（以前助手把 93、95 直接补进标准答案，分数从 13 涨到 15）。
 5. **覆盖声明**：门禁结果必须写明测了哪些阶段（以前 CI 只测 stage D，被当作"新裁图流程验证过了"）。
-6. **确定性分级**：确定性阶段要求逐字节一致；非确定阶段（托管模型、带时间预算的 georef）要求跑 N 次、给容差；缓存回放和真实漂移测试分开。
+6. **确定性分级**：确定性阶段要求逐字节一致；非确定阶段（托管模型、带时间预算的搜索）要求跑 N 次、给容差；缓存回放和真实漂移测试分开。
 7. **前提条件**：需要的资源状态写在 MANIFEST（如 GPU 空闲），不满足就拒绝打分。
 8. **新鲜度**：冻结输出的模块版本 ≠ 当前 released 版本时，打分结果带警告（v1 的 georef 是 10-02 前的旧代码）。
 9. **回流**：C6 的审核结论 → 候选标签 → 用户在审核页确认 → 进下一版本。
@@ -251,7 +253,7 @@ bench-sheffield-wp3-359/v6/
 **主控路由是唯一入口**：任何批次、任何阶段、任何付费调用都经过它。它做四件事：准入、调度、成本控制、恢复。
 
 **它管两类不可靠的工人**（2026-10-06 补）：
-1. 流水线阶段和付费模型（gemini、luna、OCR、georef）。
+1. 流水线阶段和付费调用（托管模型、按次计费的接口）。
 2. **Claude 会话本身。** 复盘里最常出事的是会话：另一个会话 `setsid nohup` 起了 rework 没人知道；把未审的提交合进 main；在运行目录里切分支；在对话里改标准答案。
    所以会话只能通过 `reins` 命令提议五类高风险动作：启动/停止批次、发布版本、改路由规则、花钱、写冻结或交付目录。
 
@@ -429,7 +431,7 @@ Watchdog 负责发现，主控路由负责按预案处理。**自动修复只做
 | 开发花费 | C9 |
 
 ### 形式
-- 本地网页，只读，30 秒自动刷新，所有数据来自同一个登记库（`$REINS_HOME/reins.db`，默认 `/data/reins/`）。
+- 本地网页，只读，30 秒自动刷新，所有数据来自同一个登记库（`$REINS_HOME/reins.db`，位置见 `~/.config/reins/settings.toml`）。
 - 状态变化（批次完成、变红、等人批准、门禁出结果）同时推送通知，不用一直开着看板。
 
 ---
@@ -454,7 +456,7 @@ Watchdog 负责发现，主控路由负责按预案处理。**自动修复只做
 
 **冲突**（只看未结束的会话，24 小时窗口）：同改一个文件；同改一个模块；直接改 main；改到别的会话持有的 worktree；对别的会话的批次做运行 / 停止；2 小时内多个会话都启动了运行（抢 GPU）。
 
-**看板不显示任何会话细节**（用户 2026-10-07）：只有"开发"和"运行"两栏。会话只用来把活动归到这两栏；冲突只作为卡片上的一句话（"另一项开发也在改 georef"），不出现会话编号和目录。会话细节在命令行：`reins session list / show / conflicts`。
+**看板不显示任何会话细节**（用户 2026-10-07）：只有"开发"和"运行"两栏。会话只用来把活动归到这两栏；冲突只作为卡片上的一句话（"另一项开发也在改 extract"），不出现会话编号和目录。会话细节在命令行：`reins session list / show / conflicts`。
 
 ## 已拍板（2026-10-06）
 1. 规范词用英文，中文只作对照。

@@ -1,11 +1,11 @@
 """C12 deliverables: contract check before anything leaves, then a versioned, read-only copy with a manifest.
 
-    reins deliver check FILE --batch B [--key oachargeid] [--sheets 'Validation Summary,Polygon Validation']
+    reins deliver check FILE --batch B [--key case_id] [--sheets 'Validation Summary,Polygon Validation']
                                       [--required col,col] [--allow-missing N]
     reins deliver register FILE --batch B [...same options...]    check, then copy as <stem>-v<N><ext> + .manifest.json, read-only
 
 Checks (every one is a defect class that passed unit tests and still shipped):
-  every batch case present exactly once (key column)  ·  no case that is not in the batch  ·  no CJK anywhere
+  every batch case present exactly once (key column)  ·  no case that is not in the batch  ·  no text in a forbidden script (reins.toml [deliver] forbid_scripts)
   required columns non-empty  ·  sheet names exactly as declared  ·  no cell at the 254/255/32767 truncation lengths
   no column that is empty or constant across all rows
 """
@@ -20,10 +20,11 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
-from . import batches
+from . import batches, names
 from .store import ReinsError, now, tx
 
-CJK = re.compile(r"[　-〿㐀-鿿豈-﫿＀-￯]")
+SCRIPTS = {"cjk": re.compile(r"[　-〿㐀-鿿豈-﫿＀-￯]"),
+           "cyrillic": re.compile("[\u0400-\u04ff]"), "arabic": re.compile("[\u0600-\u06ff]")}
 TRUNC_LENGTHS = {254, 255, 32767}
 
 
@@ -51,10 +52,10 @@ def data_digest(sheets: dict[str, list[list]]) -> str:
     return h.hexdigest()
 
 
-def check(con, path: Path, batch: str, key: str = "oachargeid", sheets_expected: list[str] | None = None,
-          required: list[str] | None = None, allow_missing: int = 0) -> dict:
+def check(con, path: Path, batch: str, key: str | None = None, sheets_expected: list[str] | None = None,
+          required: list[str] | None = None, allow_missing: int = 0, forbid_scripts: list[str] | None = None) -> dict:
     batches.get(con, batch)
-    members = {r[0] for r in con.execute("SELECT oachargeid FROM batch_case WHERE batch_id=?", (batch,))}
+    members = {r[0] for r in con.execute("SELECT case_id FROM batch_case WHERE batch_id=?", (batch,))}
     sheets = _sheets(path)
     problems, n_rows = [], 0
     if sheets_expected is not None and list(sheets) != sheets_expected:
@@ -71,11 +72,14 @@ def check(con, path: Path, batch: str, key: str = "oachargeid", sheets_expected:
                 if v is None:
                     continue
                 s = str(v)
-                if CJK.search(s):
-                    problems.append(f"[{name}] row {r_i} col {header[c_i] if c_i < len(header) else c_i}: CJK text {s[:30]!r}")
+                for sc in forbid_scripts or []:
+                    if SCRIPTS[sc].search(s):
+                        problems.append(f"[{name}] row {r_i} col {header[c_i] if c_i < len(header) else c_i}: {sc} text {s[:30]!r}")
                 if len(s) in TRUNC_LENGTHS:
                     problems.append(f"[{name}] row {r_i} col {header[c_i] if c_i < len(header) else c_i}: length {len(s)} (truncated?)")
-        if key in header:
+        k_ = names.case_field(header, key)
+        if k_:
+            key = k_
             key_seen_anywhere = True
             ki = header.index(key)
             ids = ["" if r[ki] is None else str(r[ki]) for r in body if ki < len(r)]
@@ -103,7 +107,7 @@ def check(con, path: Path, batch: str, key: str = "oachargeid", sheets_expected:
             if body and len(vals) <= 1:
                 problems.append(f"[{name}] column {col!r} is {'empty' if vals <= {''} else 'constant'} across all rows")
     if not key_seen_anywhere:
-        problems.append(f"no sheet has a {key!r} column: C1 cannot be checked")
+        problems.append(f"no sheet has a case_id{' or ' + repr(key) if key else ''} column: C1 cannot be checked")
     return {"ok": not problems, "problems": problems, "n_rows": n_rows, "sheets": list(sheets),
             "data_digest": data_digest(sheets)}
 

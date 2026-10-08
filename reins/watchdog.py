@@ -67,7 +67,7 @@ def check_batches(con, cfg) -> list[str]:
                 out.append(f"{bid}/{st['stage']}: stalled {quiet:.0f} min")
             if st["time_limit_s"]:
                 late = [r[0] for r in con.execute(
-                    "SELECT oachargeid FROM case_current WHERE batch_id=? AND stage=? AND status='started' AND at < ?",
+                    "SELECT case_id FROM case_current WHERE batch_id=? AND stage=? AND status='started' AND at < ?",
                     (bid, st["stage"], (dt.datetime.now() - dt.timedelta(seconds=st["time_limit_s"])).isoformat(timespec="seconds")))]
                 if late:
                     notify.send(con, f"late:{bid}:{st['stage']}", "warn",
@@ -144,8 +144,10 @@ def poll_balances_due(con, cfg) -> list[str]:
     out = []
     for r in spend.poll_balances(con):
         out.append(f"{r['provider']} balance {r['balance']}")
-        if r["provider"] == "openrouter" and r["balance"] is not None and r["balance"] < 5:
-            notify.send(con, "balance_low:openrouter", "action", f"OpenRouter balance ${r['balance']:.2f}",
+        from . import providers
+        low = float((providers.by_ledger(r["provider"]) or {}).get("low_balance", 5))
+        if r["balance"] is not None and r["balance"] < low:
+            notify.send(con, f"balance_low:{r['provider']}", "action", f"{r['provider']} balance ${r['balance']:.2f}",
                         "top up before the next paid stage; the gateway will pause batches at the cap", cooldown_min=360)
     return out
 

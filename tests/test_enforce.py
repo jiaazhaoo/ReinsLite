@@ -100,7 +100,7 @@ class Enforce(unittest.TestCase):
 
     def test_time_budget(self):
         cases = self.tmp / "c.txt"; cases.write_text("1\n2\n")
-        b = batches.open_(self.con, project="proj", council="x", wp="wp1", type_="experiment", purpose="time budget test",
+        b = batches.open_(self.con, project="proj", scope="x-wp1", type_="experiment", purpose="time budget test",
                           case_file=cases, stages=[batches.parse_stage_spec("s")])
         batches.set_time_budget(self.con, b, 0.0001)
         batches.stage_start(self.con, b, "s")
