@@ -439,9 +439,11 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"{r['name']}" + ("" if r["new"] else "  (unchanged: same version)"))
                     for s in r["stages"]:
                         print(f"  {s['name']:<12} {s['module_version'] or '-':<36} {' '.join(s['prompts'] + s['models'])}{'  paid' if s['paid'] else ''}")
+                        if s.get('weights'): print(f"  {'':<12} {'':<36} {' '.join(w.removeprefix('weights-') for w in s['weights'])}")
                 else:
                     for s in artifacts.workflow_stages(con, args.name):
                         print(f"  {s['name']:<12} {s['module_version'] or '-':<36} {' '.join(s['prompts'] + s['models'])}{'  paid' if s['paid'] else ''}")
+                        if s.get('weights'): print(f"  {'':<12} {'':<36} {' '.join(w.removeprefix('weights-') for w in s['weights'])}")
                 return 0
             if args.sub == "scan":
                 r = artifacts.scan(con, repo, dev.project_cfg(repo), None)

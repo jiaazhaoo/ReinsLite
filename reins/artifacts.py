@@ -67,8 +67,14 @@ CREATE TABLE IF NOT EXISTS artifact_event (
 
 
 def ensure(con) -> None:
-    if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='artifact'").fetchone():
-        con.executescript(SCHEMA)
+    """Create any missing table. Statement by statement (executescript would commit an open transaction), and
+    checked per table, so a table added later (file_sha) appears in a registry that already had the others."""
+    have = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if {"artifact", "artifact_event", "file_sha"} <= have:
+        return
+    for stmt in SCHEMA.split(";"):
+        if stmt.strip():
+            con.execute(stmt)
 
 
 def parse(name: str) -> tuple[str, str, int]:
@@ -253,8 +259,8 @@ def weights_body(con, spec: dict) -> tuple[str, dict]:
     root = Path(spec.get("dir") or Path(spec["file"]).parent)
     rec = {}
     for f in files:
-        sha, size = file_sha(con, f)
-        rec[str(f.resolve().relative_to(root.resolve())) if spec.get("dir") else f.name] = {"sha256": sha, "size": size}
+        sha, size = file_sha(con, f)                        # hashes the symlink target (HF snapshots point into blobs/)
+        rec[str(f.relative_to(root)) if spec.get("dir") else f.name] = {"sha256": sha, "size": size}
     identity = json.dumps(rec, sort_keys=True)                           # the version is the files, not the notes
     body = {"files": rec, "path": str(root.resolve()), "n_files": len(files), "bytes": sum(v["size"] for v in rec.values()),
             "config_key": spec.get("config_key"), "training": {**harvest_training(files[0]), **(spec.get("training") or {})}}
