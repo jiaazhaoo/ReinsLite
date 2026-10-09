@@ -210,6 +210,12 @@ def build_parser() -> argparse.ArgumentParser:
     x = s.add_parser("price"); x.add_argument("model"); x.add_argument("input_per_m", type=float)
     x.add_argument("output_per_m", type=float); x.add_argument("--source", default="")
     s.add_parser("weekly"); s.add_parser("balances", help="poll provider balances now (free endpoints)")
+    x = s.add_parser("import", help="add spend history recorded outside the gateway (CSV: day,provider,model,purpose,batch,calls,"
+                                    "tokens_in,tokens_out,amount,priced,note)")
+    x.add_argument("file", type=Path); x.add_argument("--project"); x.add_argument("--source", required=True,
+                                                                                  help="how the rows were made")
+    x = s.add_parser("all", help="everything spent: ledger + imported history, reconciled with provider usage")
+    x.add_argument("--json", action="store_true")
     x = sub.add_parser("gateway").add_subparsers(dest="sub", required=True).add_parser("serve"); x.add_argument("--port", type=int)
     w = sub.add_parser("watchdog").add_subparsers(dest="sub", required=True)
     w.add_parser("once"); x = w.add_parser("run"); x.add_argument("--interval", type=int, default=60)
@@ -397,6 +403,21 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(spend.summary(con, args.batch), ensure_ascii=False, indent=1))
             elif args.sub == "price":
                 spend.set_price(con, args.model, args.input_per_m, args.output_per_m, args.source); print("ok")
+            elif args.sub == "import":
+                r = spend.import_history(con, args.file, _project(args, cfg), args.source)
+                print(f"imported {r['rows']} rows, ${r['usd']:.2f} (import {r['import_id']})")
+            elif args.sub == "all":
+                a = spend.all_time(con)
+                if args.json:
+                    print(json.dumps(a, ensure_ascii=False, indent=1)); return 0
+                print(f"total ${a['total']:.2f}  (gateway ledger ${a['ledger']:.2f} + imported history ${a['imported']:.2f});"
+                      f" unattributed provider usage ${a['unattributed']:.2f}")
+                for g in a["by_provider"]:
+                    acc = f"  account usage ${g['account_usage']:.2f}, unattributed ${g['unattributed']:.2f}" if g["account_usage"] is not None else ""
+                    print(f"  {g['provider']:<12} ${g['usd']:8.2f}{acc}")
+                print("by purpose:")
+                for g in a["by_purpose"][:15]:
+                    print(f"  {g['project'] or '-':<20} {g['purpose']:<26} {g['model']:<32} ${g['usd']:8.2f}")
             elif args.sub == "balances":
                 for r in spend.poll_balances(con):
                     print(f"{r['provider']:<12} balance ${r['balance']:.2f}  {r['detail']}" if r["balance"] is not None else f"{r['provider']}: {r['detail']}")

@@ -104,3 +104,12 @@ class ConfigCheck(unittest.TestCase):
         css = (board.UI / "app.css").read_text()
         self.assertFalse(re.search(r"overflow(-x)?\s*:\s*(auto|scroll)", css), "a sideways scroll area in app.css")
         self.assertIn("overflow-x: clip", css)
+
+    def test_css_braces_balance(self):
+        """An unclosed block once swallowed every rule after it (the pool meters fell apart)."""
+        css = (board.UI / "app.css").read_text()
+        depth = 0
+        for c in css:
+            depth += (c == "{") - (c == "}")
+            self.assertGreaterEqual(depth, 0)
+        self.assertEqual(depth, 0)

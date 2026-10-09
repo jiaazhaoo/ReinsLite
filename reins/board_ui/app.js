@@ -33,7 +33,12 @@ const I18N = {
     d_ship: "交付", d_ship_with_note: "带说明交付", d_rework: "返工",
     unreg_dev: "未登记的开发", unreg_dev_sub: "领先 main、但没经过 reins 登记的分支：登记（reins dev adopt 工作区 --about ...）或放弃",
     branch: "分支", worktree: "工作区", ahead: "领先 main", uncommitted: "未提交", last_commit: "最后提交", stale_days: "{d} 天未动",
-    plus_unreg: "另有 {n} 个未登记分支", commits: "{n} 个提交", files: "{n} 个文件",
+    plus_unreg: "另有 {n} 个未登记分支",
+    all_spend: "全部开销", all_spend_sub: "网关记账 + 导入的历史，和服务商账户对账", total_spent: "累计花费", ledger: "网关记账",
+    imported: "导入的历史", unattributed: "未归属", unattr_note: "服务商账户上有、reins 不知道去向的钱", since_gateway: "经 reins 网关的调用",
+    before_gateway: "网关之前的记录（日志和缓存）", by_day: "每天", undated: "另有 {v} 没有日期", reconcile: "和服务商账户对账",
+    attributed: "已归属", account_usage: "账户总用量", by_purpose: "按用途和模型", by_batch_all: "按批次（全部历史）", purpose: "用途",
+    model: "模型", share: "占比", no_batch: "没有批次（缓存里多出的部分）", no_account: "服务商不报总用量", import_files: "导入记录", source: "来源", rows_n: "{n} 行", commits: "{n} 个提交", files: "{n} 个文件",
   },
   en: {
     overview: "Overview", pipeline: "Pipeline", runs: "Runs", dev: "Development", cost: "Cost", toolbox: "Toolbox",
@@ -66,7 +71,13 @@ const I18N = {
     d_ship: "ship", d_ship_with_note: "ship with note", d_rework: "rework",
     unreg_dev: "Unregistered development", unreg_dev_sub: "Branches ahead of main that reins never registered: adopt them (reins dev adopt WORKTREE --about ...) or abandon them",
     branch: "Branch", worktree: "Worktree", ahead: "Ahead of main", uncommitted: "Uncommitted", last_commit: "Last commit", stale_days: "idle {d} days",
-    plus_unreg: "+{n} unregistered branch(es)", commits: "{n} commits", files: "{n} files",
+    plus_unreg: "+{n} unregistered branch(es)",
+    all_spend: "All spend", all_spend_sub: "Gateway ledger + imported history, reconciled with provider accounts", total_spent: "Spent in total",
+    ledger: "Gateway ledger", imported: "Imported history", unattributed: "Unattributed", unattr_note: "on provider accounts, origin unknown to reins",
+    since_gateway: "calls through the reins gateway", before_gateway: "before the gateway (logs and caches)", by_day: "By day",
+    undated: "plus {v} without a date", reconcile: "Reconciled with provider accounts", attributed: "Attributed", account_usage: "Account usage",
+    by_purpose: "By purpose and model", by_batch_all: "By batch (all history)", purpose: "Purpose", model: "Model", share: "Share", no_batch: "no batch (cache beyond the logs)",
+    no_account: "provider reports no total", import_files: "Imports", source: "Source", rows_n: "{n} rows", commits: "{n} commits", files: "{n} files",
   },
 };
 const store = { get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
@@ -156,9 +167,9 @@ function stageCard(st, i, pi) {
 const flowHtml = (p, pi, compact) => `<div class="flow-wrap"><div class="flow ${compact ? "compact" : ""}" style="--n:${p.stages.length}">${p.stages.map((st, i) => stageCard(st, i, pi)).join("")}</div></div>`;
 
 /* tables: fixed columns that wrap; below 720 px of room each row becomes a card (no sideways scrolling anywhere) */
-function tbl(cols, rows, empty = "—") {
+function tbl(cols, rows, empty = "—", small = false) {
   if (!rows.length) return `<div class="card empty">${esc(empty)}</div>`;
-  return `<div class="card tbl"><table><colgroup>${cols.map((c) => `<col style="width:${c.w || "auto"}">`).join("")}</colgroup>
+  return `<div class="card tbl ${small ? "tbl-s" : ""}"><table><colgroup>${cols.map((c) => `<col style="width:${c.w || "auto"}">`).join("")}</colgroup>
     <thead><tr>${cols.map((c) => `<th class="${c.cls || ""}">${esc(c.h)}</th>`).join("")}</tr></thead>
     <tbody>${rows.map((r) => `<tr>${r.map((cell, i) => `<td class="${cols[i].cls || ""}" data-label="${esc(cols[i].h)}"><div class="cell">${cell}</div></td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
@@ -303,7 +314,8 @@ const VIEWS = {
       rows.map(([b, v]) => [`<span class="mono">${esc(b)}</span>`].concat(provs.map((p) => (v[p] != null ? usd(v[p]) : '<span class="faint">—</span>')))
         .concat([`<b>${usd(Object.values(v).reduce((x, y) => x + y, 0))}</b>`])));
     return `<div class="page-head"><div><h1>${esc(t("cost"))}</h1><p>${esc(t("cost_sub"))}</p></div></div>
-      ${sectionHead(t("pool"), t("pool_sub"))}${pool}<div class="section">${sectionHead(t("providers"))}${prov}</div>
+      ${allSpend(S.spend_all)}
+      <div class="section">${sectionHead(t("pool"), t("pool_sub"))}${pool}</div><div class="section">${sectionHead(t("providers"))}${prov}</div>
       <div class="section">${sectionHead(t("by_batch"))}${table}</div>`;
   },
   toolbox() {
@@ -324,6 +336,44 @@ const VIEWS = {
           `<span class="muted">${esc((x.used_by || []).join(" · "))}</span>`]))}`;
   },
 };
+
+/* ---------- all-time spend ---------- */
+const PCOLOR = { openrouter: "var(--accent)", deepseek: "var(--blue)", google: "var(--teal)", openai: "var(--violet)" };
+const pcolor = (p) => PCOLOR[p] || "var(--faint)";
+function allSpend(A) {
+  if (!A) return "";
+  const days = {}, provs = [];
+  A.by_day.filter((r) => r.day).forEach((r) => { (days[r.day] = days[r.day] || {})[r.provider] = (days[r.day][r.provider] || 0) + r.usd; if (!provs.includes(r.provider)) provs.push(r.provider); });
+  const keys = Object.keys(days).sort();
+  const max = Math.max(1e-9, ...keys.map((d) => Object.values(days[d]).reduce((a, b) => a + b, 0)));
+  const bars = keys.length ? `<div class="bars">${keys.map((d) => { const tot = Object.values(days[d]).reduce((a, b) => a + b, 0);
+      return `<div class="bar-col" title="${esc(d)} · ${usd(tot)}"><span class="bar-v">${tot >= 1 ? "$" + tot.toFixed(0) : ""}</span><div class="bar-stack" style="height:${(100 * tot / max).toFixed(1)}%">
+        ${provs.filter((p) => days[d][p]).map((p) => `<i style="flex:${days[d][p]};background:${pcolor(p)}"></i>`).join("")}</div><span class="bar-d">${esc(d.slice(5))}</span></div>`; }).join("")}</div>` : "";
+  const legend = `<div class="legend">${provs.map((p) => `<span><i style="background:${pcolor(p)}"></i>${esc(p)}</span>`).join("")}${A.undated ? `<span class="faint">${esc(t("undated", { v: usd(A.undated) }))}</span>` : ""}</div>`;
+  const kpis = `<div class="grid g4">
+    <div class="card kpi"><div class="label"><span class="dot accent"></span>${esc(t("total_spent"))}</div><div class="value">${usd(A.total)}</div>
+      <div class="foot">${A.by_project.filter((p) => p.project).map((p) => `${esc(p.project)} ${usd(p.usd)}`).join(" · ")}</div></div>
+    <div class="card kpi"><div class="label"><span class="dot green"></span>${esc(t("ledger"))}</div><div class="value">${usd(A.ledger)}</div><div class="foot">${esc(t("since_gateway"))}</div></div>
+    <div class="card kpi"><div class="label"><span class="dot blue"></span>${esc(t("imported"))}</div><div class="value">${usd(A.imported)}</div><div class="foot">${esc(t("before_gateway"))}</div></div>
+    <div class="card kpi"><div class="label"><span class="dot amber"></span>${esc(t("unattributed"))}</div><div class="value">${usd(A.unattributed)}</div><div class="foot">${esc(t("unattr_note"))}</div></div></div>`;
+  const recon = tbl([{ h: t("providers"), w: "18%" }, { h: t("attributed"), cls: "num" }, { h: t("ledger"), cls: "num" }, { h: t("imported"), cls: "num" },
+      { h: t("account_usage"), cls: "num" }, { h: t("unattributed"), cls: "num" }],
+    A.by_provider.map((g) => [`<span class="pdot" style="background:${pcolor(g.provider)}"></span>${esc(g.provider)}`, `<b>${usd(g.usd)}</b>`, usd(g.ledger), usd(g.import),
+      g.account_usage != null ? usd(g.account_usage) : `<span class="faint">${esc(t("no_account"))}</span>`,
+      g.unattributed != null ? `<span style="color:${g.unattributed > 0.5 ? "var(--amber)" : "inherit"}">${usd(g.unattributed)}</span>` : "—"]));
+  const top = A.total || 1;
+  const purpose = tbl([{ h: t("purpose"), w: "42%" }, { h: t("model"), w: "30%" }, { h: t("spend"), cls: "num", w: "14%" }, { h: t("share"), w: "14%" }],
+    A.by_purpose.slice(0, 14).map((g) => [esc(g.purpose), `<span class="mono" style="font-size:12px">${esc(g.model)}</span>`, usd(g.usd),
+      `<div class="meter" style="margin:7px 0 0"><i style="width:${Math.max(2, 100 * g.usd / top)}%;background:${pcolor(g.provider)}"></i></div>`]), "—", true);
+  const batches_ = tbl([{ h: t("batch"), w: "58%" }, { h: t("spend"), cls: "num", w: "20%" }, { h: t("share"), w: "22%" }],
+    A.by_batch.slice(0, 14).map((g) => [g.batch ? `<span class="mono" style="font-size:12px">${esc(g.batch)}</span>` : `<span class="faint">${esc(t("no_batch"))}</span>`,
+      usd(g.usd), `<div class="meter" style="margin:7px 0 0"><i style="width:${Math.max(2, 100 * g.usd / top)}%"></i></div>`]), "—", true);
+  const files = A.imports.length ? `<div class="muted" style="font-size:12.5px;margin-top:10px">${esc(t("import_files"))}: ${A.imports.map((f) => `${when(f.at)} · ${esc(f.project)} · ${usd(f.usd)} · ${esc(t("rows_n", { n: f.rows }))} — ${esc(f.source)}`).join("<br>")}</div>` : "";
+  return `${sectionHead(t("all_spend"), t("all_spend_sub"))}${kpis}
+    <div class="card pad" style="margin-top:14px"><div class="section-head" style="margin-bottom:6px"><h2>${esc(t("by_day"))}</h2>${legend}</div>${bars}</div>
+    <div class="section">${sectionHead(t("reconcile"))}${recon}</div>
+    <div class="section cols"><div>${sectionHead(t("by_purpose"))}${purpose}</div><div>${sectionHead(t("by_batch_all"))}${batches_}${files}</div></div>`;
+}
 
 /* ---------- drawer: one stage in full ---------- */
 function openStage(pi, si) {

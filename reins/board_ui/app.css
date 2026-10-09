@@ -279,13 +279,22 @@ tbody tr:hover td { background: var(--hover); }
 td .sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
 th.num { text-align: right; }
 @container (max-width: 720px) {
-  .tbl thead { display: none; }
-  .tbl table, .tbl tbody, .tbl tr { display: block; width: 100%; }
-  .tbl tr { padding: 10px 14px; border-bottom: 1px solid var(--border); }
-  .tbl tr:last-child { border-bottom: 0; }
-  .tbl td { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; padding: 4px 0; border: 0; text-align: left !important; white-space: normal !important; }
-  .tbl td::before { content: attr(data-label); color: var(--faint); font-size: 12px; }
-  .tbl tbody tr:hover td { background: transparent; }
+  .tbl:not(.tbl-s) thead { display: none; }
+  .tbl:not(.tbl-s) table, .tbl:not(.tbl-s) tbody, .tbl:not(.tbl-s) tr { display: block; width: 100%; }
+  .tbl:not(.tbl-s) tr { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .tbl:not(.tbl-s) tr:last-child { border-bottom: 0; }
+  .tbl:not(.tbl-s) td { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; padding: 4px 0; border: 0; text-align: left !important; white-space: normal !important; }
+  .tbl:not(.tbl-s) td::before { content: attr(data-label); color: var(--faint); font-size: 12px; }
+  .tbl:not(.tbl-s) tbody tr:hover td { background: transparent; }
+}
+@container (max-width: 440px) {
+  .tbl.tbl-s thead { display: none; }
+  .tbl.tbl-s table, .tbl.tbl-s tbody, .tbl.tbl-s tr { display: block; width: 100%; }
+  .tbl.tbl-s tr { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .tbl.tbl-s tr:last-child { border-bottom: 0; }
+  .tbl.tbl-s td { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; padding: 4px 0; border: 0; text-align: left !important; white-space: normal !important; }
+  .tbl.tbl-s td::before { content: attr(data-label); color: var(--faint); font-size: 12px; }
+  .tbl.tbl-s tbody tr:hover td { background: transparent; }
 }
 .cell { min-width: 0; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -326,3 +335,13 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: now
   .stat:nth-child(odd) { border-left: 0; } .stat { border-top: 1px solid var(--border); } .stat:nth-child(-n+2) { border-top: 0; }
   .search { width: 100%; margin-left: 0; }
 }
+
+/* ---------- all-time spend ---------- */
+.bars { display: flex; align-items: flex-end; gap: 6px; height: 190px; padding-top: 18px; }
+.bar-col { flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; position: relative; }
+.bar-stack { width: 100%; max-width: 46px; display: flex; flex-direction: column-reverse; border-radius: 5px 5px 2px 2px; overflow: hidden; min-height: 2px; }
+.bar-stack i { display: block; min-height: 1px; }
+.bar-v { font-size: 11px; color: var(--muted); margin-bottom: 3px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bar-d { font-size: 11px; color: var(--faint); margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-left: auto; font-size: 12px; color: var(--muted); align-items: center; }
+.legend i, .pdot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }

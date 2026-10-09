@@ -87,6 +87,7 @@ Light and dark themes, English and Chinese, and a phone layout without sideways 
 | Repeated calls | Identical requests are answered from the cache at no cost and still logged (drift batches bypass it on purpose). |
 | Consecutive failures | After N failed paid calls in a row the stage pauses instead of spending on errors. |
 | Attribution | Every row carries batch, stage, module version, provider and model; balances are polled from each provider. |
+| All-time view | `reins spend all` and the board's Cost page: the gateway ledger plus history imported with `reins spend import` (spend from before the gateway, e.g. rebuilt from caches and run logs), by day, purpose, model and batch, reconciled with each provider's own usage total so unattributed money is visible. |
 
 Providers are presets plus `config.toml` (OpenRouter, DeepSeek, OpenAI, Google Maps; add your own OpenAI-compatible or per-call GET service in a few lines).
 

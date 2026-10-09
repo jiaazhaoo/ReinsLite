@@ -222,3 +222,84 @@ def cost_view(con) -> list[dict]:
                     "spend_source": src, "calls_today": led_today[1], "last_call": led_today[2],
                     "by_batch": by_batch, "error": (latest is None and _key(p) is not None and bool(spec.get("balance")))})
     return out
+
+
+# ------------------------------------------------------------------ all-time spend: ledger + imported history, reconciled
+IMPORT_COLUMNS = ("day", "provider", "model", "purpose", "batch", "calls", "tokens_in", "tokens_out", "amount", "priced", "note")
+
+
+def import_history(con, path, project: str, source: str) -> dict:
+    """Spend that happened before (or outside) the gateway, from a CSV with IMPORT_COLUMNS (day, batch, calls,
+    tokens and note may be empty). Append-only; the same file (by content) is refused the second time."""
+    import csv as _csv
+    from pathlib import Path as _P
+    from . import names
+    p = _P(path)
+    sha = names.sha256_file(p)
+    rows = list(_csv.DictReader(p.open(encoding="utf-8-sig")))
+    missing = [c for c in ("provider", "model", "purpose", "amount", "priced") if c not in (rows[0].keys() if rows else [])]
+    if not rows or missing:
+        raise ReinsError(f"{p}: needs columns {', '.join(IMPORT_COLUMNS)} (missing {missing or 'rows'})")
+    def num(v, f=float):
+        return f(v) if v not in (None, "") else None
+    with tx(con):
+        if con.execute("SELECT 1 FROM spend_import_file WHERE import_id=?", (sha,)).fetchone():
+            raise ReinsError(f"{p} was already imported (same content)")
+        con.execute("INSERT INTO spend_import_file VALUES (?,?,?,?,?,?,?,?)",
+                    (sha, now(), project, str(p.resolve()), source, len(rows), 0.0, None))
+        total = 0.0
+        for i, r in enumerate(rows, 1):
+            if r["priced"] not in ("provider", "table", "estimate"):
+                raise ReinsError(f"row {i}: priced must be provider | table | estimate")
+            amt = float(r["amount"]); total += amt
+            con.execute("INSERT INTO spend_import (import_id, project, day, provider, model, purpose, batch_label, calls,"
+                        " tokens_in, tokens_out, amount, priced, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (sha, project, r.get("day") or None, r["provider"], r["model"], r["purpose"], r.get("batch") or None,
+                         num(r.get("calls"), int), num(r.get("tokens_in"), int), num(r.get("tokens_out"), int), amt,
+                         r["priced"], r.get("note") or None))
+        from .store import session as _session
+        con.execute("UPDATE spend_import_file SET usd=?, session=? WHERE import_id=?", (round(total, 4), _session(), sha))
+    return {"import_id": sha[:12], "rows": len(rows), "usd": round(total, 2)}
+
+
+def all_time(con) -> dict:
+    """Everything known to have been spent: the gateway ledger (by batch -> project) plus imported history, per
+    provider reconciled with the provider's own cumulative usage where it reports one."""
+    led = [dict(r) for r in con.execute(
+        "SELECT b.project, substr(s.at,1,10) day, s.provider, s.model, s.stage purpose, s.batch_id batch,"
+        " COUNT(*) calls, SUM(s.amount) usd, MIN(s.priced) priced"
+        " FROM spend s LEFT JOIN batch b USING (batch_id) WHERE s.cache_hit=0"
+        " GROUP BY 1,2,3,4,5,6")]
+    imp = [dict(r) for r in con.execute(
+        "SELECT project, day, provider, model, purpose, batch_label batch, SUM(COALESCE(calls,0)) calls, SUM(amount) usd,"
+        " MIN(priced) priced FROM spend_import GROUP BY 1,2,3,4,5,6")]
+    for r in led: r["source"] = "ledger"
+    for r in imp: r["source"] = "import"
+    rows = led + imp
+
+    def group(keys):
+        out = {}
+        for r in rows:
+            k = tuple(r[x] or "" for x in keys)
+            g = out.setdefault(k, {**{x: r[x] for x in keys}, "usd": 0.0, "calls": 0, "ledger": 0.0, "import": 0.0})
+            g["usd"] += r["usd"] or 0; g["calls"] += r["calls"] or 0; g[r["source"]] += r["usd"] or 0
+        return sorted(out.values(), key=lambda g: -g["usd"])
+    account = {}
+    for r in con.execute("SELECT provider, usage_total, at FROM balance_sample WHERE usage_total IS NOT NULL"
+                         " AND id IN (SELECT MAX(id) FROM balance_sample WHERE usage_total IS NOT NULL GROUP BY provider)"):
+        account[r["provider"]] = {"usage_total": r["usage_total"], "at": r["at"]}
+    by_provider = group(["provider"])
+    for g in by_provider:
+        a = account.get(g["provider"])
+        g["account_usage"] = a["usage_total"] if a else None
+        g["account_at"] = a["at"] if a else None
+        g["unattributed"] = round(a["usage_total"] - g["usd"], 2) if a else None
+    files = [dict(r) for r in con.execute("SELECT import_id, at, project, source, rows, usd FROM spend_import_file ORDER BY at")]
+    total = sum(r["usd"] or 0 for r in rows)
+    return {"total": round(total, 2), "ledger": round(sum(r["usd"] or 0 for r in led), 2),
+            "imported": round(sum(r["usd"] or 0 for r in imp), 2),
+            "unattributed": round(sum(g["unattributed"] for g in by_provider if g["unattributed"] and g["unattributed"] > 0), 2),
+            "by_provider": by_provider, "by_project": group(["project"]),
+            "by_purpose": group(["project", "purpose", "provider", "model"]), "by_batch": group(["project", "batch"]),
+            "by_day": group(["day", "provider"]), "undated": round(sum(r["usd"] or 0 for r in rows if not r["day"]), 2),
+            "imports": files}

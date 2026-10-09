@@ -197,6 +197,33 @@ CREATE TABLE IF NOT EXISTS spend (
   http_status INTEGER
 );
 CREATE INDEX IF NOT EXISTS spend_batch ON spend (batch_id, stage);
+CREATE TABLE IF NOT EXISTS spend_import_file (       -- C9: history recorded before (or outside) the gateway, one row per file
+  import_id   TEXT PRIMARY KEY,                       -- sha256 of the file: the same file cannot be imported twice
+  at          TEXT NOT NULL,
+  project     TEXT NOT NULL,
+  path        TEXT NOT NULL,
+  source      TEXT NOT NULL,                          -- how the rows were made (which caches, logs, price table)
+  rows        INTEGER NOT NULL,
+  usd         REAL NOT NULL,
+  session     TEXT
+);
+CREATE TABLE IF NOT EXISTS spend_import (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  import_id   TEXT NOT NULL REFERENCES spend_import_file(import_id),
+  project     TEXT NOT NULL,
+  day         TEXT,                                   -- YYYY-MM-DD; NULL when the history does not say
+  provider    TEXT NOT NULL,                          -- ledger name (openrouter, deepseek, google, ...)
+  model       TEXT NOT NULL,
+  purpose     TEXT NOT NULL,                          -- the stage or activity the money went to
+  batch_label TEXT,                                   -- a batch id, or what the work was called before reins
+  calls       INTEGER,
+  tokens_in   INTEGER,
+  tokens_out  INTEGER,
+  amount      REAL NOT NULL,
+  priced      TEXT NOT NULL CHECK (priced IN ('provider', 'table', 'estimate')),
+  note        TEXT
+);
+CREATE INDEX IF NOT EXISTS spend_import_p ON spend_import (project, provider);
 CREATE TABLE IF NOT EXISTS price (
   model         TEXT NOT NULL,
   input_per_m   REAL NOT NULL,
