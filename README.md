@@ -1,89 +1,199 @@
 # ReinsLite
 
-一套通用的开发与运行管理框架，管的是"会话驱动的自动化流水线"：契约、登记库、主控命令行、付费网关、Watchdog、看板。
-会话只提议，reins 决定并记录。框架本身不认识任何领域词；一个项目的领域内容只放在它自己的仓库里。
+**Reins for AI pipelines that coding agents build and run.**
+Sessions propose; reins decides and records. Every development and every run is registered, versioned, budgeted and traceable.
 
-- 契约和依据：[docs/DESIGN.md](docs/DESIGN.md)
-- 会话分工、fork、交接、用户的决策点：[docs/WORKFLOW.md](docs/WORKFLOW.md)
-- 框架词表（只有通用词）：[reins/glossary.toml](reins/glossary.toml)
-- 项目模板（一个虚构的表单抽取项目，演示全部接入点）：[examples/](examples/)
+**English** · [简体中文](README.zh-CN.md)
 
-## 框架负责什么，项目负责什么
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.png">
+    <img src="docs/images/overview-en.png" alt="ReinsLite board: overview" width="100%">
+  </picture>
+</p>
 
-| 归框架（ReinsLite 仓库） | 归项目（项目仓库的 `reins.toml` 和它指向的文件） |
+---
+
+## Why
+
+When coding agents (for example Claude Code sessions) write, fork and run your AI pipelines all day, the same accidents keep happening:
+
+- a forked session starts a production run it does not own;
+- someone merges into `main` by hand, and nobody can say which change reached production;
+- a prompt, a model id or a weights file changes, and no one knows which batch used which;
+- parallel paid calls overshoot the budget before anyone notices;
+- cases silently disappear between two stages;
+- a run finds a problem, another session fixes it, and the fix never makes it back to the run.
+
+ReinsLite is a small, local control layer that removes the *possibility* of these accidents rather than asking agents to be careful. It is project-neutral: a project describes itself in one `reins.toml`, and the framework never learns its domain words.
+
+## What you get
+
+| | |
 |---|---|
-| 案件主键的概念 `case_id`、守恒账本 | 主键在本项目叫什么 `case_key`、长什么样 `case_id_pattern` |
-| 批次命名 `<scope>-<type>-<YYYYMMDD>-<n>` | scope 由哪几段组成 `[batch] scope`（如 客户-工作包） |
-| 模块版本、门禁流程、发布、候选工作区 | 门禁命令 `[dev] gate`、模块和文件 `[modules.*]` |
-| 运行器、暂停恢复、只许 `reins run` 启动 | 哪些程序是流水线 `[run] programs`、阶段 `[run] stages` |
-| 提示词 / 模型 / 权重 / 工具 / 工作流的版本机制 | 具体有哪些 `[prompts.*]` `[models.*]` `[weights.*]` `[tools.*]` `[workflows.*]` |
-| 通用词表 C0 | 领域词表 `[glossary] file` |
-| 交付件契约检查（主键、重复、截断、空列） | 禁止的文字 `[deliver] forbid_scripts`、表格结构 |
-| 网关、计费、预算池、服务商预设 | — |
+| **Development** | Each change lives in its own worktree as a named version (`extract-dates_iso-20261006-2`). It merges only through a gate on a frozen benchmark: missed errors may not rise. |
+| **Runs** | A batch is a fixed case set with planned stages. Only `reins run` may start a pipeline; it supervises, pauses, resumes and retries. A per-case ledger refuses to close a stage with a case missing. |
+| **Money** | One gateway holds every provider key. Calls reserve their estimate first and settle the real cost after, under batch, stage, session and team-pool caps. Identical requests are served from cache; repeated failures pause the stage. |
+| **Versions of everything** | Code, prompts, model configs, ML weights (with their training record), tools, data files and whole workflows, each content-addressed as `<kind>-<name>-vN`. |
+| **Hand-over** | A run opens an issue on the cases it got wrong; another session claims it, fixes it through the gate, and the opener is told which version to resume with. |
+| **Traceability** | Who (which session), what (which version), on which cases, at what cost, with which evidence. Append-only, in one SQLite registry. |
+| **Board** | A local web app: the pipeline map with each stage's code version and tools, runs, development, cost and the toolbox. |
 
-| 归本机（不进任何仓库） | 位置 |
+## The board
+
+A pixel crab per stage. Click a stage to see the code version it runs, the batch in it, what is being changed, and every versioned tool it picks up.
+
+<p align="center"><img src="docs/images/pipeline-en.png" alt="Pipeline map" width="100%"></p>
+<p align="center"><img src="docs/images/stage-drawer-en.png" alt="Stage details" width="100%"></p>
+
+Running batches show a stage stepper, five numbers and whatever needs a person (an approval, an open issue).
+
+<p align="center"><img src="docs/images/runs-en.png" alt="Runs" width="100%"></p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/toolbox-en.png" alt="Toolbox"></td>
+    <td width="50%"><img src="docs/images/dev-en.png" alt="Development"></td>
+  </tr>
+  <tr>
+    <td align="center">Toolbox: every prompt, model, weights file, tool and data file, by shelf</td>
+    <td align="center">Development: changes in progress, unregistered branches, releases</td>
+  </tr>
+</table>
+
+Light and dark themes, English and Chinese, and a phone layout without sideways scrolling.
+
+## Architecture
+
+<p align="center"><img src="docs/images/architecture.svg" alt="Architecture" width="100%"></p>
+
+- **Sessions** only propose. A Claude Code hook records what each session does and blocks what goes around reins: hand merges into `main`, pipelines started with `nohup`, edits outside the session's own worktree, writes into frozen paths. It fails open, so a session never gets stuck.
+- **The registry** (`$REINS_HOME/reins.db`, SQLite, append-only events) is the single record of cases, batches, versions, gates, spend, reviews, issues and decisions.
+- **The gateway** is the only process with provider keys. Pipelines get `<ENV>_BASE_URL` and a batch token instead of a key.
+- **The watchdog** notices stalls, late cases, lost processes, low disk, memory or GPU, and low balances.
+- **Your project** declares everything domain-specific in `reins.toml`; **this machine** keeps paths, the budget pool, providers and secrets.
+
+## The loop
+
+<p align="center"><img src="docs/images/lifecycle.svg" alt="Develop, run, hand over, deliver" width="100%"></p>
+
+## Money and limits
+
+| Control | How |
 |---|---|
-| 登记库和代码根目录在哪 | `~/.config/reins/settings.toml`：`home`、`code_root`（环境变量 `REINS_HOME` / `REINS_CODE_ROOT` 优先） |
-| 端口、预算池、服务商、只读目录、基准目录 | `$REINS_HOME/config.toml`：`[pool]`、`[providers.*]`、`frozen_paths`、`bench_root` |
-| 服务商密钥 | `$REINS_HOME/secrets/<provider>.key`（chmod 600），只有网关读 |
+| Reserve, then settle | Each paid call takes the write lock, reserves its estimate against every cap, and settles the provider's reported cost (or the price table) afterwards. Parallel calls cannot overshoot. |
+| Team budget pool | All sessions together: hourly, daily and weekly caps; a per-session daily cap; a ceiling on any one batch's cap. |
+| Approval | A paid stage cannot start until a person approves a cap (`reins batch approve B --cap 8`). At the cap the gateway answers 402, pauses the batch and notifies. |
+| Repeated calls | Identical requests are answered from the cache at no cost and still logged (drift batches bypass it on purpose). |
+| Consecutive failures | After N failed paid calls in a row the stage pauses instead of spending on errors. |
+| Attribution | Every row carries batch, stage, module version, provider and model; balances are polled from each provider. |
 
-## 接入一个新项目
+Providers are presets plus `config.toml` (OpenRouter, DeepSeek, OpenAI, Google Maps; add your own OpenAI-compatible or per-call GET service in a few lines).
 
-1. 在项目仓库根目录放 `reins.toml`（从 [examples/reins.toml](examples/reins.toml) 抄起），需要的话再放 `glossary.toml`。
-2. `reins config check`：reins.toml 里用到的每个名字都有定义。
-3. `reins artifact scan`：登记当前的提示词、模型、权重、工具版本；`reins workflow freeze NAME` 冻结工作流。
-4. 流水线每个阶段结束时 `reins batch mark BATCH STAGE --file outcomes.tsv`（首列是案件主键）。
-5. 付费调用改用 `<ENV>_BASE_URL` / `<ENV>_API_KEY`（`reins run` 会给每个在用的服务商设好，指向网关）。
-6. 以后：开发 `reins dev start/finish`，运行 `reins batch open` + `reins run`，看板上自动出现流程图谱。
+## Versions of everything
 
-已接入的项目：`e2e-plan-extract`（英国规划档案的多边形质检），它的完整配置就在那个仓库的 `reins.toml` 和 `glossary.toml`。
+| Kind | Name | Identity |
+|---|---|---|
+| Code | `<module>-<suffix>-<YYYYMMDD>-<n>` | a gated merge into `main` |
+| Prompt | `prompt-<name>-vN` | the text of a constant or file |
+| Model config | `model-<name>-vN` | provider, model id, fixed parameters |
+| ML weights | `weights-<name>-vN` | file content; training record harvested (Ultralytics, JSON-logging trainers) |
+| Tool | `tool-<name>-vN` | source files, API endpoint and parameters, or a data file |
+| Workflow | `workflow-<name>-vN` | every stage with the versions above, refrozen after each release |
+| Benchmark | `bench-<name>-vN` | frozen case set, graded labels, dev / holdout split |
 
-## 组成
+Before a production batch starts, preflight checks that every weights and data file on disk is a registered version, so a model cannot be swapped silently.
 
-```
-reins/
-  store.py      登记库 $REINS_HOME/reins.db；本机位置 ~/.config/reins/settings.toml；旧库自动迁移
-  names.py      命名：模块版本 <module>-<suffix>-<YYYYMMDD>-<n>，批次 <scope>-<type>-<YYYYMMDD>-<n>；主键列识别
-  projects.py   本机管理的项目（代码根目录下带 reins.toml 的仓库）；reins config check
-  glossary.*    C0 词表 + lint（框架词表 + 项目词表）
-  batches.py    C1 case 账本 + C3 批次（阶段顺序、paid cap 门、守恒门、冻结）
-  modules.py    C2 模块版本
-  dev.py        C2 生命周期：start / finish（门禁→合并→released→钉住产物→重新冻结工作流）/ release
-  artifacts.py  C17 版本：prompt / model / weights / tool / workflow
-  gate.py       C5 门禁结果：missed_error 不增、golden 不退 = green
-  runner.py     C7 启动器：reins run / reins ctl
-  providers.py  C9 服务商：预设 + config.toml，网关、计费、看板都从这里读
-  spend.py      C9 账本：预留→结算、估价、余额、预算池
-  gateway.py    C9 网关：唯一持 key 的进程；缓存；cap 到顶 → 402 + 暂停 + 通知
-  watchdog.py   C8：停滞、超时 case、进程丢失、磁盘/内存/GPU、余额
-  leases.py     C10 租约
-  rules.py      C7b 规则即数据 + lane diff
-  decisions.py  C13 决定记录
-  issues.py     C16 问题单：运行发现问题 → 另一个会话修 → 原批次确认
-  sessions.py   C15 会话索引：每次开发和运行从哪个会话来
-  notify.py     通知
-  board.py      C14 看板：流程图谱（每阶段一只像素小螃蟹）/ 成本 / 开发 / 运行
-  bench.py      C4 benchmark；review.py C6 审核记录；accept.py C11 验收；deliver.py C12 交付件
-  preflight.py  输入体检；envs.py 环境清单
-hooks/          Claude Code 钩子：会话索引 + 护栏（只在带 reins.toml 的仓库里生效）
-systemd/        gateway / watchdog / board 的 user 单元
-```
+## Contracts
 
-## 快速开始
+The design is a set of contracts, each backed by real incidents ([docs/DESIGN.md](docs/DESIGN.md)).
+
+| | | | |
+|---|---|---|---|
+| C0 Glossary: one word, one meaning | C1 Case ledger and conservation | C2 Module versions | C3 Batches |
+| C4 Frozen benchmarks | C5 Gate | C6 Review records | C7 Router and recovery |
+| C8 Watchdog | C9 Spend, gateway, budget pool | C10 Leases | C11 Acceptance |
+| C12 Immutable deliverables | C13 Decisions | C14 Board | C15 Session index |
+| C16 Issues (hand-over) | C17 Artifact versions | | |
+
+## Adopt a project
+
+1. Put a `reins.toml` at the repo root. Start from [examples/reins.toml](examples/reins.toml) (a fictional form-extraction project that shows every option). A minimal one:
+
+   ```toml
+   project = "form-extract"
+   case_key = "form_id"              # your name for the case key column
+   case_id_pattern = "^F[0-9]{6}$"
+
+   [batch]
+   scope = ["client", "package"]     # batch names: acme-q3-pilot-20261008-1
+
+   [dev]
+   repo = "/path/to/form-extract"
+   gate = "python3 bench/gate.py"    # exit 0 = passed; may write metrics to $REINS_GATE_OUT
+
+   [run]
+   programs = ["run_all.sh"]         # only `reins run` may start these
+   stages = ["prepare", "ocr", "extract", "check"]
+
+   [modules.extract]
+   about = "pull the named fields out of the OCR text"
+   files = ["form_extract/extract/*"]
+   ```
+
+2. `reins config check` confirms that every name you use is declared.
+3. `reins artifact scan` registers your prompts, models, weights and tools; `reins workflow freeze main` freezes the workflow.
+4. At the end of each stage your pipeline reports outcomes: `reins batch mark BATCH STAGE --file outcomes.tsv` (first column: the case key).
+5. Point paid calls at `<ENV>_BASE_URL` / `<ENV>_API_KEY`; `reins run` sets them for every provider in use.
+
+## Install on a machine
 
 ```bash
-bin/reins --help
-bin/reins config check                                   # 在项目仓库里
-bin/reins dev start extract roadnames --about "..." --from-batch <batch> --cases F000101,F000102
-bin/reins batch open --scope acme-q3 --type pilot --purpose "..." --cases cases.csv --workflow workflow-main-v1 --work-dir /data/acme/pilot
-bin/reins batch approve <batch> --cap 8                  # 用户批钱后付费阶段才能启动
-bin/reins run <batch> --self-staged -- tools/run_all.sh /data/acme/pilot
-bin/reins dev finish extract-roadnames-20261008-1        # 门禁绿才合并
-bin/reins board serve                                    # http://127.0.0.1:8791
+git clone https://github.com/jiaazhaoo/ReinsLite.git && cd ReinsLite
+mkdir -p ~/.config/reins
+printf 'home = "/data/reins"\ncode_root = "%s"\n' "$(dirname "$PWD")" > ~/.config/reins/settings.toml
+mkdir -p /data/reins/secrets && chmod 700 /data/reins/secrets
+echo "sk-..." > /data/reins/secrets/openrouter.key && chmod 600 /data/reins/secrets/openrouter.key
+bin/reins-install-services          # gateway :8790, watchdog, board :8791 as systemd --user units
 ```
 
-## 测试
+Then add the Claude Code hook (`hooks/session_hook.py`) to `~/.claude/settings.json` as shown in [docs/WORKFLOW.md](docs/WORKFLOW.md). Python 3.11+ and the standard library; `openpyxl` only for `.xlsx` files (deliverable checks, header lint).
+
+## Everyday commands
 
 ```bash
-python3 -m unittest discover -s tests
+reins dev start extract multi_page --about "fields that continue on the next page" --issue 14
+reins dev finish extract-multi_page-20261009-1        # gate, merge, release, pin, refreeze
+reins batch open --scope acme-q3 --type production --workflow workflow-main-v7 \
+    --cases cases.csv --purpose "Q3 delivery" --work-dir /data/acme/q3
+reins batch approve acme-q3-production-20261009-1 --cap 12
+reins run acme-q3-production-20261009-1 --self-staged -- tools/run_all.sh /data/acme/q3
+reins ctl pause|resume|stop <batch>
+reins issue open --batch <batch> --cases F000101,F000102 --symptom "dates on page 2 read as the signature date"
+reins weights list · reins artifact list · reins spend · reins board serve
 ```
+
+## Repository layout
+
+```
+reins/            the framework (registry, CLI, gateway, runner, watchdog, board, contracts)
+reins/board_ui/   the board: index.html, app.css, app.js (no build step)
+hooks/            Claude Code hooks: session index and guard rails
+systemd/          unit templates (installed by bin/reins-install-services)
+examples/         reins.toml, glossary.toml, rules.toml, review.toml for a fictional project
+docs/             DESIGN.md (contracts and the incidents behind them), WORKFLOW.md (how sessions work)
+tests/            unit tests (python3 -m unittest discover -s tests)
+```
+
+## Status
+
+Used daily on a production geospatial QA pipeline (the first adopter). Working today: everything above. Known gaps, in the order we plan to close them:
+
+- release reservations left open by a crashed gateway call;
+- enforce time limits (kill a late case, pause a batch over its time budget) instead of only notifying;
+- gate metrics declared by each project, not fixed to missed errors and review load;
+- the gateway: Anthropic Messages, embeddings, other POST APIs and streaming;
+- run kinds beyond batches: training jobs and long-running services;
+- per-case spend caps, call-count and step-depth limits for agent-style stages.
+
+Single machine, SQLite. Hooks are written for Claude Code; any agent can drive the CLI.

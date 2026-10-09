@@ -7,8 +7,7 @@ Description=reins watchdog (C8): progress, resources, lost processes
 After=network.target
 
 [Service]
-Environment=REINS_HOME=/data/reins
-ExecStart=/env/code/ReinsLite/bin/reins watchdog run --interval 60
+ExecStart=@REINS_DIR@/bin/reins watchdog run --interval 60
 Restart=always
 RestartSec=10
 

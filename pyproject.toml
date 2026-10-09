@@ -1,11 +1,11 @@
 [project]
 name = "reinslite"
-version = "0.1.0"
-description = "Contracts and registry for automated-QA pipelines: case identity, module versions, batches, glossary."
+version = "0.2.0"
+description = "Development and run governance for AI pipelines driven by coding-agent sessions: versions, gates, batches, case ledger, paid-call gateway, budget pool, board."
 requires-python = ">=3.11"
 
 [project.scripts]
 reins = "reins.cli:main"
 
 [tool.setuptools.package-data]
-reins = ["glossary.toml"]
+reins = ["glossary.toml", "board_ui/*"]

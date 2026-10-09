@@ -3,8 +3,7 @@ Description=reins board (C14): running and developing
 After=network.target
 
 [Service]
-Environment=REINS_HOME=/data/reins
-ExecStart=/env/code/ReinsLite/bin/reins board serve
+ExecStart=@REINS_DIR@/bin/reins board serve
 Restart=always
 RestartSec=5
 

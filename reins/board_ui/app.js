@@ -66,7 +66,7 @@ const I18N = {
     d_ship: "ship", d_ship_with_note: "ship with note", d_rework: "rework",
     unreg_dev: "Unregistered development", unreg_dev_sub: "Branches ahead of main that reins never registered: adopt them (reins dev adopt WORKTREE --about ...) or abandon them",
     branch: "Branch", worktree: "Worktree", ahead: "Ahead of main", uncommitted: "Uncommitted", last_commit: "Last commit", stale_days: "idle {d} days",
-    plus_unreg: "plus {n} unregistered branches", commits: "{n} commits", files: "{n} files",
+    plus_unreg: "+{n} unregistered branch(es)", commits: "{n} commits", files: "{n} files",
   },
 };
 const store = { get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };

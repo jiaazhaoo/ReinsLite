@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Install the gateway / watchdog / board as systemd --user services for this checkout.
+# Where the registry lives comes from ~/.config/reins/settings.toml (home = ...) or REINS_HOME.
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+dest="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+mkdir -p "$dest"
+for f in "$here"/systemd/reins-*.service; do
+  sed "s#@REINS_DIR@#$here#g" "$f" > "$dest/$(basename "$f")"
+  echo "installed $(basename "$f")"
+done
+systemctl --user daemon-reload
+systemctl --user enable --now reins-gateway reins-watchdog reins-board
+echo "board: http://127.0.0.1:8791   (keep services running after logout: loginctl enable-linger $USER)"

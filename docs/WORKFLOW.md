@@ -113,8 +113,7 @@ reins bench init/freeze ──► 门禁打分（C5）──► 批次 ──►
 ## 守护进程（systemd --user）
 
 ```bash
-mkdir -p ~/.config/systemd/user && cp <ReinsLite>/systemd/*.service ~/.config/systemd/user/
-systemctl --user daemon-reload && systemctl --user enable --now reins-gateway reins-watchdog reins-board
+<ReinsLite>/bin/reins-install-services      # 用当前检出目录填好单元模板，装到 ~/.config/systemd/user 并启动
 loginctl enable-linger $USER
 ```
 网关 `127.0.0.1:8790`（key 放在 `$REINS_HOME/secrets/<provider>.key`，chmod 600；服务商见 `reins/providers.py` 和 config.toml `[providers.*]`），看板 `127.0.0.1:8791`，Watchdog 每 60 秒一轮。
