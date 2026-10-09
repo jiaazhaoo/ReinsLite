@@ -31,6 +31,9 @@ const I18N = {
     st_running: "运行中", st_paused: "暂停", st_open: "未开始", st_closed: "已关闭", st_done: "完成", st_failed: "失败", st_planned: "未开始", st_skipped: "跳过",
     t_production: "生产", t_rework: "返工", t_experiment: "实验", t_pilot: "试跑", t_eval: "评测", t_smoke: "冒烟", t_drift: "漂移", t_benchmark_build: "建基准",
     d_ship: "交付", d_ship_with_note: "带说明交付", d_rework: "返工",
+    unreg_dev: "未登记的开发", unreg_dev_sub: "领先 main、但没经过 reins 登记的分支：登记（reins dev adopt 工作区 --about ...）或放弃",
+    branch: "分支", worktree: "工作区", ahead: "领先 main", uncommitted: "未提交", last_commit: "最后提交", stale_days: "{d} 天未动",
+    plus_unreg: "另有 {n} 个未登记分支", commits: "{n} 个提交", files: "{n} 个文件",
   },
   en: {
     overview: "Overview", pipeline: "Pipeline", runs: "Runs", dev: "Development", cost: "Cost", toolbox: "Toolbox",
@@ -61,6 +64,9 @@ const I18N = {
     st_running: "running", st_paused: "paused", st_open: "open", st_closed: "closed", st_done: "done", st_failed: "failed", st_planned: "planned", st_skipped: "skipped",
     t_production: "production", t_rework: "rework", t_experiment: "experiment", t_pilot: "pilot", t_eval: "eval", t_smoke: "smoke", t_drift: "drift", t_benchmark_build: "benchmark build",
     d_ship: "ship", d_ship_with_note: "ship with note", d_rework: "rework",
+    unreg_dev: "Unregistered development", unreg_dev_sub: "Branches ahead of main that reins never registered: adopt them (reins dev adopt WORKTREE --about ...) or abandon them",
+    branch: "Branch", worktree: "Worktree", ahead: "Ahead of main", uncommitted: "Uncommitted", last_commit: "Last commit", stale_days: "idle {d} days",
+    plus_unreg: "plus {n} unregistered branches", commits: "{n} commits", files: "{n} files",
   },
 };
 const store = { get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
@@ -214,7 +220,7 @@ const VIEWS = {
       <div class="card kpi"><div class="label"><span class="dot ${running ? "pulse" : ""}" style="${running ? "background:var(--green)" : ""}"></span>${esc(t("running_now"))}</div>
         <div class="value">${running}<small>/ ${S.running.length}</small></div><div class="foot">${paused} ${esc(t("paused"))} · ${act} ${esc(t("need_action"))}</div></div>
       <div class="card kpi"><div class="label"><span class="dot amber"></span>${esc(t("developing"))}</div><div class="value">${S.in_progress.length}</div>
-        <div class="foot">${esc(t("last_release"))} ${lastRel ? when(lastRel.released_at) : "—"}</div></div>
+        <div class="foot">${(S.unregistered_dev || []).length ? `<a href="#/dev" style="color:var(--amber)">${esc(t("plus_unreg", { n: S.unregistered_dev.length }))}</a>` : `${esc(t("last_release"))} ${lastRel ? when(lastRel.released_at) : "—"}`}</div></div>
       <div class="card kpi"><div class="label"><span class="dot accent"></span>${esc(t("spend_today"))}</div><div class="value">${usd(P.today)}<small>/ ${usd(L.daily_cap)}</small></div>
         <div class="meter"><i class="${meterCls(pct(P.today, L.daily_cap))}" style="width:${pct(P.today, L.daily_cap)}%"></i></div></div>
       <div class="card kpi"><div class="label"><span class="dot blue"></span>${esc(t("lowest_balance"))}</div><div class="value">${low ? usd(low.balance) : "—"}</div>
@@ -269,7 +275,14 @@ const VIEWS = {
         esc(v.about) + (v.from_batch ? `<div class="sub">${esc(t("from_batch"))} ${esc(v.from_batch)}</div>` : "") + (v.why_out ? `<div class="sub">${esc(v.why_out)}</div>` : ""),
         `<span class="muted" style="font-size:12.5px">${esc(v.gate)}</span>`]));
     return `<div class="page-head"><div><h1>${esc(t("dev"))}</h1><p>${esc(t("dev_sub"))}</p></div></div>
-      ${sectionHead(t("dev_now"))}${cards}<div class="section">${sectionHead(t("releases"), t("releases_sub"))}${rel}</div>`;
+      ${sectionHead(t("dev_now"))}${cards}
+      ${(S.unregistered_dev || []).length ? `<div class="section">${sectionHead(t("unreg_dev"), t("unreg_dev_sub"))}${tbl(
+        [{ h: t("branch"), w: "24%" }, { h: t("worktree"), w: "22%" }, { h: t("ahead"), cls: "num", w: "10%" }, { h: t("uncommitted"), cls: "num", w: "9%" },
+         { h: t("last_commit"), w: "35%" }],
+        S.unregistered_dev.map((u) => [`<span class="chip">${esc(u.branch)}</span>`, u.worktree ? `<span class="mono">${esc(u.worktree)}</span>` : '<span class="faint">—</span>',
+          esc(t("commits", { n: u.ahead })), u.dirty ? `<span style="color:var(--amber)">${esc(t("files", { n: u.dirty }))}</span>` : '<span class="faint">0</span>',
+          `${when(u.last)} ${u.stale ? badge(t("stale_days", { d: Math.floor(u.age_days) }), "amber") : ""}<div class="sub">${esc(u.subject)}</div>`]))}</div>` : ""}
+      <div class="section">${sectionHead(t("releases"), t("releases_sub"))}${rel}</div>`;
   },
   cost() {
     const P = S.pool, L = P.limits;
@@ -347,7 +360,7 @@ const view = () => { const v = (location.hash.replace(/^#\/?/, "") || "overview"
 
 function render() {
   const v = view();
-  const counts = { runs: S ? S.running.length : 0, dev: S ? S.in_progress.length : 0, overview: S ? S.notifications.length + S.unregistered_runs.length : 0 };
+  const counts = { runs: S ? S.running.length : 0, dev: S ? S.in_progress.length + (S.unregistered_dev || []).length : 0, overview: S ? S.notifications.length + S.unregistered_runs.length : 0 };
   document.getElementById("nav").innerHTML = NAV.map(([g, items]) => `<div class="nav-label">${esc(t(g))}</div>` + items.map((k) =>
     `<a href="#/${k}" class="${k === v ? "active" : ""}">${icon(k)}<span class="label">${esc(t(k))}</span>${counts[k] ? `<span class="count ${k === "overview" ? "hot" : ""}">${counts[k]}</span>` : ""}</a>`).join("")).join("");
   document.getElementById("brand-sub").textContent = t("sub");

@@ -185,6 +185,56 @@ def run_history(con, limit: int = 15) -> list[dict]:
     return out
 
 
+_GIT: dict[str, tuple[float, list[dict]]] = {}
+
+
+def unregistered_dev(con) -> list[dict]:
+    """Development reins does not know about: branches in a managed project that are ahead of main and are not the
+    branch of a registered module version (work started before reins, or around it). Cached 60 s."""
+    from . import projects
+    known = {r[0] for r in con.execute("SELECT branch FROM module_version WHERE branch IS NOT NULL")}
+    out = []
+    for repo, cfg in projects.all_():
+        key = str(repo)
+        hit = _GIT.get(key)
+        if hit and time.time() - hit[0] < 60:
+            out += hit[1]; continue
+        def git(*a):
+            return subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, timeout=20).stdout
+        trees = {}
+        cur = None
+        for line in git("worktree", "list", "--porcelain").splitlines():
+            if line.startswith("worktree "):
+                cur = line[9:]
+            elif line.startswith("branch refs/heads/") and cur:
+                trees[line[18:]] = cur
+        found = []
+        for ref in git("for-each-ref", "--format=%(refname:short)|%(committerdate:iso-strict)|%(subject)", "refs/heads").splitlines():
+            name, _, rest = ref.partition("|")
+            date, _, subject = rest.partition("|")
+            if name in ("main", "master") or name in known or name.startswith("backup/"):
+                continue
+            try:
+                ahead = int(git("rev-list", "--count", f"main..{name}").strip() or 0)
+            except ValueError:
+                continue
+            if ahead == 0:
+                continue
+            age_d = (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(date)).total_seconds() / 86400
+            dirty = 0
+            if name in trees and Path(trees[name]).is_dir():
+                st = subprocess.run(["git", "-C", trees[name], "status", "--porcelain", "--untracked-files=no"],
+                                    capture_output=True, text=True, timeout=20).stdout
+                dirty = sum(1 for l in st.splitlines() if l.strip())
+            found.append({"project": cfg.get("project"), "branch": name, "ahead": ahead, "dirty": dirty, "last": date[:19], "subject": subject[:140],
+                          "worktree": Path(trees[name]).name if name in trees else None, "age_days": round(age_d, 1),
+                          "stale": age_d > 7})
+        found.sort(key=lambda d: d["last"], reverse=True)
+        _GIT[key] = (time.time(), found)
+        out += found
+    return out
+
+
 GROUP_ORDER = ["trained", "pretrained", "paid", "prompt", "code", "api", "data"]
 
 
@@ -266,7 +316,7 @@ def state(con) -> dict:
     return {"at": dt.datetime.now().isoformat(timespec="seconds"), "pipelines": pipeline_map(con, running, developing),
             "cost": spend.cost_view(con), "pool": {**spend.pool_usage(con), "limits": config()["pool"]},
             "notifications": _latest_notes(con),
-            "in_progress": developing, "dev_history": dev_history(con),
+            "in_progress": developing, "dev_history": dev_history(con), "unregistered_dev": unregistered_dev(con),
             "running": running, "unregistered_runs": sessions.unregistered_runs(con),
             "run_history": run_history(con),
             # kept for callers of the previous shape
