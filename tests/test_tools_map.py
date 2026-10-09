@@ -78,13 +78,11 @@ if __name__ == "__main__":
 
 class BoardScript(unittest.TestCase):
     def test_served_script_parses(self):
-        """The page is a Python string: an unescaped \\n inside a JS string blanks the whole board (happened twice)."""
+        """A syntax error in the front end blanks the whole board (happened twice when it lived in a Python string)."""
         import shutil, subprocess
         if not shutil.which("node"):
             self.skipTest("node not installed")
-        js = board.HTML.split("<script>")[1].split("</script>")[0]
-        f = Path(tempfile.mkdtemp()) / "b.js"; f.write_text(js)
-        r = subprocess.run(["node", "--check", str(f)], capture_output=True, text=True)
+        r = subprocess.run(["node", "--check", str(board.UI / "app.js")], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
 
 

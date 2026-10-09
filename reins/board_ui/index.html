@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reins</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <a class="brand" href="#/overview"><span id="brand-crab"></span><span><b>Reins</b><small id="brand-sub"></small></span></a>
+    <nav class="nav" id="nav"></nav>
+    <div class="grow"></div>
+    <div class="foot">
+      <button class="iconbtn" id="theme" title="theme"></button>
+      <button class="iconbtn" id="lang" title="language"></button>
+    </div>
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <div class="crumbs" id="crumbs"></div>
+      <div class="spacer"></div>
+      <span class="live" id="live"></span>
+    </header>
+    <main class="page" id="page"></main>
+  </div>
+</div>
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-hidden="true"></aside>
+<script src="app.js"></script>
+</body>
+</html>
