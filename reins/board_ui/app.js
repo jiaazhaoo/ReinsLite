@@ -147,7 +147,15 @@ function stageCard(st, i, pi) {
     <div class="shelves">${shelfCounts(st.tools)}</div>
   </button>`;
 }
-const flowHtml = (p, pi, compact) => `<div class="flow ${compact ? "compact" : ""}">${p.stages.map((st, i) => (i ? '<div class="link"></div>' : "") + stageCard(st, i, pi)).join("")}</div>`;
+const flowHtml = (p, pi, compact) => `<div class="flow-wrap"><div class="flow ${compact ? "compact" : ""}" style="--n:${p.stages.length}">${p.stages.map((st, i) => stageCard(st, i, pi)).join("")}</div></div>`;
+
+/* tables: fixed columns that wrap; below 720 px of room each row becomes a card (no sideways scrolling anywhere) */
+function tbl(cols, rows, empty = "—") {
+  if (!rows.length) return `<div class="card empty">${esc(empty)}</div>`;
+  return `<div class="card tbl"><table><colgroup>${cols.map((c) => `<col style="width:${c.w || "auto"}">`).join("")}</colgroup>
+    <thead><tr>${cols.map((c) => `<th class="${c.cls || ""}">${esc(c.h)}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map((r) => `<tr>${r.map((cell, i) => `<td class="${cols[i].cls || ""}" data-label="${esc(cols[i].h)}"><div class="cell">${cell}</div></td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
 
 function stepper(r) {
   return `<div class="stepper">${r.stages.map((s) => {
@@ -219,8 +227,8 @@ const VIEWS = {
     const devs = S.in_progress.length ? `<div class="card mini">${S.in_progress.map((d) => `<a class="mini-row" href="#/dev"><span class="t">${esc(d.module)}</span>
         <span>${badge(d.gate_status === "green" ? t("gate") + " ✓" : d.registered ? t("candidate") : t("unregistered"), d.gate_status === "green" ? "green" : "amber")}</span>
         <span class="s">${esc(d.about || "")}</span></a>`).join("")}</div>` : `<div class="card empty">${esc(t("nothing_dev"))}</div>`;
-    const rel = `<div class="card mini">${S.dev_history.slice(0, 5).map((v) => `<a class="mini-row" href="#/dev"><span class="t">${esc(v.module)} <span class="faint mono">${esc(v.version)}</span></span>
-        <span class="faint nowrap" style="font-size:12px">${when(v.released_at)}</span><span class="s">${esc(v.about)}</span></a>`).join("")}</div>`;
+    const rel = `<div class="card mini">${S.dev_history.slice(0, 5).map((v) => `<a class="mini-row" href="#/dev"><span class="t">${esc(v.module)}</span>
+        <span class="faint nowrap" style="font-size:12px">${when(v.released_at)}</span><span class="s mono" style="font-size:12px">${esc(v.version)}</span><span class="s">${esc(v.about)}</span></a>`).join("")}</div>`;
     return `<div class="page-head"><div><h1>${esc(t("overview"))}</h1><p>${esc(t("ov_sub"))}</p></div></div>
       ${alertsHtml()}${kpis}${flows}
       <div class="section cols"><div>${sectionHead(t("runs_now"), "", `<a class="more" href="#/runs">${esc(t("all"))} →</a>`)}${runs}</div>
@@ -238,12 +246,11 @@ const VIEWS = {
       </div>`).join("") || `<div class="card empty">workflow freeze NAME</div>`}`;
   },
   runs() {
-    const hist = S.run_history.length ? `<div class="card table-wrap"><table><thead><tr><th>${esc(t("ended"))}</th><th>${esc(t("batch"))}</th><th>${esc(t("type"))}</th>
-        <th class="num">${esc(t("cases"))}</th><th>${esc(t("result"))}</th><th class="num">${esc(t("spend"))}</th><th class="num">${esc(t("time"))}</th><th>${esc(t("acceptance"))}</th></tr></thead><tbody>
-      ${S.run_history.map((h) => `<tr><td class="nowrap">${when(h.closed)}</td><td><b>${esc(h.title)}</b><div class="sub mono">${esc(h.batch_id)}</div></td><td>${typeBadge(h.type)}</td>
-        <td class="num">${h.n_cases}</td><td>${esc(t("stages_done", { a: h.stages_done, b: h.stages }))}${h.done != null ? `<div class="sub">${esc(t("done"))} ${h.done}${h.skipped ? ` · ${esc(t("skipped"))} ${h.skipped}` : ""}${h.failed ? ` · <span style="color:var(--red)">${esc(t("failed"))} ${h.failed}</span>` : ""}</div>` : ""}</td>
-        <td class="num">${usd(h.spent)}</td><td class="num">${h.hours != null ? h.hours + " h" : "—"}</td><td>${h.decision ? badge(t("d_" + h.decision), "green") : `<span class="faint">${esc(t("not_accepted"))}</span>`}</td></tr>`).join("")}
-      </tbody></table></div>` : `<div class="card empty">—</div>`;
+    const hist = tbl([{ h: t("ended"), w: "11%" }, { h: t("batch"), w: "27%" }, { h: t("type"), w: "9%" }, { h: t("cases"), cls: "num", w: "8%" },
+        { h: t("result"), w: "19%" }, { h: t("spend"), cls: "num", w: "9%" }, { h: t("time"), cls: "num", w: "7%" }, { h: t("acceptance"), w: "10%" }],
+      S.run_history.map((h) => [when(h.closed), `<b>${esc(h.title)}</b><div class="sub mono">${esc(h.batch_id)}</div>`, typeBadge(h.type), String(h.n_cases),
+        esc(t("stages_done", { a: h.stages_done, b: h.stages })) + (h.done != null ? `<div class="sub">${esc(t("done"))} ${h.done}${h.skipped ? ` · ${esc(t("skipped"))} ${h.skipped}` : ""}${h.failed ? ` · <span style="color:var(--red)">${esc(t("failed"))} ${h.failed}</span>` : ""}</div>` : ""),
+        usd(h.spent), h.hours != null ? h.hours + " h" : "—", h.decision ? badge(t("d_" + h.decision), "green") : `<span class="faint">${esc(t("not_accepted"))}</span>`]));
     return `<div class="page-head"><div><h1>${esc(t("runs"))}</h1><p>${esc(t("runs_sub"))}</p></div></div>${alertsHtml()}
       ${S.running.length ? S.running.map(runCard).join("") : `<div class="card empty">${esc(t("nothing_running"))}</div>`}
       <div class="section">${sectionHead(t("history"), t("history_sub"))}${hist}</div>`;
@@ -257,10 +264,10 @@ const VIEWS = {
         <div class="muted" style="font-size:12.5px;margin-top:12px;display:flex;gap:14px;flex-wrap:wrap"><span>${esc(t("files_changed", { n: p.files }))}</span><span>${esc(p.gate)}</span>
           ${p.issue ? `<span>${esc(t("fixes_issue"))} #${p.issue}</span>` : ""}${p.from_batch ? `<span>${esc(t("from_batch"))} ${esc(p.from_batch)}</span>` : ""}<span>${esc(t("last_edit"))} ${when(p.last)}</span></div></div>`).join("")}</div>`
       : `<div class="card empty">${esc(t("nothing_dev"))}</div>`;
-    const rel = `<div class="card table-wrap"><table><thead><tr><th>${esc(t("when"))}</th><th>${esc(t("module"))}</th><th>${esc(t("version"))}</th><th>${esc(t("what"))}</th><th>${esc(t("gate"))}</th></tr></thead><tbody>
-      ${S.dev_history.map((v) => `<tr><td class="nowrap">${when(v.released_at)}</td><td><b>${esc(v.module)}</b></td><td><span class="chip">${esc(v.version)}</span>${v.status !== "released" ? " " + badge(v.status, "red") : ""}</td>
-        <td>${esc(v.about)}${v.from_batch ? `<div class="sub">${esc(t("from_batch"))} ${esc(v.from_batch)}</div>` : ""}${v.why_out ? `<div class="sub">${esc(v.why_out)}</div>` : ""}</td><td class="muted" style="font-size:12.5px">${esc(v.gate)}</td></tr>`).join("")}
-      </tbody></table></div>`;
+    const rel = tbl([{ h: t("when"), w: "11%" }, { h: t("module"), w: "11%" }, { h: t("version"), w: "24%" }, { h: t("what"), w: "34%" }, { h: t("gate"), w: "20%" }],
+      S.dev_history.map((v) => [when(v.released_at), `<b>${esc(v.module)}</b>`, `<span class="chip">${esc(v.version)}</span>${v.status !== "released" ? " " + badge(v.status, "red") : ""}`,
+        esc(v.about) + (v.from_batch ? `<div class="sub">${esc(t("from_batch"))} ${esc(v.from_batch)}</div>` : "") + (v.why_out ? `<div class="sub">${esc(v.why_out)}</div>` : ""),
+        `<span class="muted" style="font-size:12.5px">${esc(v.gate)}</span>`]));
     return `<div class="page-head"><div><h1>${esc(t("dev"))}</h1><p>${esc(t("dev_sub"))}</p></div></div>
       ${sectionHead(t("dev_now"))}${cards}<div class="section">${sectionHead(t("releases"), t("releases_sub"))}${rel}</div>`;
   },
@@ -279,9 +286,9 @@ const VIEWS = {
     S.cost.forEach((c) => c.by_batch.forEach((b) => { byb[b.batch_id] = byb[b.batch_id] || {}; byb[b.batch_id][c.provider] = b.usd; }));
     const provs = S.cost.map((c) => c.provider);
     const rows = Object.entries(byb).sort((a, b) => Object.values(b[1]).reduce((x, y) => x + y, 0) - Object.values(a[1]).reduce((x, y) => x + y, 0));
-    const table = rows.length ? `<div class="card table-wrap"><table><thead><tr><th>${esc(t("batch"))}</th>${provs.map((p) => `<th class="num">${esc(p)}</th>`).join("")}<th class="num">Σ</th></tr></thead><tbody>
-      ${rows.map(([b, v]) => `<tr><td class="mono">${esc(b)}</td>${provs.map((p) => `<td class="num">${v[p] != null ? usd(v[p]) : '<span class="faint">—</span>'}</td>`).join("")}<td class="num"><b>${usd(Object.values(v).reduce((x, y) => x + y, 0))}</b></td></tr>`).join("")}
-      </tbody></table></div>` : `<div class="card empty">—</div>`;
+    const table = tbl([{ h: t("batch"), w: "40%" }].concat(provs.map((p) => ({ h: p, cls: "num" }))).concat([{ h: "Σ", cls: "num" }]),
+      rows.map(([b, v]) => [`<span class="mono">${esc(b)}</span>`].concat(provs.map((p) => (v[p] != null ? usd(v[p]) : '<span class="faint">—</span>')))
+        .concat([`<b>${usd(Object.values(v).reduce((x, y) => x + y, 0))}</b>`])));
     return `<div class="page-head"><div><h1>${esc(t("cost"))}</h1><p>${esc(t("cost_sub"))}</p></div></div>
       ${sectionHead(t("pool"), t("pool_sub"))}${pool}<div class="section">${sectionHead(t("providers"))}${prov}</div>
       <div class="section">${sectionHead(t("by_batch"))}${table}</div>`;
@@ -298,11 +305,10 @@ const VIEWS = {
       .concat(SHELVES.filter((s) => counts[s]).map((s) => `<button class="fchip ${TB.shelf === s ? "on" : ""}" data-shelf="${s}">${esc(t("s_" + s))} ${counts[s]}</button>`)).join("");
     return `<div class="page-head"><div><h1>${esc(t("toolbox"))}</h1><p>${esc(t("tb_sub"))}</p></div></div>
       <div class="filters">${chips}<input class="search" id="tbq" placeholder="${esc(t("search"))}" value="${esc(TB.q)}"></div>
-      <div class="card table-wrap"><table><thead><tr><th>${esc(t("shelf"))}</th><th>${esc(t("tool"))}</th><th>${esc(t("version"))}</th><th>${esc(t("does"))}</th><th>${esc(t("detail"))}</th><th>${esc(t("stages"))}</th></tr></thead><tbody>
-      ${shown.map((x) => `<tr><td><span class="shelf-n s-${x.group}">${esc(t("s_" + x.group))}</span></td><td><b>${esc(x.title)}</b><div class="sub mono">${esc(x.base)}</div></td>
-        <td class="nowrap"><span class="chip">v${x.version}</span>${x.newer ? " " + badge(t("newer"), "amber") : ""}</td><td>${esc(x.about)}</td><td class="muted mono" style="font-size:12px">${esc(x.detail)}</td>
-        <td class="muted">${esc((x.used_by || []).join(" · "))}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">—</td></tr>`}
-      </tbody></table></div>`;
+      ${tbl([{ h: t("shelf"), w: "10%" }, { h: t("tool"), w: "17%" }, { h: t("version"), w: "10%" }, { h: t("does"), w: "33%" }, { h: t("detail"), w: "16%" }, { h: t("stages"), w: "14%" }],
+        shown.map((x) => [`<span class="shelf-n s-${x.group}">${esc(t("s_" + x.group))}</span>`, `<b>${esc(x.title)}</b><div class="sub mono">${esc(x.base)}</div>`,
+          `<span class="chip">v${x.version}</span>${x.newer ? " " + badge(t("newer"), "amber") : ""}`, esc(x.about), `<span class="muted mono" style="font-size:12px">${esc(x.detail)}</span>`,
+          `<span class="muted">${esc((x.used_by || []).join(" · "))}</span>`]))}`;
   },
 };
 

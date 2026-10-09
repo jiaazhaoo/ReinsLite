@@ -97,3 +97,10 @@ class ConfigCheck(unittest.TestCase):
         cfg["modules"]["extract"]["prompts"].append("ghost")
         probs = projects.check_config(cfg)
         self.assertEqual(len(probs), 2, probs)
+
+    def test_nothing_scrolls_sideways(self):
+        """User rule (2026-10-09): no horizontal scrolling anywhere on the board; content wraps or reflows."""
+        import re
+        css = (board.UI / "app.css").read_text()
+        self.assertFalse(re.search(r"overflow(-x)?\s*:\s*(auto|scroll)", css), "a sideways scroll area in app.css")
+        self.assertIn("overflow-x: clip", css)
