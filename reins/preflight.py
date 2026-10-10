@@ -65,6 +65,8 @@ def project_checks(b, root: Path | None) -> list[tuple[str, bool, str]]:
         return []
     cfg = tomllib.loads((root / "reins.toml").read_text(encoding="utf-8"))
     out = []
+    if cfg.get("models"):
+        out += models_priced(cfg)
     if cfg.get("weights"):
         from . import artifacts
         from .store import connect
@@ -78,6 +80,20 @@ def project_checks(b, root: Path | None) -> list[tuple[str, bool, str]]:
         r = subprocess.run(c["cmd"], shell=True, cwd=str(root), env=env, capture_output=True, text=True, timeout=600)
         out.append((c["name"], r.returncode == 0, (r.stdout + r.stderr).strip()[-300:]))
     return out
+
+
+def models_priced(cfg: dict) -> list[tuple[str, bool, str]]:
+    """Every paid chat model the project declares ([models.*] with a gateway provider) can be priced: the provider
+    reports the charged cost, or the model has a price. Otherwise the gateway would refuse its first call."""
+    from . import providers, spend
+    from .store import connect
+    con, ps, miss = connect(), providers.all_(), []
+    for name, m in sorted(cfg["models"].items()):
+        spec = ps.get(m.get("provider", ""))
+        if spec and spec["kind"] == "chat" and m.get("id") and spend.unpriced(con, spec, m["id"]):
+            miss.append(f"{name}={m['id']} ({spec['name']})")
+    return [("models_priced", not miss, ("no price: " + ", ".join(miss) + " -- reins spend price MODEL IN OUT") if miss
+             else "every paid chat model has a price or a provider-reported cost")]
 
 
 def run(con, batch: str, root: Path | None = None) -> dict:

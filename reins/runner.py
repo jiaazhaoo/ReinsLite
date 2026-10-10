@@ -125,8 +125,9 @@ def supervise(spec: dict) -> int:
         if code == 0:
             try:
                 led = batches.stage_end(con, batch, stage)
-                notify.send(con, f"stage_done:{batch}:{stage}", "info", f"{batch}: stage {stage} done",
-                            f"done={led['done']} skipped={led['skipped']} failed={led['failed']}", cooldown_min=0)
+                if led["status"] == "done":
+                    notify.send(con, f"stage_done:{batch}:{stage}", "info", f"{batch}: stage {stage} done",
+                                f"done={led['done']} skipped={led['skipped']} failed={led['failed']}", cooldown_min=0)
             except ReinsError as e:
                 notify.send(con, f"stage_incomplete:{batch}:{stage}", "action",
                             f"{batch}: {stage} exited 0 but the case ledger is incomplete", str(e), cooldown_min=0)

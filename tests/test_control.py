@@ -61,12 +61,14 @@ class Spend(Base):
 
 class FakeUpstream(BaseHTTPRequestHandler):
     calls = 0
+    delay = 0.0
 
     def log_message(self, *a):
         pass
 
     def do_POST(self):
         FakeUpstream.calls += 1
+        time.sleep(FakeUpstream.delay)
         n = int(self.headers["Content-Length"]); body = json.loads(self.rfile.read(n))
         assert self.headers["Authorization"] == "Bearer REALKEY", self.headers["Authorization"]
         assert body.get("usage") in ({"include": True}, None)
@@ -89,7 +91,7 @@ class Gateway(Base):
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.srv.server_port}/api/v1/chat/completions"
-        FakeUpstream.calls = 0
+        FakeUpstream.calls = 0; FakeUpstream.delay = 0.0
 
     def write_providers(self, **bases):
         """Providers come from the installation's config.toml, as in production (presets + overrides)."""
@@ -130,6 +132,70 @@ class Gateway(Base):
         self.assertTrue(self.con.execute("SELECT 1 FROM notification WHERE key LIKE 'cap:%'").fetchone())
         code, d = self.post(f"{b}:judge", {**body, "stream": True})
         self.assertEqual(code, 409)                                 # paused now; and streaming would be 400
+
+
+class Pricing(Base):
+    def test_reprice_default_rows_by_decision(self):
+        b = self.open(["judge:paid"], cap=50.0)
+        batches.stage_start(self.con, b, "judge")
+        (pi, po), src = spend.price(self.con, "ds")
+        self.assertEqual(src, "default")
+        for _ in range(2):
+            r = spend.reserve(self.con, b, "judge", 0.01)
+            spend.settle(self.con, r, provider="deepseek", model="ds", amount=1_000_000 * pi / 1e6 + 100_000 * po / 1e6,
+                         priced="default", tokens_in=1_000_000, tokens_out=100_000, cache_hit=False, request_sha="s", http_status=200)
+        self.assertIn("warning", spend.summary(self.con, b))
+        with self.assertRaises(ReinsError):                      # no price yet
+            spend.reprice(self.con, "ds", "decision 1")
+        spend.set_price(self.con, "ds", 0.30, 1.20, "published")
+        with self.assertRaises(ReinsError):                      # no reason
+            spend.reprice(self.con, "ds", " ")
+        r = spend.reprice(self.con, "ds", "decision 1", b)
+        self.assertEqual((r["rows"], r["old_usd"], r["new_usd"]), (2, 6.4, 0.84))
+        self.assertAlmostEqual(batches.spent(self.con, b), 0.84)
+        self.assertNotIn("warning", spend.summary(self.con, b))
+        self.assertEqual(self.con.execute("SELECT why FROM spend_reprice").fetchone()[0], "decision 1")
+
+    def test_preflight_flags_unpriced_models(self):
+        from reins import preflight
+        cfg = {"models": {"judge": {"provider": "openrouter", "id": "g"}, "cls": {"provider": "deepseek", "id": "ds"},
+                          "local": {"provider": "local", "id": "qwen"}}}
+        (self.tmp / "config.toml").write_text('[providers.deepseek]\nbase = "http://x"\n')
+        name, ok, detail = preflight.models_priced(cfg)[0]
+        self.assertFalse(ok); self.assertIn("cls=ds", detail); self.assertNotIn("judge", detail)
+        spend.set_price(self.con, "ds", 0.30, 1.20)
+        self.assertTrue(preflight.models_priced(cfg)[0][1])
+
+
+class StageChecks(Base):
+    def test_failed_check_fails_the_stage_not_done(self):
+        # incident 2026-10-10: check closed done=1839 while the judges answered 1577/1745 and the recheck 0/399
+        b = self.open(["check"])
+        batches.stage_start(self.con, b, "check")
+        batches.mark(self.con, b, "check", [(c, "done", None) for c in ("101", "102", "103")])
+        led = batches.stage_end(self.con, b, "check", [("judge answered every open case", False, "1/3"),
+                                                       ("lane per case", True, "3/3")])
+        self.assertEqual(led["status"], "failed")
+        st = self.con.execute("SELECT status, note FROM batch_stage WHERE batch_id=?", (b,)).fetchone()
+        self.assertEqual(st["status"], "failed"); self.assertIn("1/3", st["note"])
+        self.assertNotEqual(batches.get(self.con, b)["status"], "done")
+        self.assertTrue(self.con.execute("SELECT 1 FROM notification WHERE key=?", (f"stage_failed:{b}:check",)).fetchone())
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM stage_check WHERE batch_id=?", (b,)).fetchone()[0], 2)
+        batches.stage_start(self.con, b, "check")                  # gap filled: the stage runs again
+        batches.mark(self.con, b, "check", [(c, "done", None) for c in ("101", "102", "103")])
+        self.assertEqual(batches.stage_end(self.con, b, "check", [("judge answered every open case", True, "3/3")])["status"], "done")
+        self.assertEqual(batches.get(self.con, b)["status"], "done")
+
+    def test_checks_file_and_cli_exit(self):
+        b = self.open(["check"])
+        batches.stage_start(self.con, b, "check")
+        batches.mark(self.con, b, "check", [(c, "done", None) for c in ("101", "102", "103")])
+        f = self.tmp / "checks.tsv"
+        f.write_text("check\tok\tdetail\nlane per case\tok\t3/3\nrecheck answered\tFAIL\t0/399\n")
+        self.assertEqual([c[1] for c in batches.read_checks(f)], [True, False])
+        r = subprocess.run([str(REPO_ROOT / "bin" / "reins"), "batch", "stage-end", b, "check", "--checks", str(f)],
+                           capture_output=True, text=True, env=os.environ)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr); self.assertIn("recheck answered", r.stderr)
 
 
 class Runner(Base):
@@ -301,12 +367,40 @@ class Providers(Gateway):
         self.assertEqual(self.con.execute("SELECT stage FROM spend").fetchone()[0], "judge")
         self.write_providers(deepseek=self.upstream)                 # fake upstream answers both
         self.gw.KEYS["deepseek"] = "REALKEY"
-        req = urllib.request.Request(f"http://127.0.0.1:{self.srv.server_port}/p/deepseek/v1/chat/completions",
-                                     data=json.dumps({"model": "deepseek-chat", "messages": []}).encode(),
-                                     headers={"Authorization": f"Bearer {b}", "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            self.assertEqual(r.status, 200)
+        def ask():
+            req = urllib.request.Request(f"http://127.0.0.1:{self.srv.server_port}/p/deepseek/v1/chat/completions",
+                                         data=json.dumps({"model": "deepseek-chat", "messages": []}).encode(),
+                                         headers={"Authorization": f"Bearer {b}", "Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read())
+        # incident 2026-10-10: deepseek reports no cost and the model had no price -> booked at a default 7x too high.
+        # Now: refused before any upstream call, batch paused, someone told
+        calls = FakeUpstream.calls
+        code, d = ask()
+        self.assertEqual(code, 409); self.assertIn("reins spend price deepseek-chat", d["error"]["message"])
+        self.assertEqual((FakeUpstream.calls, batches.get(self.con, b)["status"]), (calls, "paused"))
+        self.assertTrue(self.con.execute("SELECT 1 FROM notification WHERE key='unpriced:deepseek-chat'").fetchone())
+        spend.set_price(self.con, "deepseek-chat", 0.30, 1.20, "test")
+        batches.set_status(self.con, b, "running", "price set")
+        code, d = ask()
+        self.assertEqual(code, 200)
         self.assertEqual(self.con.execute("SELECT provider FROM spend ORDER BY id DESC LIMIT 1").fetchone()[0], "deepseek")
+
+    def test_identical_requests_in_flight_are_paid_once(self):
+        b = self.open(["judge:paid"], cap=1.0)
+        batches.stage_start(self.con, b, "judge")
+        FakeUpstream.delay = 1.0
+        body = {"model": "m", "messages": [{"role": "user", "content": "same"}]}
+        out = []
+        ts = [threading.Thread(target=lambda: out.append(self.post(f"{b}:judge", body))) for _ in range(3)]
+        for t in ts: t.start()
+        for t in ts: t.join()
+        self.assertEqual([c for c, _ in out], [200, 200, 200])
+        self.assertEqual(FakeUpstream.calls, 1)
+        self.assertAlmostEqual(batches.spent(self.con, b), 0.02)
 
 
 class SelfStaged(Runner):

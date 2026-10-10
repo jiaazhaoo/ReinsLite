@@ -197,6 +197,28 @@ CREATE TABLE IF NOT EXISTS spend (
   http_status INTEGER
 );
 CREATE INDEX IF NOT EXISTS spend_batch ON spend (batch_id, stage);
+CREATE TABLE IF NOT EXISTS spend_reprice (            -- C9: 'default'-priced rows re-priced from their tokens, by decision
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  at          TEXT NOT NULL,
+  model       TEXT NOT NULL,
+  batch_id    TEXT,                                   -- NULL = every batch
+  rows        INTEGER NOT NULL,
+  old_usd     REAL NOT NULL,
+  new_usd     REAL NOT NULL,
+  input_per_m REAL NOT NULL,
+  output_per_m REAL NOT NULL,
+  why         TEXT NOT NULL,
+  session     TEXT
+);
+CREATE TABLE IF NOT EXISTS stage_check (              -- C8: the project's own completeness checks, given at stage end
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  at          TEXT NOT NULL,
+  batch_id    TEXT NOT NULL,
+  stage       TEXT NOT NULL,
+  check_name  TEXT NOT NULL,
+  ok          INTEGER NOT NULL,
+  detail      TEXT
+);
 CREATE TABLE IF NOT EXISTS spend_import_file (       -- C9: history recorded before (or outside) the gateway, one row per file
   import_id   TEXT PRIMARY KEY,                       -- sha256 of the file: the same file cannot be imported twice
   at          TEXT NOT NULL,

@@ -18,6 +18,8 @@ Fields:
   key_file     secrets/<key_file>.key (default: the provider name); <ENV>_API_KEY in the gateway's environment also works
   ledger       name in the spend ledger and on the board (default: the provider name)
   extra_body   merged into every forwarded chat body (OpenRouter: usage.include so it reports the charged cost)
+  reports_cost true when every answer carries the charged cost (usage.cost). Otherwise a model needs a price
+               (`reins spend price MODEL IN OUT`) before the gateway forwards a call to it: no guessed default
   balance      {url, parse}: a free account endpoint and a built-in parser (openrouter | deepseek); absent = no balance
   low_balance  USD; the watchdog asks for a top-up below it (default 5)
   key_param, path_prefix, per_call, default_call   get services: where the key goes, which path part names the API, prices
@@ -31,7 +33,7 @@ from .store import config, home
 
 PRESETS: dict[str, dict] = {
     "openrouter": {"kind": "chat", "base": "https://openrouter.ai/api/v1", "env": "OPENROUTER", "default_chat": True,
-                   "extra_body": {"usage": {"include": True}},
+                   "extra_body": {"usage": {"include": True}}, "reports_cost": True,
                    "balance": {"url": "https://openrouter.ai/api/v1/credits", "parse": "openrouter"}},
     "deepseek": {"kind": "chat", "base": "https://api.deepseek.com/v1", "env": "DEEPSEEK",
                  "balance": {"url": "https://api.deepseek.com/user/balance", "parse": "deepseek"}},

@@ -251,6 +251,8 @@ def stage_start(con, batch: str, stage: str, module_version: str | None = None, 
         st = _stage(con, batch, stage)
         if st["status"] in ("done", "skipped"):
             raise ReinsError(f"stage {stage} is already {st['status']}")
+        if st["status"] == "failed":
+            _event(con, batch, "stage_restart", f"{stage} was failed: {st['note'] or ''}"[:500])
         if st["paid"] and b["spend_cap"] <= 0:
             raise ReinsError(f"stage {stage} calls paid models and the batch cap is $0: "
                              f"reins batch approve {batch} --cap USD (after the user agrees)")
@@ -335,8 +337,25 @@ def ledger(con, batch: str, stage: str) -> dict:
             "failed": counts.get("failed", 0), "running": counts.get("started", 0), "missing": missing}
 
 
-def stage_end(con, batch: str, stage: str) -> dict:
-    """Close a stage. Refused while any case has no outcome; failed cases are allowed but counted."""
+def read_checks(path: Path) -> list[tuple[str, bool, str]]:
+    """TSV with header check, ok[, detail] (extra columns ignored). ok is ok | pass | true | 1; anything else fails."""
+    import csv
+    with path.open(encoding="utf-8-sig") as f:
+        rd = csv.DictReader(f, delimiter="\t")
+        if not {"check", "ok"} <= set(rd.fieldnames or []):
+            raise ReinsError(f"{path}: needs columns check, ok[, detail]; has {rd.fieldnames}")
+        return [(r["check"], str(r["ok"]).strip().lower() in ("ok", "pass", "true", "1"), r.get("detail") or "") for r in rd]
+
+
+def stage_end(con, batch: str, stage: str, checks: list[tuple[str, bool, str]] | None = None) -> dict:
+    """Close a stage. Refused while any case has no outcome; failed cases are allowed but counted.
+
+    `checks` are the project's own completeness checks for the stage ((name, ok, detail): every case that should have
+    a judge answer has one ...). One failing check ends the stage `failed`, not `done`: the batch cannot become done
+    on it, the next stage cannot start, and the stage can be started again once the gap is filled (2026-10-10: a
+    check stage closed done=1839 while judges had answered 1577/1745 and the boundary recheck 0/399)."""
+    checks = checks or []
+    bad = [c for c in checks if not c[1]]
     with tx(con):
         b = get(con, batch)
         _live(b)
@@ -348,14 +367,32 @@ def stage_end(con, batch: str, stage: str) -> dict:
         if led["missing"]:
             raise ReinsError(f"stage {stage} cannot end: {len(led['missing'])} of {led['n_cases']} cases have no "
                              f"outcome (first: {', '.join(led['missing'][:10])}). Mark them done/skipped/failed.")
-        con.execute("UPDATE batch_stage SET status='done', ended=? WHERE batch_id=? AND stage=?", (now(), batch, stage))
-        _event(con, batch, "stage_end", f"{stage} done={led['done']} skipped={led['skipped']} failed={led['failed']}")
+        t = now()
+        con.executemany("INSERT INTO stage_check (at, batch_id, stage, check_name, ok, detail) VALUES (?,?,?,?,?,?)",
+                        [(t, batch, stage, n, int(o), d) for n, o, d in checks])
+        counts = f"done={led['done']} skipped={led['skipped']} failed={led['failed']}"
+        led["failed_checks"] = [{"check": n, "detail": d} for n, _, d in bad]
+        if bad:
+            note = "checks failed: " + "; ".join(f"{n} ({d})" for n, _, d in bad)
+            con.execute("UPDATE batch_stage SET status='failed', ended=?, note=? WHERE batch_id=? AND stage=?",
+                        (t, note[:1000], batch, stage))
+            _event(con, batch, "stage_failed", f"{stage} {counts}; {note}"[:1000])
+            led["status"] = "failed"
+        else:
+            con.execute("UPDATE batch_stage SET status='done', ended=? WHERE batch_id=? AND stage=?", (t, batch, stage))
+            _event(con, batch, "stage_end", f"{stage} {counts}")
+            led["status"] = "done"
         orphans = without_input(con, batch, stage)
         led["without_input"] = orphans
         if orphans:
             _event(con, batch, "outcome_without_input",
                    f"{stage}: {len(orphans)} cases done here were skipped or failed in an earlier stage (first: {orphans[:5]})")
         _maybe_done(con, batch)
+    if bad:
+        from . import notify
+        notify.send(con, f"stage_failed:{batch}:{stage}", "action", f"{batch}: stage {stage} failed its checks",
+                    "\n".join(f"{n}: {d}" for n, _, d in bad) + f"\nfill the gap, then start {stage} again "
+                    f"(reins batch stage-start {batch} {stage}, or resume the run)", cooldown_min=0)
     return led
 
 

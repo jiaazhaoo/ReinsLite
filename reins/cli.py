@@ -7,7 +7,7 @@
   ctl       pause | resume | stop BATCH                                   C7/C10 control a running batch
   config    check                                                         the project's reins.toml is consistent
   case      CASE_ID                                                       C1 one case's whole history
-  spend     summary BATCH | price MODEL IN OUT | weekly                   C9
+  spend     summary | price | unpriced | reprice MODEL --why | weekly | all  C9
   gateway   serve                                                         C9 paid-call proxy (holds the key)
   watchdog  once | run                                                    C8
   board     serve                                                         C14
@@ -190,6 +190,8 @@ def build_parser() -> argparse.ArgumentParser:
     x = b.add_parser("mark"); x.add_argument("batch"); x.add_argument("stage"); x.add_argument("--file")
     x.add_argument("case", nargs="?"); x.add_argument("status", nargs="?"); x.add_argument("reason", nargs="?")
     x = b.add_parser("stage-end"); x.add_argument("batch"); x.add_argument("stage")
+    x.add_argument("--checks", type=Path, help="TSV check, ok[, detail]: the project's completeness checks; one failing "
+                                               "check ends the stage failed (exit 1)")
     x = b.add_parser("skip-stage"); x.add_argument("batch"); x.add_argument("stage"); x.add_argument("--why", required=True)
     for verb in ("pause", "resume", "fail"):
         x = b.add_parser(verb); x.add_argument("batch"); x.add_argument("--why", required=True)
@@ -209,6 +211,9 @@ def build_parser() -> argparse.ArgumentParser:
     x = s.add_parser("summary"); x.add_argument("batch")
     x = s.add_parser("price"); x.add_argument("model"); x.add_argument("input_per_m", type=float)
     x.add_argument("output_per_m", type=float); x.add_argument("--source", default="")
+    x = s.add_parser("reprice", help="re-price a model's 'default'-priced rows from their tokens at its table price (a decision)")
+    x.add_argument("model"); x.add_argument("--batch"); x.add_argument("--why", required=True)
+    s.add_parser("unpriced", help="models whose ledger rows were booked at the guessed default price")
     s.add_parser("weekly"); s.add_parser("balances", help="poll provider balances now (free endpoints)")
     x = s.add_parser("import", help="add spend history recorded outside the gateway (CSV: day,provider,model,purpose,batch,calls,"
                                     "tokens_in,tokens_out,amount,priced,note)")
@@ -403,6 +408,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(spend.summary(con, args.batch), ensure_ascii=False, indent=1))
             elif args.sub == "price":
                 spend.set_price(con, args.model, args.input_per_m, args.output_per_m, args.source); print("ok")
+            elif args.sub == "reprice":
+                r = spend.reprice(con, args.model, args.why, args.batch)
+                print(f"{r['model']}: {r['rows']} rows re-priced ${r['old_usd']:.4f} -> ${r['new_usd']:.4f}"
+                      + (f" in {r['batch']}" if r["batch"] else ""))
+            elif args.sub == "unpriced":
+                for r in con.execute("SELECT model, batch_id, COUNT(*) n, SUM(amount) usd FROM spend WHERE priced='default'"
+                                     " GROUP BY 1, 2 ORDER BY 1, 2"):
+                    print(f"{r['model']:<32} {r['batch_id']:<44} {r['n']:>6} calls  ${r['usd']:.4f} (guessed)")
             elif args.sub == "import":
                 r = spend.import_history(con, args.file, _project(args, cfg), args.source)
                 print(f"imported {r['rows']} rows, ${r['usd']:.2f} (import {r['import_id']})")
@@ -688,11 +701,16 @@ def _batch(con, args, cfg) -> int:
             raise ReinsError("mark needs --file TSV or CASE_ID STATUS [REASON]")
         print(f"{batches.mark(con, args.batch, args.stage, rows)} events recorded")
     elif args.sub == "stage-end":
-        led = batches.stage_end(con, args.batch, args.stage)
-        print(f"{args.stage} done: {led['done']} done, {led['skipped']} skipped, {led['failed']} failed")
+        led = batches.stage_end(con, args.batch, args.stage, batches.read_checks(args.checks) if args.checks else None)
+        print(f"{args.stage} {led['status']}: {led['done']} done, {led['skipped']} skipped, {led['failed']} failed")
         if led.get("without_input"):
             print(f"WARNING {len(led['without_input'])} cases done in {args.stage} were skipped or failed earlier "
                   f"(first: {', '.join(led['without_input'][:5])})", file=sys.stderr)
+        if led["failed_checks"]:
+            for c in led["failed_checks"]:
+                print(f"FAILED check {c['check']}: {c['detail']}", file=sys.stderr)
+            print(f"stage {args.stage} is failed, not done; fill the gap and start it again", file=sys.stderr)
+            return 1
     elif args.sub == "skip-stage":
         batches.skip_stage(con, args.batch, args.stage, args.why)
     elif args.sub in ("pause", "resume", "fail"):

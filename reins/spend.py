@@ -5,7 +5,11 @@ from __future__ import annotations
 from . import batches
 from .store import ReinsError, config, now, tx
 
-DEFAULT_PRICE = (2.0, 12.0)          # USD per million tokens when the model is not in the table; flagged 'default'
+# USD per million tokens, used only when a provider that should report the charged cost did not and the model has no
+# price: flagged 'default' and notified. A provider without reported costs never gets here: the gateway refuses a call
+# to a model without a price (2026-10-10: deepseek-v4-flash at this default was booked $8.41 for $1.15 of calls, and
+# the batch stopped at its cap $7 early)
+DEFAULT_PRICE = (2.0, 12.0)
 
 
 class CapReached(ReinsError):
@@ -16,6 +20,48 @@ def price(con, model: str) -> tuple[tuple[float, float], str]:
     row = con.execute("SELECT input_per_m, output_per_m FROM price WHERE model=? ORDER BY since DESC LIMIT 1",
                       (model,)).fetchone()
     return ((row[0], row[1]), "table") if row else (DEFAULT_PRICE, "default")
+
+
+def has_price(con, model: str) -> bool:
+    return con.execute("SELECT 1 FROM price WHERE model=? LIMIT 1", (model,)).fetchone() is not None
+
+
+def unpriced(con, spec: dict, model: str) -> str | None:
+    """Why a call to `model` on provider `spec` cannot be priced, or None when it can (a price, or reported costs)."""
+    if spec.get("reports_cost") or has_price(con, model):
+        return None
+    return (f"no price for model {model!r} on {spec['name']}, and {spec['name']} does not report the charged cost: "
+            f"reins spend price {model} INPUT_PER_M OUTPUT_PER_M --source '<the provider's published price page>'")
+
+
+def reprice(con, model: str, why: str, batch: str | None = None) -> dict:
+    """Re-price the 'default'-priced rows of `model` (optionally one batch) from their tokens at the table price.
+    Needs a price and a reason (the decision); the old and new totals are kept in spend_reprice."""
+    from .store import session as _session
+    if not why.strip():
+        raise ReinsError("re-pricing ledger rows needs --why (the decision, e.g. its reins decide id)")
+    row = con.execute("SELECT input_per_m, output_per_m FROM price WHERE model=? ORDER BY since DESC LIMIT 1", (model,)).fetchone()
+    if not row:
+        raise ReinsError(f"no price for {model}: reins spend price {model} IN OUT first")
+    pi, po = row
+    q, args = "SELECT id, amount, tokens_in, tokens_out FROM spend WHERE model=? AND priced='default'", [model]
+    if batch:
+        q += " AND batch_id=?"; args.append(batch)
+    with tx(con):
+        rows = con.execute(q, args).fetchall()
+        if not rows:
+            raise ReinsError(f"no 'default'-priced rows for {model}" + (f" in {batch}" if batch else ""))
+        if any(r["tokens_in"] is None or r["tokens_out"] is None for r in rows):
+            raise ReinsError("some rows have no token counts; they cannot be re-priced")
+        old = sum(r["amount"] for r in rows)
+        new = 0.0
+        for r in rows:
+            amt = r["tokens_in"] * pi / 1e6 + r["tokens_out"] * po / 1e6
+            new += amt
+            con.execute("UPDATE spend SET amount=?, priced='repriced' WHERE id=?", (amt, r["id"]))
+        con.execute("INSERT INTO spend_reprice (at, model, batch_id, rows, old_usd, new_usd, input_per_m, output_per_m, why,"
+                    " session) VALUES (?,?,?,?,?,?,?,?,?,?)", (now(), model, batch, len(rows), old, new, pi, po, why, _session()))
+    return {"model": model, "batch": batch, "rows": len(rows), "old_usd": round(old, 4), "new_usd": round(new, 4)}
 
 
 def set_price(con, model: str, input_per_m: float, output_per_m: float, source: str = "") -> None:
@@ -133,11 +179,17 @@ def record_free(con, batch: str, stage: str, *, provider: str, model: str, reque
 
 
 def summary(con, batch: str) -> dict:
-    rows = con.execute("SELECT stage, model, COUNT(*) n, SUM(cache_hit) hits, SUM(amount) usd FROM spend WHERE batch_id=?"
+    rows = con.execute("SELECT stage, model, COUNT(*) n, SUM(cache_hit) hits, SUM(amount) usd,"
+                       " SUM(priced='default') default_priced FROM spend WHERE batch_id=?"
                        " GROUP BY stage, model ORDER BY stage, model", (batch,)).fetchall()
     bcap = batches.get(con, batch)["spend_cap"]
-    return {"batch": batch, "cap": bcap, "spent": round(batches.spent(con, batch), 4),
-            "by_stage_model": [dict(r) for r in rows]}
+    out = {"batch": batch, "cap": bcap, "spent": round(batches.spent(con, batch), 4),
+           "by_stage_model": [dict(r) for r in rows]}
+    guessed = [r["model"] for r in rows if r["default_priced"]]
+    if guessed:
+        out["warning"] = (f"amounts of {', '.join(guessed)} are guessed (no price, provider reported no cost): "
+                          "reins spend price MODEL IN OUT, then decide on reins spend reprice")
+    return out
 
 
 def weekly(con, weeks: int = 8) -> list[dict]:

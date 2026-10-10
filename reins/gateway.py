@@ -9,7 +9,9 @@ instead of a key. For every /chat/completions request the gateway
   1. checks the batch is running and the stage is a planned stage,
   2. looks the exact request up in the cache ($REINS_HOME/cache, key = sha256 of the canonical body),
   3. otherwise reserves the estimated cost against the caps (C9), forwards with the real key, settles with the
-     provider's reported cost (usage.cost; OpenRouter returns it when usage.include=true), else the price table,
+     provider's reported cost (usage.cost; OpenRouter returns it when usage.include=true), else the price table;
+     a model with neither (no price, provider does not report costs) is refused, the batch paused, someone told;
+     an identical request already in flight waits for that answer instead of being paid twice,
   4. on a cap: answers 402 with a message naming the reins command to run, pauses the batch, notifies.
 Streaming is refused (the cost is only known at the end; reserve/settle needs the whole answer).
 
@@ -33,6 +35,25 @@ from .store import ReinsError, config, connect, home
 KEYS: dict[str, str] = {}
 _local = threading.local()
 _FAILS: dict[tuple[str, str], int] = {}       # (batch, stage) -> consecutive non-200 upstream answers
+_INFLIGHT: dict[str, threading.Event] = {}    # request sha -> set when the call that owns it has finished
+_INFLIGHT_LOCK = threading.Lock()
+
+
+def _claim(sha: str) -> threading.Event | None:
+    """None: this thread owns the call for `sha`. An Event: the same request is already in flight; wait for it.
+    (2026-10-10: 26 + 20 identical judge requests were forwarded and paid twice, seconds apart.)"""
+    with _INFLIGHT_LOCK:
+        ev = _INFLIGHT.get(sha)
+        if ev is None:
+            _INFLIGHT[sha] = threading.Event()
+        return ev
+
+
+def _done(sha: str) -> None:
+    with _INFLIGHT_LOCK:
+        ev = _INFLIGHT.pop(sha, None)
+    if ev:
+        ev.set()
 
 
 def _con() -> sqlite3.Connection:
@@ -223,6 +244,27 @@ class Handler(BaseHTTPRequestHandler):
         if cp.is_file() and not drift:                     # a drift batch asks the live model on purpose
             spend.record_free(con, batch, stage, provider=provider, model=model, request_sha=sha, module_version=mv)
             self._send(200, cp.read_bytes()); return
+        why = spend.unpriced(con, spec, model)
+        if why:                                            # never book a guess: refuse, pause, tell someone
+            self._on_unpriced(con, batch, model, why)
+            self._err(409, f"{why}. Batch paused; after the price is set: reins ctl resume {batch}"); return
+        if not drift:
+            ev = _claim(sha)
+            if ev is not None:                             # the same request is on its way: wait, then take its answer
+                ev.wait(float(body.get("timeout", 180)) + 10)
+                if cp.is_file():
+                    spend.record_free(con, batch, stage, provider=provider, model=model, request_sha=sha, module_version=mv)
+                    self._send(200, cp.read_bytes()); return
+                ev = _claim(sha)                           # it failed: ask again, owning the call this time
+                if ev is not None:
+                    self._err(503, "the same request is still in flight; retry"); return
+        try:
+            self._forward(con, spec, upstream_url, provider, key, batch, stage, body, model, sha, mv, cp, drift)
+        finally:
+            if not drift:
+                _done(sha)
+
+    def _forward(self, con, spec, upstream_url, provider, key, batch, stage, body, model, sha, mv, cp, drift):
         est = spend.estimate(con, batch, stage, model)
         try:
             rid = spend.reserve(con, batch, stage, est)
@@ -254,6 +296,11 @@ class Handler(BaseHTTPRequestHandler):
         spend.settle(con, rid, provider=provider, model=model, amount=amount, priced=priced,
                      tokens_in=usage.get("prompt_tokens"), tokens_out=usage.get("completion_tokens"), cache_hit=False,
                      request_sha=sha, http_status=code, module_version=mv)
+        if priced == "default":
+            notify.send(con, f"unpriced:{model}", "action", f"{model}: cost guessed at the default price",
+                        f"{provider} reported no cost for {model} and it has no price; booked at "
+                        f"${spend.DEFAULT_PRICE[0]}/${spend.DEFAULT_PRICE[1]} per million tokens.\n"
+                        f"reins spend price {model} IN OUT, then decide on reins spend reprice {model} --why ...")
         key_ = (batch, stage)
         if code == 200:
             _FAILS[key_] = 0
@@ -276,6 +323,13 @@ class Handler(BaseHTTPRequestHandler):
         if b["spend_cap"] and used >= config()["spend_warn_fraction"] * b["spend_cap"]:
             notify.send(con, f"spend80:{batch}", "warn", f"{batch} at ${used:.2f} of ${b['spend_cap']:.2f}",
                         "raise the cap (reins batch approve) or let it stop at the cap")
+
+    def _on_unpriced(self, con, batch, model, why):
+        try:
+            batches.set_status(con, batch, "paused", f"spend: {why}"[:500], system=True)
+        except ReinsError:
+            pass
+        notify.send(con, f"unpriced:{model}", "action", f"{batch} paused: no price for {model}", why, cooldown_min=10)
 
     def _on_cap(self, con, batch, why):
         try:
