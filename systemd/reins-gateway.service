@@ -5,6 +5,8 @@ After=network.target
 [Service]
 ExecStart=@REINS_DIR@/bin/reins gateway serve
 Restart=always
+# backstop only: every request closes its registry connection (2026-10-14: 1024 fds ran out)
+LimitNOFILE=65536
 RestartSec=5
 
 [Install]

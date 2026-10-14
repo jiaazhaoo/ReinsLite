@@ -88,7 +88,7 @@ class Gateway(Base):
         self.bases = {"openrouter": self.upstream}
         self.write_providers()
         gateway.KEYS.clear(); gateway.KEYS["openrouter"] = "REALKEY"
-        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
+        self.srv = gateway.Server(("127.0.0.1", 0), gateway.Handler)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.srv.server_port}/api/v1/chat/completions"
         FakeUpstream.calls = 0; FakeUpstream.delay = 0.0
@@ -132,6 +132,41 @@ class Gateway(Base):
         self.assertTrue(self.con.execute("SELECT 1 FROM notification WHERE key LIKE 'cap:%'").fetchone())
         code, d = self.post(f"{b}:judge", {**body, "stream": True})
         self.assertEqual(code, 409)                                 # paused now; and streaming would be 400
+
+    def registry_fds(self) -> int:
+        n = 0
+        for fd in os.listdir("/proc/self/fd"):
+            try:
+                n += os.readlink(f"/proc/self/fd/{fd}").startswith(str(self.tmp))
+            except OSError:
+                pass
+        return n
+
+    @unittest.skipUnless(Path("/proc/self/fd").is_dir(), "counts fds through /proc")
+    def test_requests_do_not_leak_registry_fds(self):
+        if type(self) is not Gateway:
+            self.skipTest("the provider subclasses share this server code")
+        # incident 2026-10-14: every request thread opened a registry connection and none was closed; at 986 of 1024
+        # fds every request failed with EMFILE and 40 judge workers lost their answers after 4 retries.
+        # SQLite keeps a closed connection's fd for reuse while other connections hold locks on the file, so the
+        # count is bounded by how many requests run at once, never by how many were served.
+        b = self.open(["judge:paid"], cap=50.0)
+        batches.stage_start(self.con, b, "judge")
+        body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+        before, workers, codes = self.registry_fds(), 40, []
+
+        def one(i):
+            tok = "nope" if i % 7 == 0 else f"{b}:judge"           # refused, forwarded and cached requests alike
+            try:
+                codes.append(self.post(tok, {**body, "messages": [{"role": "user", "content": str(i % 10)}]})[0])
+            except OSError as e:                                    # connection reset: the listen backlog overflowed
+                codes.append(repr(e))
+        for wave in range(10):
+            ts = [threading.Thread(target=one, args=(wave * workers + i,)) for i in range(workers)]
+            [t.start() for t in ts]; [t.join() for t in ts]
+        time.sleep(0.3)                                             # the last handler threads are closing
+        self.assertEqual(sorted(set(map(str, codes))), ["200", "401"])
+        self.assertLessEqual(self.registry_fds(), before + workers, f"{len(codes)} requests left registry fds open")
 
 
 class Pricing(Base):

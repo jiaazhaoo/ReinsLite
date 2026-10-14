@@ -57,9 +57,20 @@ def _done(sha: str) -> None:
 
 
 def _con() -> sqlite3.Connection:
-    if not hasattr(_local, "con"):
+    """The registry connection of the request being handled (opened on first use, closed by Handler.handle)."""
+    if getattr(_local, "con", None) is None:
         _local.con = connect()
     return _local.con
+
+
+def _close_con() -> None:
+    """ThreadingHTTPServer runs every client connection on a new thread. Nothing closed the thread's sqlite
+    connection, and a dead thread's connection is not reliably freed: 2026-10-14 the gateway held 986 of 1024 fds
+    (495 on reins.db, 470 on reins.db-wal), then every request failed with EMFILE and the judges lost answers."""
+    con = getattr(_local, "con", None)
+    _local.con = None
+    if con is not None:
+        con.close()
 
 
 def load_key(spec: dict) -> str:
@@ -108,6 +119,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):                                          # quiet; the ledger is the log
         pass
+
+    def handle(self):
+        try:
+            super().handle()
+        finally:
+            _close_con()
 
     def _send(self, code: int, payload: dict | bytes, ctype="application/json"):
         data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
@@ -340,6 +357,11 @@ class Handler(BaseHTTPRequestHandler):
                     f"{why}\nreins batch approve {batch} --cap USD  then  reins ctl resume {batch}", cooldown_min=10)
 
 
+class Server(ThreadingHTTPServer):
+    request_queue_size = 128     # default 5: 40 judge workers connecting at once got "connection reset by peer"
+    daemon_threads = True
+
+
 def serve(port: int | None = None) -> None:
     for spec in providers.all_().values():
         k = providers.key(spec)
@@ -349,6 +371,6 @@ def serve(port: int | None = None) -> None:
         raise ReinsError(f"no provider key found: write one to {home() / 'secrets'}/<provider>.key (chmod 600)")
     port = port or config()["gateway_port"]
     (home() / "cache").mkdir(parents=True, exist_ok=True)
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    srv = Server(("127.0.0.1", port), Handler)
     print(f"reins gateway on http://127.0.0.1:{port}/api/v1  (cache {home() / 'cache'})", file=sys.stderr)
     srv.serve_forever()

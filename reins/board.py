@@ -17,6 +17,7 @@ import json
 import subprocess
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -334,7 +335,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         if path.startswith("/api/state"):
-            body = json.dumps(state(connect()), ensure_ascii=False, default=str).encode()
+            with closing(connect()) as con:                                     # one per request: closed, or fds leak
+                body = json.dumps(state(con), ensure_ascii=False, default=str).encode()
             ctype = "application/json"
         else:
             f = UI / (path.lstrip("/") or "index.html")
