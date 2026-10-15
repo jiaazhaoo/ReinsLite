@@ -5,12 +5,17 @@
     reins bench add-input NAME --from DIR                                                 copy inputs in
     reins bench label NAME --file labels.jsonl                                            append labels (labelset += 1)
     reins bench freeze NAME --changelog '...'                                             sha256 everything, read-only
-    reins bench bump NAME --changelog '...'                                               vN+1 from vN (hardlinks), open
+    reins bench bump NAME --changelog '...'                                               vN+1 from vN (hardlinks, symlinks kept), open
     reins bench verify NAME [vN]                                                          hashes still match?
     reins bench holdout NAME --why '...' [--tuned]                                        record holdout access / tuning
     reins bench list
 
 Layout: <bench_root>/bench-<name>/v<N>/{MANIFEST.json, cases.csv, inputs/, stages/<stage>/, labels.jsonl, CHANGELOG.md}
+
+Bump: files of vN+1 are hardlinks to vN's (same inode, so the same bytes and the same read-only mode) and symlinks
+are copied as symlinks with the same target (v10's `inputs -> ../v1/inputs` stays exactly that in v11). Only
+labels.jsonl, cases.csv, CHANGELOG.md and MANIFEST.json get their own inode. To change any other file in an open
+version, unlink it first and write a new file: writing in place through the hardlink would change the frozen version.
 
 Labels (one JSON per line): {"case_id", "target", "value", "source", "by", "saw_drawing", "note"}
   source ∈ golden | customer_result | reviewer_verdict | reference[_<kind>]   (trust, high to low)
@@ -122,19 +127,31 @@ def init(con, name: str, project: str, case_file: Path, about: str, holdout_frac
     return {"name": name, "version": 1, "path": str(path), "n_dev": len(ids) - n_hold, "n_holdout": n_hold}
 
 
-def _copy_tree(src: Path, dst: Path) -> int:
-    """Hardlink where possible (same filesystem), copy otherwise. Returns file count."""
+def _copy_tree(src: Path, dst: Path, keep_links: bool = False) -> int:
+    """Hardlink where possible (same filesystem), copy otherwise. Returns the number of regular files.
+    keep_links (bump): a symlink stays a symlink with the same target. Otherwise (add-stage / add-input, whose
+    relative links would not resolve from the benchmark) symlinks are followed and their contents copied in.
+    A symlinked directory is never silently dropped."""
     n = 0
-    for f in src.rglob("*"):
-        if f.is_file():
+    for d, dirs, files in os.walk(src, followlinks=not keep_links):
+        d = Path(d)
+        (dst / d.relative_to(src)).mkdir(parents=True, exist_ok=True)
+        for e in dirs + files:
+            f = d / e
             t = dst / f.relative_to(src)
-            t.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.link(f, t)
-            except OSError:
-                shutil.copy2(f, t)
-            n += 1
+            if keep_links and f.is_symlink():
+                os.symlink(os.readlink(f), t)
+            elif f.is_file():
+                try:
+                    os.link(f.resolve(), t)              # a symlinked file: link its target (os.link would link the symlink)
+                except OSError:
+                    shutil.copy2(f, t)
+                n += 1
     return n
+
+
+def _links_under(path: Path) -> list[Path]:
+    return sorted(Path(d) / e for d, dirs, files in os.walk(path) for e in dirs + files if (Path(d) / e).is_symlink())
 
 
 def add_stage(con, name: str, stage: str, src: Path, module_version: str) -> int:
@@ -304,14 +321,20 @@ def bump(con, name: str, changelog: str) -> dict:
     dst = src.parent / f"v{new_v}"
     if dst.exists():
         raise ReinsError(f"{dst} exists")
-    n = _copy_tree(src, dst)
-    import subprocess
-    subprocess.run(["chmod", "-R", "u+w", str(dst)], check=False)
-    # hardlinked files share inodes with the frozen version: break the links for the mutable files
+    n = _copy_tree(src, dst, keep_links=True)
+    # The new version's files share inodes with the frozen one, so a chmod on them is a chmod on vN (2026-10-15:
+    # `chmod -R u+w` here made every v10 file writable). Keep the shared inodes read-only -- that also re-protects
+    # an adopted vN whose files were never made read-only -- and give only the files bump writes their own inode.
+    reprotected = 0
+    for p in dst.rglob("*"):
+        if not p.is_symlink() and p.is_file() and p.stat().st_mode & 0o222:
+            os.chmod(p, p.stat().st_mode & ~0o222); reprotected += 1
     for f in ("labels.jsonl", "cases.csv", "CHANGELOG.md", "MANIFEST.json"):
         p = dst / f
-        if p.exists():
+        if p.exists() and not p.is_symlink():
             data = p.read_bytes(); p.unlink(); p.write_bytes(data)
+    links = _links_under(dst)
+    dangling = [str(p.relative_to(dst)) for p in links if not p.exists()]
     m = _manifest(dst)
     m.update(version=new_v, created=now(), files={}, previous=row["version"])
     m.pop("frozen", None)
@@ -323,8 +346,9 @@ def bump(con, name: str, changelog: str) -> dict:
                     " holdout_compromised, created) VALUES (?,?,?,?, 'open', ?,?,?,?,?,?)",
                     (row["name"], new_v, row["project"], str(dst), row["n_cases"], row["n_dev"], row["n_holdout"],
                      row["labelset"], row["holdout_compromised"], now()))
-        _event(con, row["name"], new_v, "bumped", f"from v{row['version']}: {changelog}")
-    return {"name": row["name"], "version": new_v, "path": str(dst), "files": n}
+        _event(con, row["name"], new_v, "bumped", f"from v{row['version']}: {n} files, {len(links)} symlinks; {changelog}")
+    return {"name": row["name"], "version": new_v, "path": str(dst), "files": n, "symlinks": len(links),
+            "dangling_symlinks": dangling, "reprotected": reprotected}
 
 
 def holdout(con, name: str, why: str, tuned: bool = False) -> None:

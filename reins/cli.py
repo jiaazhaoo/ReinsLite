@@ -763,7 +763,15 @@ def _measure(con, args, cfg, cwd) -> int:
         elif args.sub == "freeze":
             r = bench.freeze(con, args.name, args.changelog); print(f"{r['name']} v{r['version']} frozen: {r['files']} files, manifest {r['manifest_sha'][:12]}")
         elif args.sub == "bump":
-            r = bench.bump(con, args.name, args.changelog); print(f"{r['name']} v{r['version']} open at {r['path']}")
+            r = bench.bump(con, args.name, args.changelog)
+            print(f"{r['name']} v{r['version']} open at {r['path']}: {r['files']} files (hardlinks), "
+                  f"{r['symlinks']} symlinks (same targets)")
+            if r["reprotected"]:
+                print(f"  {r['reprotected']} files of v{r['version'] - 1} were writable; made read-only (shared inodes)")
+            for p in r["dangling_symlinks"]:
+                print(f"WARNING symlink {p} does not resolve", file=sys.stderr)
+            print("  to change a file in this version: unlink it, then write a new one (writing in place through "
+                  "the hardlink changes the frozen version)")
         elif args.sub == "verify":
             r = bench.verify(con, args.name, args.version)
             print("ok" if r["ok"] else f"MISMATCH changed={r['changed'][:5]} missing={r['missing'][:5]} extra={r['extra'][:5]}")
