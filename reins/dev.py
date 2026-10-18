@@ -215,6 +215,10 @@ def finish(con, version: str, skip_tier: str | None = None, why: str | None = No
                        capture_output=True, text=True)
     if r.returncode:
         raise ReinsError(f"merge into main failed: {r.stderr[-400:]}")
+    remote = (cfg.get("dev") or {}).get("push")                   # [dev] push = "origin": publish the merge
+    if remote:
+        p = subprocess.run(["git", "-C", str(repo), "push", "-q", remote, "main"], capture_output=True, text=True)
+        evidence += f"; pushed to {remote}" if p.returncode == 0 else f"; push to {remote} FAILED: {p.stderr.strip()[-200:]}"
     from . import artifacts
     head = git(wt, "rev-parse", "--short", "HEAD")
     arts = artifacts.scan(con, wt, cfg, head)                       # prompt / model versions as this candidate has them

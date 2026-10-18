@@ -42,8 +42,13 @@ def check_batches(con, cfg) -> list[str]:
         if b["time_budget_h"]:
             used = batches.elapsed_h(con, bid)
             if used and used > b["time_budget_h"]:
-                notify.send(con, f"overtime:{bid}", "warn", f"{bid}: {used:.1f} h used of a {b['time_budget_h']:g} h budget",
-                            "decide: let it finish, or reins ctl stop", cooldown_min=120, backoff=True)
+                if cfg.get("overtime_action") == "pause" and runner.live_processes(con, bid):
+                    runner.ctl(con, "pause", bid, f"over its time budget: {used:.1f} h of {b['time_budget_h']:g} h", system=True)
+                    notify.send(con, f"overtime:{bid}", "action", f"{bid} paused: {used:.1f} h of a {b['time_budget_h']:g} h budget",
+                                "resume (reins ctl resume) to let it finish, raise the budget, or reins ctl stop", cooldown_min=0)
+                else:
+                    notify.send(con, f"overtime:{bid}", "warn", f"{bid}: {used:.1f} h used of a {b['time_budget_h']:g} h budget",
+                                "decide: let it finish, or reins ctl stop", cooldown_min=120, backoff=True)
                 out.append(f"{bid}: over its time budget")
         for p in runner.live_processes(con, bid):
             if p["state"] == "running" and not runner._alive(p["pgid"]):

@@ -48,8 +48,16 @@ from .store import ReinsError, connect
 
 
 def project_root(cwd: Path) -> Path | None:
+    """The project's main checkout: the nearest reins.toml above cwd, mapped from a linked worktree (a candidate) back
+    to the repository it belongs to, so `reins dev ...` run inside a candidate acts on the project, not on the copy."""
+    import subprocess
     for d in (cwd, *cwd.parents):
         if (d / "reins.toml").is_file():
+            r = subprocess.run(["git", "-C", str(d), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                               capture_output=True, text=True)
+            common = Path(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+            if common and common.name == ".git" and (common.parent / "reins.toml").is_file():
+                return common.parent
             return d
     return None
 

@@ -334,6 +334,25 @@ class Dev(Base):
         self.assertEqual(rel["versions"], [r["version"]])
         self.assertFalse(os.access(Path(rel["worktree"]) / "judge" / "a.py", os.W_OK))
 
+    def test_finish_pushes_and_cli_resolves_the_main_repo_from_a_candidate(self):
+        from reins.cli import project_root
+        remote = self.tmp / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        g = lambda *a: subprocess.run(["git", "-C", str(self.repo), *a], check=True, capture_output=True)
+        g("remote", "add", "origin", str(remote)); g("push", "-q", "origin", "main")
+        (self.repo / "reins.toml").write_text((self.repo / "reins.toml").read_text().replace('[dev]\n', '[dev]\npush = "origin"\n'))
+        g("commit", "-qam", "push after finish")
+        r = dev.start(self.con, self.repo, "judge", "push", "publish the merge to the remote")
+        wt = Path(r["worktree"])
+        self.assertEqual(project_root(wt / "judge"), self.repo)              # a candidate maps to its project
+        (wt / "judge" / "a.py").write_text("x = 3\n")
+        subprocess.run(["git", "-C", str(wt), "commit", "-qam", "change"], check=True)
+        out = dev.finish(self.con, r["version"])
+        self.assertIn("pushed to origin", out["evidence"])
+        head = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "main"], capture_output=True, text=True).stdout
+        pushed = subprocess.run(["git", "--git-dir", str(remote), "rev-parse", "main"], capture_output=True, text=True).stdout
+        self.assertEqual(head, pushed)
+
     def test_other_sessions_worktree_is_refused(self):
         r = dev.start(self.con, self.repo, "judge", "a", "a test version that does a")
         os.environ["REINS_SESSION"] = "sess-B"

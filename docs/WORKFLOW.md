@@ -139,6 +139,9 @@ reins sentinel ack B STAGE --why "..."           # 确认是常态：阶段恢�
 ```
 阈值在 `config.toml [sentinel]`：`min_cases`、`reason_share`、`rate_jump`、`rate_margin`、`history`、`paid_idle_min`。
 
+超出时间预算（`reins batch open --time-budget H`）默认只提醒；`config.toml` 里 `overtime_action = "pause"` 改为直接暂停批次，
+等人决定续跑、加预算还是停止。同一问题持续存在时，提醒间隔逐次翻倍，最长一天一次；reins 从没接管过的 adopt 批次不再报"停滞"。
+
 ## 资源准入和被杀检测（2026-10-13）
 
 起因：两个批次（`mansfield-low-rework-20261012-3` / `-4`）并行，手写的 GPU 守卫只管 GPU，不管内存；每个托管判官进程约 11 GB，
