@@ -170,6 +170,12 @@ reins issue open --batch <batch> --cases F000101,F000102 --symptom "第 2 页的
 reins weights list · reins artifact list · reins spend · reins board serve
 ```
 
+## 开发 ReinsLite 本身
+
+ReinsLite 也由它自己管理：仓库里的 `reins.toml` 声明了四个模块（core、guard、board、docs）。改动从
+`reins dev start core 后缀 --about '...'` 开一个候选工作区开始，只能经 `reins dev finish` 合并，门禁就是单元测试，
+合并后自动推送到 `origin`。护栏拒绝直接改主目录，所以常驻服务永远不会跑着没提交的代码。
+
 ## 仓库结构
 
 ```

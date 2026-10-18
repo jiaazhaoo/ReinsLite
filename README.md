@@ -175,6 +175,13 @@ reins issue open --batch <batch> --cases F000101,F000102 --symptom "dates on pag
 reins weights list · reins artifact list · reins spend · reins board serve
 ```
 
+## Developing ReinsLite itself
+
+ReinsLite is managed by itself: its `reins.toml` declares four modules (core, guard, board, docs). A change starts
+with `reins dev start core SUFFIX --about '...'` in a candidate worktree and merges only through `reins dev finish`,
+whose gate is the unit-test suite; the merge is then pushed to `origin`. Editing the main checkout directly is refused
+by the guard, so the services never run uncommitted code.
+
 ## Repository layout
 
 ```

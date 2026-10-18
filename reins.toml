@@ -1,0 +1,25 @@
+# ReinsLite develops itself through reins (2026-10-18): change it in a candidate worktree (reins dev start MODULE SUFFIX
+# --about ...), merge with reins dev finish VERSION. The unit tests are the gate; the merge is pushed to origin.
+# No machine paths here: the repository is found from the current directory.
+project = "reinslite"
+
+[dev]
+gate = "python3 -m unittest discover -s tests"
+push = "origin"
+release_prefix = "rl"
+
+[modules.core]
+about = "registry, CLI, gateway, runner, watchdog, sentinel, resources and the contracts, with their tests"
+files = ["reins/*.py", "reins/glossary.toml", "bin/*", "tests/*"]
+
+[modules.guard]
+about = "Claude Code hooks: the session index and the guard rails"
+files = ["hooks/*"]
+
+[modules.board]
+about = "the board web app"
+files = ["reins/board.py", "reins/board_ui/*"]
+
+[modules.docs]
+about = "design and workflow docs, READMEs, examples, images, service templates"
+files = ["docs/*", "docs/images/*", "README.md", "README.zh-CN.md", "examples/*", "systemd/*", "pyproject.toml", "reins.toml"]
