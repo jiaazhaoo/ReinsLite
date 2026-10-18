@@ -103,5 +103,42 @@ class Production(unittest.TestCase):
         self.assertEqual(p["status"], "results_in")
 
 
+    def test_cost_includes_imported_history_and_time_counts_parallel_once(self):
+        a = self.batch("e-wp5", "production", "done", ["1", "2"], [("1", "auto", ""), ("2", "human", "c1")])
+        b = self.batch("e-wp5", "rework", "done", ["2"], [("2", "auto", "")])
+        wd = self.con.execute("SELECT work_dir FROM batch WHERE batch_id=?", (a,)).fetchone()[0]
+        with tx(self.con):
+            self.con.execute("INSERT INTO spend_import_file (import_id, at, project, path, source, rows, usd) VALUES "
+                             "('i1', '2026-10-01T00:00:00', 'p', '/x', 'test', 2, 3.5)")
+            for label, usd in ((wd.split("/", 2)[-1], 2.0), ("somewhere/else", 1.5)):      # the end of a's work dir; not ours
+                self.con.execute("INSERT INTO spend_import (import_id, project, day, provider, model, purpose, batch_label, amount,"
+                                 " priced) VALUES ('i1', 'p', '2026-10-09', 'x', 'm', 'check: judges', ?, ?, 'table')", (label, usd))
+            self.con.execute("INSERT INTO spend (at, batch_id, stage, provider, model, amount, priced) VALUES "
+                             "('2026-10-10T12:00:00', ?, 'check', 'x', 'm', 1.0, 'provider')", (b,))
+            for bid, s_, e_ in ((a, "2026-10-10T10:00:00", "2026-10-10T14:00:00"), (b, "2026-10-10T12:00:00", "2026-10-10T16:00:00")):
+                self.con.execute("INSERT INTO process (batch_id, stage, pgid, supervisor_pid, cmd, cwd, log_path, state, started, ended)"
+                                 " VALUES (?, '*', 1, 1, 'x', '/', '/x', 'exited', ?, ?)", (bid, s_, e_))
+            # a's check stage spans 10:00-20:00 but its process ran 10:00-14:00: 4 h, not 10
+            self.con.execute("UPDATE batch_stage SET started='2026-10-10T10:00:00', ended='2026-10-10T20:00:00', status='done'"
+                             " WHERE batch_id=? AND stage='check'", (a,))
+        p = production.view(self.con)["packages"][0]
+        self.assertEqual(p["spent"], 3.0)                                       # 2.0 imported + 1.0 ledger
+        self.assertEqual(p["cost_by_stage"], [{"stage": "check", "usd": 3.0}])
+        self.assertEqual(p["run_h"], 6.0)                                       # 10-16, the overlap once
+        self.assertEqual(p["time_by_stage"], [{"stage": "check", "h": 4.0}])
+        self.assertEqual(p["per_case"], 1.5)
+        v = production.view(self.con)
+        self.assertEqual(v["totals"]["ai_all"], 4.5)                            # everything spent, ours or not
+        x = self.batch("e-wp5", "experiment", "done", ["1"])
+        with tx(self.con):
+            self.con.execute("INSERT INTO spend (at, batch_id, stage, provider, model, amount, priced) VALUES "
+                             "('2026-10-10T12:00:00', ?, 'check', 'x', 'm', 0.5, 'provider')", (x,))
+        v = production.view(self.con)
+        d = v["dev"]                                                            # development = everything production did not spend
+        self.assertEqual(d["spent"], 2.0)
+        self.assertEqual({k["kind"]: k["usd"] for k in d["by_kind"]}, {"history": 1.5, "experiment": 0.5})
+        self.assertEqual(round(v["totals"]["spent"] + d["spent"], 2), v["totals"]["ai_all"])   # the two add up to all of it
+
+
 if __name__ == "__main__":
     unittest.main()
