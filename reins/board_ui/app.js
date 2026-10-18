@@ -4,7 +4,7 @@
 const I18N = {
   zh: {
     overview: "概览", pipeline: "流程图谱", runs: "运行", dev: "开发", cost: "成本", toolbox: "工具箱",
-    workspace: "工作区", governance: "治理", updated: "更新于", live: "实时", sub: "开发与运行的缰绳",
+    workspace: "工作区", governance: "治理", prodlink: "生产进度（给管理层）", updated: "更新于", live: "实时", sub: "开发与运行的缰绳",
     ov_sub: "现在在跑什么、在改什么、花了多少", running_now: "运行中", developing: "开发中", spend_today: "今日花费",
     lowest_balance: "最低余额", paused: "暂停", need_action: "需要处理", last_release: "最近发布", of_daily: "日上限",
     flow: "流程", flow_sub: "流水线按顺序做哪几步，每步上有多少批次", view_map: "查看图谱", runs_now: "正在运行", dev_now: "正在开发",
@@ -56,7 +56,7 @@ const I18N = {
   },
   en: {
     overview: "Overview", pipeline: "Pipeline", runs: "Runs", dev: "Development", cost: "Cost", toolbox: "Toolbox",
-    workspace: "Workspace", governance: "Governance", updated: "Updated", live: "Live", sub: "reins for dev and runs",
+    workspace: "Workspace", governance: "Governance", prodlink: "Production (for managers)", updated: "Updated", live: "Live", sub: "reins for dev and runs",
     ov_sub: "What runs, what changes, what it costs", running_now: "Running", developing: "In development", spend_today: "Spent today",
     lowest_balance: "Lowest balance", paused: "paused", need_action: "need action", last_release: "Last release", of_daily: "daily cap",
     flow: "Pipeline", flow_sub: "the steps of the pipeline, in order, with what stands at each", view_map: "Open map", runs_now: "Running now", dev_now: "In development",
@@ -513,7 +513,8 @@ function render() {
   document.getElementById("brand-sub").textContent = t("sub");
   const theme = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
   document.getElementById("theme").innerHTML = icon(theme === "dark" ? "sun" : "moon");
-  document.getElementById("lang").innerHTML = icon("globe") + (LANG === "zh" ? "EN" : "中文");
+  document.querySelectorAll("#lang button").forEach((b) => b.classList.toggle("on", b.dataset.lang === LANG));
+  document.getElementById("prodlink").innerHTML = `${icon("runs")}<span>${esc(t("prodlink"))}</span><span class="ext">↗</span>`;
   if (!S) { document.getElementById("page").innerHTML = '<div class="empty">…</div>'; return; }
   const p = S.pipelines[0];
   document.getElementById("crumbs").innerHTML = `${p ? `<span>${esc(p.project || "")}</span><span class="sep">/</span>` : ""}<b>${esc(t(v))}</b>`;
@@ -553,7 +554,10 @@ document.getElementById("theme").onclick = () => {
   store.set("reins.theme", document.documentElement.dataset.theme);
   render();
 };
-document.getElementById("lang").onclick = () => { LANG = LANG === "zh" ? "en" : "zh"; store.set("reins.lang", LANG); document.documentElement.lang = LANG; render(); };
+document.getElementById("lang").onclick = (e) => {
+  const b = e.target.closest("button[data-lang]"); if (!b) return;
+  LANG = b.dataset.lang; store.set("reins.lang", LANG); document.documentElement.lang = LANG; render();
+};
 document.getElementById("scrim").onclick = () => setDrawer(false);
 addEventListener("keydown", (e) => { if (e.key === "Escape") setDrawer(false); });
 addEventListener("hashchange", () => { setDrawer(false); scrollTo(0, 0); render(); });

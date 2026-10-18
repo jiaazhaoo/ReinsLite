@@ -6,6 +6,8 @@
     开发 dev        changes in progress, released versions and what each did
     成本 cost       budget pool, provider balances, spend by batch
     工具箱 toolbox  every prompt / model / weights / tool the workflow uses, by shelf, searchable
+    /production    a page of its own for managers: production and rework only, progress and results per work
+                   package (reins/production.py), no commands or versions
 
     reins board serve [--port 8791]        read-only, refreshes every 30 s, data from the registry only
 No session ids, paths or timelines are shown (user, 2026-10-07): sessions are only the index behind these blocks.
@@ -499,12 +501,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
-        if path.startswith("/api/state"):
+        if path.startswith("/api/"):
+            from . import production
+            fn = {"/api/state": state, "/api/production": production.view}.get(path.rstrip("/"), state)
             with closing(connect()) as con:                                     # one per request: closed, or fds leak
-                body = json.dumps(state(con), ensure_ascii=False, default=str).encode()
+                body = json.dumps(fn(con), ensure_ascii=False, default=str).encode()
             ctype = "application/json"
         else:
-            f = UI / (path.lstrip("/") or "index.html")
+            name = path.strip("/")
+            name = "production.html" if name in ("production", "boss") else name   # the manager's page: production only
+            f = UI / (Path(name).name or "index.html")              # /production/app.css is /app.css
             if f.parent != UI or not f.is_file():
                 f = UI / "index.html"                         # hash routes all land on the page
             body, ctype = f.read_bytes(), TYPES.get(f.suffix, "application/octet-stream")

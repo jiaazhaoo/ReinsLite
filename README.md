@@ -49,6 +49,8 @@ A pixel crab per stage. Click a stage to see the code version it runs, the batch
 
 Running batches show a stage stepper, five numbers and whatever needs a person (an approval, an open issue).
 
+Managers get a page of their own, `/production`: production and rework batches only, one block per work package with how many cases have a result, what the results are (from the file a project names in `[results]`), why the others could not be processed, the cost and the expected finish. No commands, versions or sessions; Chinese / English switch.
+
 <p align="center"><img src="docs/images/runs-en.png" alt="Runs" width="100%"></p>
 
 <table>

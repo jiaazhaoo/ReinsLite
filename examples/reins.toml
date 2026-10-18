@@ -32,6 +32,24 @@ probe = "python3 tools/progress.py {work_dir}"          # one screen of progress
 programs = ["run_all.sh", "form_extract.ocr.batch"]     # only `reins run` may start these (scripts and python -m modules)
 stages = ["prepare", "ocr", "extract", "check"]
 
+
+# the production page (board /production, for managers): what each case ended as, read from the batch's work dir
+[results]
+file = "out/results.csv"
+key = "form_id"
+value = "status"                      # e.g. accepted / review
+detail = "review_reason"              # optional breakdown of a value
+good = ["accepted"]                   # finished without a person
+[[results.reasons]]                   # a skip / fail reason -> one word for managers (first match wins)
+match = "no scan|empty file"
+en = "No scan"
+zh = "没有扫描件"
+
+[labels]                              # stage names and result values, per language, on the board pages
+ocr = { en = "Read the text", zh = "识别文字" }
+accepted = { en = "Accepted", zh = "通过" }
+review = { en = "Needs a person", zh = "需人工复核" }
+
 # what a stage or a step needs; reins holds a claim back while it would go past the machine budget (config.toml
 # [resources]) and keeps steps that share an exclusive tag apart (reins resources shows the ledger)
 [resources.ocr_gpu]
