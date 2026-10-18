@@ -312,6 +312,14 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--purpose", required=True); x.add_argument("--module"); x.add_argument("--version"); x.add_argument("--batch")
     x.add_argument("--id", help="session id (default: this session)")
     se.add_parser("conflicts")
+    sn = sub.add_parser("sentinel", help="results that look wrong at a stage end (C8b)").add_subparsers(dest="sub", required=True)
+    x = sn.add_parser("check"); x.add_argument("batch"); x.add_argument("stage")
+    x = sn.add_parser("ack"); x.add_argument("batch"); x.add_argument("stage"); x.add_argument("--why", required=True)
+    x = sub.add_parser("tell", help="message another session: the owner of a batch, or one session by id")
+    x.add_argument("--batch"); x.add_argument("--to"); x.add_argument("--title", required=True); x.add_argument("body", nargs="?", default="")
+    x = sub.add_parser("inbox", help="messages other sessions sent to this one"); x.add_argument("--all", action="store_true")
+    x = se.add_parser("inherit", help="take over the batches and worktrees of the session this one was forked from")
+    x.add_argument("--from", dest="src", help="session id (default: the parent of this session)"); x.add_argument("--why", default="")
     iss = sub.add_parser("issue").add_subparsers(dest="sub", required=True)
     x = iss.add_parser("open"); x.add_argument("--batch", required=True); x.add_argument("--cases", required=True)
     x.add_argument("--symptom", required=True); x.add_argument("--stage")
@@ -495,6 +503,34 @@ def main(argv: list[str] | None = None) -> int:
                             base_missed_error=args.base_missed_error, base_review_load=args.base_review_load,
                             golden_regressions=args.golden_regressions, diff_path=args.diff, skipped=args.skipped)
             print(f"gate {r['status']}"); return 0 if r["status"] == "green" else 1
+        if args.cmd == "sentinel":
+            from . import sentinel
+            if args.sub == "check":
+                f = sentinel.findings(con, args.batch, args.stage)
+                for x in f:
+                    print(f"  {x['check']}: {x['detail']}  ({len(x['cases'])} cases)")
+                print("nothing stands out" if not f else f"{len(f)} finding(s)")
+                return 1 if f else 0
+            r = sentinel.ack(con, args.batch, args.stage, args.why)
+            print(f"acknowledged {', '.join(r['acknowledged'])}" + ("; stage done again -- resume the batch (reins ctl resume / reins run)" if r["stage_done"] else ""))
+            return 0
+        if args.cmd in ("tell", "inbox"):
+            from . import inbox
+            from .store import session as this_session
+            if args.cmd == "tell":
+                if bool(args.batch) == bool(args.to):
+                    raise ReinsError("tell: give exactly one of --batch B (its owner) or --to SESSION")
+                if args.batch:
+                    mid = inbox.to_batch_owner(con, args.batch, args.title, args.body)
+                    print(f"message {mid} to the owner of {args.batch}" if mid else f"{args.batch} has no other owner to tell")
+                else:
+                    print(f"message {inbox.send(con, args.to, args.title, args.body)} sent")
+            else:
+                sid = this_session()
+                rows = [dict(r) for r in con.execute("SELECT * FROM session_message WHERE to_session=? ORDER BY id DESC LIMIT 50", (sid,))] \
+                    if args.all else inbox.unread(con, sid)
+                print(inbox.render(rows) if rows else "no messages")
+            return 0
         if args.cmd == "session":
             from .store import session as this_session
             if args.sub == "list":
@@ -513,6 +549,11 @@ def main(argv: list[str] | None = None) -> int:
                 if not sid:
                     raise ReinsError("no session id in the environment; pass --id")
                 sessions.bind(con, sid, args.role, args.purpose, args.module, args.version, args.batch); print("bound")
+            elif args.sub == "inherit":
+                r = sessions.inherit(con, this_session(), args.src, args.why)
+                print(f"inherited from {r['from'][:8]}: {len(r['leases'])} leases, batches {r['batches'] or 'none'}")
+                for l in r["leases"]:
+                    print(f"  {l}")
             else:
                 for c in sessions.conflicts(con):
                     print(f"{c['kind']:<16} {', '.join(x[:8] for x in c['sessions']):<20} {c['what']}  {c['detail']}")

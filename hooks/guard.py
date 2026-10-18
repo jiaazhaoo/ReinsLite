@@ -29,12 +29,13 @@ HOME = Path(os.environ.get("REINS_HOME", DEFAULT_HOME))
 
 
 def _frozen() -> list[re.Pattern]:
-    """Frozen paths: benchmarks, the gateway cache, release trees, plus the machine's own (config.toml frozen_paths)."""
+    """Frozen by pattern: release trees, the gateway cache, plus the machine's own (config.toml frozen_paths). Frozen
+    benchmarks come from the registry (their version directories), so scratch space under the bench root stays usable."""
     pats = [r"/[^/ ]+-rel-[^/ ]+/"]
     try:
         from reins.store import config
         cfg = config()
-        pats += ["^" + re.escape(str(Path(cfg["bench_root"]))) + "/", "^" + re.escape(str(HOME / "cache")) + "/"]
+        pats += ["^" + re.escape(str(HOME / "cache")) + "/"]
         pats += list(cfg.get("frozen_paths") or [])
     except Exception:                                                       # noqa: BLE001  (fail open)
         pass
@@ -42,7 +43,6 @@ def _frozen() -> list[re.Pattern]:
 
 
 FROZEN = _frozen()
-SWITCH = re.compile(r"git\b[^|;&]*\b(checkout|switch)\b")
 WRITE_PROGRAMS = {"tee", "cp", "mv", "rm", "chmod", "chown", "mkdir", "touch", "truncate", "ln", "rsync", "sed"}
 MODE_FIRST = {"chmod", "chown"}                 # first positional is a mode / owner, the targets follow
 
@@ -63,9 +63,39 @@ def _registry_frozen() -> list[str]:
 
 
 def frozen(path: str) -> bool:
+    return frozen_reason(path) is not None
+
+
+def frozen_reason(path: str) -> str | None:
+    """Why a path may not be written, with where the write belongs instead; None when it may."""
+    rel = re.search(r"^(.*/[^/ ]+-rel-[^/ ]+)(/|$)", path)
+    if rel:
+        tree = rel.group(1)
+        dirs = _batch_dirs_for(tree)
+        return (f"{tree} is a release tree: production batches run from it and it never changes. Write outputs to the "
+                f"batch's work dir{' (' + ', '.join(dirs) + ')' if dirs else ' under /data'}; change code with "
+                f"reins dev start MODULE SUFFIX --about ...")
+    for f in _registry_frozen():
+        if path == f or path.startswith(f.rstrip("/") + "/"):
+            return (f"{f} is frozen (a benchmark version or a registered deliverable). Make a new version instead: "
+                    f"reins bench bump NAME, or reins deliver register for a new deliverable")
     if any(p.search(path) for p in FROZEN):
-        return True
-    return any(path == f or path.startswith(f.rstrip("/") + "/") for f in _registry_frozen())
+        return f"{path} is in a frozen path (gateway cache or config.toml frozen_paths)"
+    return None
+
+
+def _batch_dirs_for(tree: str) -> list[str]:
+    """Work dirs of open batches that run from this release tree (where their outputs belong)."""
+    db = HOME / "reins.db"
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        rel = con.execute("SELECT name FROM release WHERE worktree=?", (tree,)).fetchone()
+        if not rel:
+            return []
+        return [r[0] for r in con.execute("SELECT DISTINCT work_dir FROM batch WHERE release_name=? AND work_dir IS NOT NULL"
+                                          " AND status IN ('open','running','paused') LIMIT 3", (rel[0],))]
+    except sqlite3.Error:
+        return []
 
 
 def other_sessions_worktree(path: str) -> str | None:
@@ -251,28 +281,65 @@ def check_bash(cmd: str) -> str | None:
     if where and managed_repo(where):
         return "merging into or pushing main is done by `reins dev finish VERSION` after the gate, never by hand"
     cwd = os.getcwd()
-    if SWITCH.search(cmd):
+    if _switches_branch(cmd):
         o = other_sessions_worktree(cwd)
         if o or frozen(cwd + "/"):
             return f"no branch switching inside {o or cwd}: it is a release/batch tree or another session's worktree"
-    for target in write_targets(cmd):
-        target = os.path.abspath(os.path.join(cwd, target))
-        if frozen(target):
-            return f"{target} is frozen (benchmark / release / delivery). Create a new version instead of changing it"
-        o = other_sessions_worktree(target)
+    names = _assignments(cmd)
+    for raw in write_targets(cmd):
+        target = _expand(raw, names)
+        if target is None:
+            continue                                   # an unexpanded $VAR: the hook cannot know the path (fail open)
+        try:
+            target = os.path.abspath(os.path.join(cwd, target))
+            why = frozen_reason(target)
+            if why:
+                return f"writing {target}: {why}"
+            o = other_sessions_worktree(target)
+        except (OSError, ValueError):
+            continue
         if o:
-            return f"{target} is inside {o}; start your own: reins dev start MODULE SUFFIX --about ..."
+            return (f"{target} is inside {o}. Start your own (reins dev start MODULE SUFFIX --about ...), or, if this "
+                    f"session continues that one (a fork), take it over: reins session inherit")
     return None
+
+
+ASSIGN = re.compile(r"""(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|)]+)""")
+
+
+def _assignments(cmd: str) -> dict[str, str]:
+    """NAME=value assignments in the command itself (W=/data/x; ... > $W/out), outside here-doc bodies."""
+    from reins.sessions import strip_heredocs
+    out = {}
+    for m in ASSIGN.finditer(strip_heredocs(cmd)):
+        out[m.group(1)] = m.group(2).strip("'\"")
+    return out
+
+
+def _expand(target: str, names: dict[str, str]) -> str | None:
+    """$NAME / ${NAME} from the command's own assignments, then the environment; None if a variable stays unknown."""
+    def sub(m):
+        k = m.group(1) or m.group(2)
+        return names.get(k, os.environ.get(k, m.group(0)))
+    for _ in range(3):
+        target = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)", sub, target)
+    return None if "$" in target or "`" in target else target
+
+
+def _switches_branch(cmd: str) -> bool:
+    """`git checkout BRANCH` / `git switch` among the programs executed (not a word in a message or a file path)."""
+    from reins.sessions import git_verb, segments
+    for seg in segments(cmd):
+        a = seg["argv"]
+        if Path(a[0]).name == "git" and git_verb(a[1:]) in ("checkout", "switch") and "--" not in a:
+            return True
+    return False
 
 
 def write_targets(cmd: str) -> list[str]:
     """Paths a command writes: redirection targets and the file arguments of the writing programs (by argv)."""
-    from reins.sessions import segments
-    out = []
-    for m in re.finditer(r"(?<![<>&])>>?\s*(\S+)", cmd):          # > file, >> file (not 2>&1)
-        t = m.group(1).strip("'\"")
-        if t not in ("/dev/null", "&1", "&2") and not t.startswith("&"):
-            out.append(t)
+    from reins.sessions import redirect_targets, segments
+    out = redirect_targets(cmd)                                   # by tokens: quotes and here-doc bodies are text
     for seg in segments(cmd):
         a = seg["argv"]
         prog = Path(a[0]).name
@@ -291,11 +358,13 @@ def write_targets(cmd: str) -> list[str]:
 
 def check_edit(path: str) -> str | None:
     p = os.path.abspath(path)
-    if frozen(p):
-        return f"{p} is frozen (benchmark / release / delivery). Create a new version instead of changing it"
+    why = frozen_reason(p)
+    if why:
+        return f"editing {p}: {why}"
     o = other_sessions_worktree(p)
     if o:
-        return f"{p} is inside {o}; start your own: reins dev start MODULE SUFFIX --about ..."
+        return (f"{p} is inside {o}. Start your own (reins dev start MODULE SUFFIX --about ...), or, if this session "
+                f"continues that one (a fork), take it over: reins session inherit")
     return managed_main_or_unheld(p)
 
 

@@ -223,6 +223,11 @@ def _supervise(con, spec: dict) -> int:
                 notify.send(con, f"stage_incomplete:{batch}:{stage}", "action",
                             f"{batch}: {stage} exited 0 but the case ledger is incomplete", str(e), cooldown_min=0)
             return 0
+        held = con.execute("SELECT status, status_reason FROM batch WHERE batch_id=?", (batch,)).fetchone()
+        if held and held["status"] == "paused":       # paused meanwhile (the sentinel, a person): retrying hits the same wall
+            notify.send(con, f"failed:{batch}:{stage}", "action", f"{batch}/{stage} exited {code}; not retried (batch paused)",
+                        f"{held['status_reason'] or ''}\nlog: {spec['log']}", cooldown_min=0)
+            return code
         if attempt <= spec["retries"]:
             notify.send(con, f"retry:{batch}:{stage}", "warn", f"{batch}/{stage} exited {code}; retry {attempt}/{spec['retries']}",
                         f"log: {spec['log']}", cooldown_min=0)

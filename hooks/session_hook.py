@@ -51,6 +51,10 @@ def main() -> int:
         con = connect()
         if ev == "SessionStart":
             text = sessions.start(con, sid, cwd, data.get("transcript_path"), data.get("source", "startup"))
+            from reins import inbox
+            msgs = inbox.unread(con, sid)
+            if msgs:
+                text += "\n" + inbox.render(msgs)
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}))
             return 0
         if ev == "SessionEnd":
@@ -60,6 +64,12 @@ def main() -> int:
             from reins.store import now, tx
             with tx(con):
                 con.execute("UPDATE session SET last_seen=?, status='active' WHERE id=?", (now(), sid))
+            if ev == "UserPromptSubmit":                      # deliver what other sessions sent to this one
+                from reins import inbox
+                msgs = inbox.unread(con, sid)
+                if msgs:
+                    print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                                                             "additionalContext": inbox.render(msgs)}}))
             return 0
         tool, inp = data.get("tool_name", ""), data.get("tool_input") or {}
         if ev == "PreToolUse" and tool == "Bash":

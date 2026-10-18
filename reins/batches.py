@@ -354,8 +354,9 @@ def stage_end(con, batch: str, stage: str, checks: list[tuple[str, bool, str]] |
     a judge answer has one ...). One failing check ends the stage `failed`, not `done`: the batch cannot become done
     on it, the next stage cannot start, and the stage can be started again once the gap is filled (2026-10-10: a
     check stage closed done=1839 while judges had answered 1577/1745 and the boundary recheck 0/399)."""
-    checks = checks or []
-    bad = [c for c in checks if not c[1]]
+    from . import sentinel
+    checks = list(checks or [])
+    found = []
     with tx(con):
         b = get(con, batch)
         _live(b)
@@ -367,6 +368,9 @@ def stage_end(con, batch: str, stage: str, checks: list[tuple[str, bool, str]] |
         if led["missing"]:
             raise ReinsError(f"stage {stage} cannot end: {len(led['missing'])} of {led['n_cases']} cases have no "
                              f"outcome (first: {', '.join(led['missing'][:10])}). Mark them done/skipped/failed.")
+        s_checks, found = sentinel.stage_checks(con, batch, stage)     # results that look wrong (C8b)
+        checks += s_checks
+        bad = [c for c in checks if not c[1]]
         t = now()
         con.executemany("INSERT INTO stage_check (at, batch_id, stage, check_name, ok, detail) VALUES (?,?,?,?,?,?)",
                         [(t, batch, stage, n, int(o), d) for n, o, d in checks])
@@ -388,6 +392,8 @@ def stage_end(con, batch: str, stage: str, checks: list[tuple[str, bool, str]] |
             _event(con, batch, "outcome_without_input",
                    f"{stage}: {len(orphans)} cases done here were skipped or failed in an earlier stage (first: {orphans[:5]})")
         _maybe_done(con, batch)
+    sentinel.act(con, batch, stage, found)
+    led["sentinel"] = found
     if bad:
         from . import notify
         notify.send(con, f"stage_failed:{batch}:{stage}", "action", f"{batch}: stage {stage} failed its checks",

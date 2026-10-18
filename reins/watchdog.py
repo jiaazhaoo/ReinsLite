@@ -43,7 +43,7 @@ def check_batches(con, cfg) -> list[str]:
             used = batches.elapsed_h(con, bid)
             if used and used > b["time_budget_h"]:
                 notify.send(con, f"overtime:{bid}", "warn", f"{bid}: {used:.1f} h used of a {b['time_budget_h']:g} h budget",
-                            "decide: let it finish, or reins ctl stop", cooldown_min=120)
+                            "decide: let it finish, or reins ctl stop", cooldown_min=120, backoff=True)
                 out.append(f"{bid}: over its time budget")
         for p in runner.live_processes(con, bid):
             if p["state"] == "running" and not runner._alive(p["pgid"]):
@@ -61,10 +61,14 @@ def check_batches(con, cfg) -> list[str]:
             m_start = _minutes_since(st["started"])
             recent = [m for m in (m_ev, m_out) if m is not None]
             quiet = min(recent) if recent else m_start
+            never_run = (st["note"] or "").startswith("adopted") and not con.execute(
+                "SELECT 1 FROM process WHERE batch_id=? LIMIT 1", (bid,)).fetchone()
+            if never_run:
+                continue                                 # adopted, never run by reins: it can neither see nor act on it
             if quiet is not None and quiet > cfg["stall_minutes"]:
                 notify.send(con, f"stall:{bid}:{st['stage']}", "warn",
                             f"{bid}/{st['stage']}: no progress for {quiet:.0f} min",
-                            f"no new case outcome or output file. log: {st['log_path']}", cooldown_min=60)
+                            f"no new case outcome or output file. log: {st['log_path']}", cooldown_min=60, backoff=True)
                 out.append(f"{bid}/{st['stage']}: stalled {quiet:.0f} min")
             if st["time_limit_s"]:
                 late = [r[0] for r in con.execute(
@@ -73,14 +77,14 @@ def check_batches(con, cfg) -> list[str]:
                 if late:
                     notify.send(con, f"late:{bid}:{st['stage']}", "warn",
                                 f"{bid}/{st['stage']}: {len(late)} case(s) past the {st['time_limit_s']} s limit",
-                                ", ".join(late[:10]), cooldown_min=30)
+                                ", ".join(late[:10]), cooldown_min=30, backoff=True)
                     out.append(f"{bid}/{st['stage']}: {len(late)} late cases")
             if st["paid"]:
                 try:
                     urllib.request.urlopen(f"http://127.0.0.1:{cfg['gateway_port']}/health", timeout=3)
                 except Exception:                                               # noqa: BLE001
                     notify.send(con, "gateway_down", "action", "paid gateway is not running",
-                                f"{bid}/{st['stage']} needs it: reins gateway serve", cooldown_min=30)
+                                f"{bid}/{st['stage']} needs it: reins gateway serve", cooldown_min=30, backoff=True)
                     out.append("gateway down")
     return out
 
@@ -158,7 +162,28 @@ def once(con=None) -> list[str]:
     cfg = config()
     from . import resources
     n = resources.cleanup(con)                                  # claims of processes that are gone
-    return ([f"released {n} resource claim(s) of ended processes"] if n else []) + check_batches(con, cfg) + check_machine(con, cfg) + poll_balances_due(con, cfg)
+    from . import sentinel
+    return ([f"released {n} resource claim(s) of ended processes"] if n else []) + check_batches(con, cfg) + \
+        check_machine(con, cfg) + poll_balances_due(con, cfg) + release_stale_reservations(con, cfg) + sentinel.watch_running(con)
+
+
+def release_stale_reservations(con, cfg) -> list[str]:
+    """Holds no gateway call will settle: older than `stale_reserve_min` (a call that crashed mid-flight, a gateway
+    restart). Left open they count against the batch cap and the pool forever."""
+    from .store import tx
+    import datetime as _dt
+    cutoff = (_dt.datetime.now() - _dt.timedelta(minutes=cfg.get("stale_reserve_min", 30))).isoformat(timespec="seconds")
+    rows = con.execute("SELECT id, batch_id, amount FROM spend_reserve WHERE state='open' AND at<?", (cutoff,)).fetchall()
+    if not rows:
+        return []
+    with tx(con):
+        con.executemany("UPDATE spend_reserve SET state='released' WHERE id=? AND state='open'", [(r["id"],) for r in rows])
+        for b in {r["batch_id"] for r in rows}:
+            amt = sum(r["amount"] for r in rows if r["batch_id"] == b)
+            con.execute("INSERT INTO batch_event (at, batch_id, event, detail) VALUES (?,?, 'reserve_released', ?)",
+                        (_dt.datetime.now().isoformat(timespec="seconds"), b, f"{sum(1 for r in rows if r['batch_id'] == b)} "
+                         f"stale holds (${amt:.3f}) released: no call settled them"))
+    return [f"released {len(rows)} stale spend hold(s)"]
 
 
 def run(interval: int = 60) -> None:

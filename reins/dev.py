@@ -139,6 +139,12 @@ def start(con, repo: Path, module: str, suffix: str, about: str, from_batch: str
         ov = sorted(mine & theirs)
         if ov:
             warnings.append(f"{other['version']} (session {other['session']}) also works on {ov[:5]}")
+            if other["session"] and other["session"] != session():
+                from . import inbox
+                wt_owner = leases.holder_of(con, f"worktree:{repo.parent / (repo.name + '-wt-' + other['version'])}")
+                inbox.send(con, wt_owner or other["session"], f"{version} also changes files of your {other['version']}",
+                           f"{', '.join(ov[:5])}" + (f"; reason given: {overlap_ok}" if overlap_ok else "")
+                           + ". Agree an order; the second to finish rebases.")
     git(repo, "worktree", "add", "-b", branch, str(wt), "main")
     with tx(con):
         con.execute("UPDATE module_version SET worktree=?, branch=?, commit_sha=? WHERE version=?",

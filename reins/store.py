@@ -514,8 +514,10 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     _rename_legacy(con)
     con.executescript(SCHEMA)
     _migrate(con)
-    from . import artifacts, issues, resources
+    from . import artifacts, inbox, issues, resources, sentinel
     issues.ensure(con)
+    inbox.ensure(con)
+    sentinel.ensure(con)
     artifacts.ensure(con)
     resources.ensure(con)
     return con

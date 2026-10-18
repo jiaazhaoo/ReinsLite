@@ -66,13 +66,54 @@ def _unquoted_lines(cmd: str) -> list[str]:
     return out
 
 
-def segments(cmd: str) -> list[dict]:
-    """Each command segment: {"argv": [program, args...], "detached": bool} after env assignments and wrappers.
-    Operators are recognised only outside quotes; here-doc bodies are data, not commands."""
+HEREDOC = re.compile(r"<<(-?)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
+
+
+def strip_heredocs(cmd: str) -> str:
+    """The command without here-doc bodies: a body is data (Python, SQL, JSON ...), not shell. The line that opens a
+    here-doc and every command after the closing delimiter stay. Quotes are tracked so a `<<` inside a quoted string
+    is not a here-doc; several here-docs opened on one line close in order."""
+    out, pending, q = [], [], None
+    for line in cmd.split("\n"):
+        if pending:
+            delim, dash = pending[0]
+            if (line.lstrip("\t") if dash else line).rstrip() == delim:
+                pending.pop(0)
+            continue
+        j, markers = 0, []
+        while j < len(line):
+            ch = line[j]
+            if q:
+                if ch == "\\" and q == '"':
+                    j += 2; continue
+                if ch == q:
+                    q = None
+                j += 1; continue
+            if ch == "\\":
+                j += 2; continue
+            if ch in ("'", '"'):
+                q = ch; j += 1; continue
+            if ch == "#" and (j == 0 or line[j - 1].isspace()):
+                break                                              # the rest of the line is a comment
+            if line.startswith("<<", j) and not line.startswith("<<<", j):
+                m = HEREDOC.match(line, j)
+                if m:
+                    markers.append((m.group(3), m.group(1) == "-")); j = m.end(); continue
+            j += 1
+        out.append(line)
+        pending.extend(markers)
+    return "\n".join(out)
+
+
+_OPS = (";", "&&", "||", "|", "&", "|&")
+
+
+def _parse(cmd: str) -> tuple[list[dict], list[str]]:
+    """(segments, redirection targets). Operators and redirections count only outside quotes and outside here-doc
+    bodies: `--symptom "a -> b"` or a Python `x>80` in a here-doc writes no file."""
     import shlex
-    cmd = re.split(r"<<-?\s*['\"]?\w+['\"]?", cmd, maxsplit=1)[0]
-    out = []
-    for line in _unquoted_lines(cmd):
+    out, writes = [], []
+    for line in _unquoted_lines(strip_heredocs(cmd)):
         if not line.strip():
             continue
         lex = shlex.shlex(line, posix=True, punctuation_chars=";&|<>()")
@@ -100,15 +141,37 @@ def segments(cmd: str) -> list[dict]:
                     break
             if t:
                 out.append({"argv": t, "detached": det})
-        for tok in toks:
-            if tok in (";", "&&", "||", "|", "&"):
+        i = 0
+        while i < len(toks):
+            tok = toks[i]
+            if tok in _OPS:
                 flush(tok == "&")
             elif tok in ("(", ")"):
-                continue
+                pass
+            elif re.fullmatch(r"[<>&|]+", tok) and ("<" in tok or ">" in tok):
+                nxt = toks[i + 1] if i + 1 < len(toks) else None
+                if cur and cur[-1].isdigit():
+                    cur.pop()                                      # the fd number of 2>, 1>> ...
+                if ">" in tok and nxt is not None and not (tok.endswith("&") and re.fullmatch(r"\d+|-", nxt)):
+                    writes.append(nxt)                             # > >> &> >| : a file is written
+                i += 2
+                continue                                           # < << <<< and fd duplication write nothing
             else:
                 cur.append(tok)
+            i += 1
         flush(False)
-    return out
+    return out, writes
+
+
+def segments(cmd: str) -> list[dict]:
+    """Each command segment: {"argv": [program, args...], "detached": bool} after env assignments and wrappers.
+    Operators are recognised only outside quotes; here-doc bodies are data, not commands (what follows them is)."""
+    return _parse(cmd)[0]
+
+
+def redirect_targets(cmd: str) -> list[str]:
+    """Files a command writes through shell redirection (outside quotes and here-doc bodies), /dev/null excluded."""
+    return [w for w in _parse(cmd)[1] if w not in ("/dev/null", "/dev/stdout", "/dev/stderr")]
 
 
 def runs_pipeline(argv: list[str], programs: tuple[set[str], set[str]] | None = None) -> bool:
@@ -370,6 +433,71 @@ def bind(con, sid: str, role: str, purpose: str, module: str | None = None, vers
 
 
 # ------------------------------------------------------------------ views
+INHERIT_QUIET_MIN = 10        # the session handing over must have been quiet this long
+INHERIT_ABANDONED_H = 6       # any session may take over from one idle this long (or ended), with a reason
+
+
+def ancestors(con, sid: str) -> list[str]:
+    out, cur = [], sid
+    for _ in range(20):
+        row = con.execute("SELECT parent FROM session WHERE id=?", (cur,)).fetchone()
+        if not row or not row["parent"] or row["parent"] in out:
+            break
+        out.append(row["parent"]); cur = row["parent"]
+    return out
+
+
+def inherit(con, me: str, src: str | None = None, why: str = "") -> dict:
+    """This session takes over what another holds: worktree and batch leases, batch ownership, its binding. For a fork
+    continuing its parent (the parent quiet for a while), or for anyone picking up an abandoned session (with a reason).
+    Two live sessions never own the same thing: an active source is refused."""
+    if not me:
+        raise ReinsError("no session id in the environment")
+    anc = ancestors(con, me)
+    if src:
+        row = con.execute("SELECT id FROM session WHERE id LIKE ?", (src + "%",)).fetchone()
+        if not row:
+            raise ReinsError(f"no session {src}")
+        src = row["id"]
+    else:
+        if not anc:
+            raise ReinsError("this session was not forked from another; name the one to take over: --from SESSION")
+        src = anc[0]
+    if src == me:
+        raise ReinsError("a session cannot inherit from itself")
+    s = con.execute("SELECT * FROM session WHERE id=?", (src,)).fetchone()
+    quiet = _minutes(s["last_seen"]) if s else 1e9
+    ended = bool(s and s["status"] == "ended")
+    if src in anc:
+        if not ended and quiet < INHERIT_QUIET_MIN:
+            raise ReinsError(f"session {src[:8]} was active {quiet:.0f} min ago: two live sessions cannot own the same "
+                             f"batch or worktree. Stop it (or wait {INHERIT_QUIET_MIN} min), then inherit")
+    else:
+        if not ended and quiet < INHERIT_ABANDONED_H * 60:
+            raise ReinsError(f"session {src[:8]} is not an ancestor of this one and was active {quiet / 60:.1f} h ago; "
+                             f"taking over from another line needs it ended or idle {INHERIT_ABANDONED_H} h")
+        if len(why.strip()) < 6:
+            raise ReinsError("taking over from a session that is not an ancestor needs --why '...'")
+    with tx(con):
+        _ensure(con, me, None, None)
+        res = [r[0] for r in con.execute("SELECT resource FROM lease WHERE holder=?", (src,))]
+        con.execute("UPDATE lease SET holder=? WHERE holder=?", (me, src))
+        bats = [r[0] for r in con.execute("SELECT batch_id FROM batch WHERE owner_session=? AND status<>'closed'", (src,))]
+        con.execute("UPDATE batch SET owner_session=? WHERE owner_session=? AND status<>'closed'", (me, src))
+        for b in bats:
+            con.execute("INSERT INTO batch_event (at, batch_id, event, detail) VALUES (?,?, 'owner_changed', ?)",
+                        (now(), b, f"{src[:8]} -> {me[:8]}" + (f": {why}" if why else "")))
+        if s:
+            con.execute("UPDATE session SET role=COALESCE(role, ?), purpose=COALESCE(purpose, ?), module=COALESCE(module, ?),"
+                        " version=COALESCE(version, ?), batch_id=COALESCE(batch_id, ?) WHERE id=?",
+                        (s["role"], s["purpose"], s["module"], s["version"], s["batch_id"], me))
+        detail = f"from {src[:8]}: {len(res)} leases, {len(bats)} batches" + (f"; {why}" if why else "")
+        con.execute("INSERT INTO session_event (at, session_id, kind, detail) VALUES (?,?, 'inherit', ?)", (now(), me, detail))
+        con.execute("INSERT INTO session_event (at, session_id, kind, detail) VALUES (?,?, 'handed_over', ?)",
+                    (now(), src, f"to {me[:8]}" + (f"; {why}" if why else "")))
+    return {"from": src, "leases": res, "batches": bats}
+
+
 def _minutes(ts: str | None) -> float:
     return (dt.datetime.now() - dt.datetime.fromisoformat(ts)).total_seconds() / 60 if ts else 1e9
 
@@ -490,7 +618,8 @@ def briefing(con, sid: str) -> str:
     if s and s["parent"]:
         lines.append(f"[reins] You were FORKED from session {s['parent'][:8]}. You own nothing it owns: its batches and "
                      f"worktrees stay with it. To develop a fix, first run: reins dev start MODULE SUFFIX --about '...' "
-                     f"--from-batch BATCH --cases ID,...  (or reins session bind --role ... --purpose ...).")
+                     f"--from-batch BATCH --cases ID,...  (or reins session bind --role ... --purpose ...). If this session "
+                     f"continues its work, take over its batches and worktrees: reins session inherit")
     lines.append(f"[reins] You own: batches {own['batches'] or 'none'}; worktrees {own['worktrees'] or 'none'}.")
     others = [o for o in list_(con) if o["id"] != sid and o["status"] == "active"]
     for o in others[:8]:

@@ -88,6 +88,8 @@ def open_(con, batch: str, cases: list[str], symptom: str, stage: str | None = N
         _ev(con, iid, "opened", f"{len(cases)} cases: {symptom.strip()}")
         con.execute("INSERT INTO batch_event (at, batch_id, event, detail, session) VALUES (?,?,?,?,?)",
                     (now(), batch, "issue_opened", f"#{iid}: {symptom.strip()[:120]} ({len(cases)} cases)", session()))
+    from . import inbox
+    inbox.to_batch_owner(con, batch, f"issue #{iid} opened on your batch ({len(cases)} cases)", symptom.strip()[:300])
     return iid
 
 
@@ -116,6 +118,10 @@ def take(con, iid: int, version: str) -> list[str]:
             raise ReinsError(f"issue #{iid} is {row['status']}")
         con.execute("UPDATE issue SET status='in_progress', version=?, fix_session=? WHERE id=?", (version, session(), iid))
         _ev(con, iid, "taken", f"version {version}")
+    if row["from_session"] and row["from_session"] != session():
+        from . import inbox
+        inbox.send(con, row["from_session"], f"issue #{iid} taken by {version}",
+                   "you will be told here when it is released", batch=row["batch_id"])
     return json.loads(row["cases"])
 
 
@@ -133,6 +139,13 @@ def fixed(con, version: str) -> list[int]:
                     f"batch {row['batch_id']} (status {b['status']}) can resume stage {row['stage'] or '?'} with {version} "
                     f"(reins run ... , the batch becomes mixed_version); then reins issue verify {row['id']} on cases "
                     f"{', '.join(json.loads(row['cases'])[:5])}", cooldown_min=0)
+        from . import inbox
+        msg = (f"issue #{row['id']} fixed by {version}",
+               f"batch {row['batch_id']} can resume stage {row['stage'] or '?'} with the release that carries {version}; "
+               f"then: reins issue verify {row['id']}")
+        told = {s for s in (row["from_session"], inbox.owner_of(con, row["batch_id"])) if s}
+        for s in told:
+            inbox.send(con, s, *msg, batch=row["batch_id"])
         out.append(row["id"])
     return out
 

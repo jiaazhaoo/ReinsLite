@@ -35,7 +35,8 @@ ReinsLite is a small, local control layer that removes the *possibility* of thes
 | **Runs** | A batch is a fixed case set with planned stages. Only `reins run` may start a pipeline; it supervises, pauses, resumes and retries. A per-case ledger refuses to close a stage with a case missing. |
 | **Money** | One gateway holds every provider key. Calls reserve their estimate first and settle the real cost after, under batch, stage, session and team-pool caps. Identical requests are served from cache; repeated failures pause the stage. |
 | **Versions of everything** | Code, prompts, model configs, ML weights (with their training record), tools, data files and whole workflows, each content-addressed as `<kind>-<name>-vN`. |
-| **Hand-over** | A run opens an issue on the cases it got wrong; another session claims it, fixes it through the gate, and the opener is told which version to resume with. |
+| **Hand-over** | A run opens an issue on the cases it got wrong; another session claims it, fixes it through the gate, and the opener is told which version to resume with. Messages go to whoever owns a batch now (an inbox the hook delivers at the next prompt); a fork can take over its parent's batches and worktrees (`reins session inherit`). |
+| **Sentinel** | At every stage end: a paid stage with no gateway call, nine in ten cases failing for one reason, or a failure rate far above the stage's history fails the stage, pauses the batch and opens an issue. A person can mark a finding as normal once (`reins sentinel ack`). |
 | **Traceability** | Who (which session), what (which version), on which cases, at what cost, with which evidence. Append-only, in one SQLite registry. |
 | **Board** | A local web app: the pipeline map with each stage's code version and tools, runs, development, cost and the toolbox. |
 
@@ -190,7 +191,6 @@ tests/            unit tests (python3 -m unittest discover -s tests)
 
 Used daily on a production geospatial QA pipeline (the first adopter). Working today: everything above. Known gaps, in the order we plan to close them:
 
-- release reservations left open by a crashed gateway call;
 - enforce time limits (kill a late case, pause a batch over its time budget) instead of only notifying;
 - gate metrics declared by each project, not fixed to missed errors and review load;
 - the gateway: Anthropic Messages, embeddings, other POST APIs and streaming;
