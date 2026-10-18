@@ -97,6 +97,25 @@ class Production(unittest.TestCase):
         self.assertEqual(v["reasons"]["p"][0]["en"], "No scans")
         self.assertEqual(v["totals"]["packages"], 2)
 
+    def test_batch_table_rows_shared_results_and_review(self):
+        a = self.batch("f-wp6", "production", "done", ["1", "2"], [("1", "auto", ""), ("2", "human", "c1")])
+        b = self.batch("f-wp6", "rework", "done", ["1", "2"], created="2026-10-11T10:00:00")
+        wd = self.con.execute("SELECT work_dir FROM batch WHERE batch_id=?", (a,)).fetchone()[0]
+        with tx(self.con):
+            self.con.execute("UPDATE batch SET work_dir=? WHERE batch_id=?", (wd, b))      # b re-ran in a's directory
+            for c, rev, v in (("1", "r1", "wrong"), ("1", "r2", "wrong"), ("2", "r1", "correct")):
+                self.con.execute("INSERT INTO review_event (at, batch_id, case_id, reviewer, action, verdict) VALUES "
+                                 "('2026-10-12T09:00:00', ?, ?, ?, 'verdict', ?)", (b, c, rev, v))
+        g = production.view(self.con)["batches"][0]
+        self.assertEqual(g["scope_names"], ["scope"])
+        rows = {r["batch_id"]: r for r in g["rows"]}
+        self.assertIn("results_in", rows[a])                                    # the file now holds b's results
+        self.assertEqual(rows[b]["values"], {"auto": 1, "human": 1})
+        self.assertEqual(rows[b]["details"], {"c1": 1})
+        rv = rows[b]["review"]
+        self.assertEqual((rv["n"], rv["wrong"], rv["correct"], rv["double"], rv["agree"]), (2, 1, 1, 1, 1))
+        self.assertEqual((rv["good_reviewed"], rv["good_wrong"]), (1, 1))      # the auto-passed case was judged wrong
+
     def test_all_results_but_a_paused_batch_is_not_complete(self):
         self.batch("d-wp4", "production", "paused", ["1", "2"], [("1", "auto", ""), ("2", "human", "c1")])
         p = production.view(self.con)["packages"][0]
