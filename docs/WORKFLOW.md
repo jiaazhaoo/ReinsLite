@@ -194,6 +194,13 @@ poll_s = 1.0
 **`reins run` 是分离启动**：命令立刻返回，输出写明 `detached: live process #N …`；批次在最后一个阶段结束时就标 done，那时进程可能还在收尾。
 脚本要等它真的结束：`reins wait B`（退出码 0 = done，1 = 没完成 / 暂停 / 失败，2 = 超时 `--timeout`）。
 
+## 改 ReinsLite 本身（2026-10-18）
+
+ReinsLite 也由它自己管理（仓库里的 `reins.toml`：core、guard、board、docs 四个模块）。和任何受管项目一样：
+`reins dev start core 后缀 --about '...'` 开候选工作区，改完 `reins dev finish 版本`，门禁是全部单元测试，合并后自动推送到 origin。
+直接改主目录、手动 merge 或 push 都会被护栏拒绝，所以 gateway、watchdog、board 跑的永远是已提交、已过测试的代码
+（10-13 曾有一批改动在主目录里放了五天没提交，服务一直跑着它）。
+
 ## 会话的硬规则
 
 1. 花钱或跑大任务前，先用规范词复述一遍：批次 id、阶段、case 数、预计花费、上限。用户回"对"再开始。

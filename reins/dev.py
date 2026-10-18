@@ -60,11 +60,14 @@ def _ensure_module(con, cfg: dict, module: str) -> None:
 
 
 def overlaps(con, repo: Path, version: str | None, files: list[str]) -> list[str]:
-    """Other live candidates whose files overlap these globs."""
+    """Other live candidates of the same project whose files overlap these globs (a reins.toml in another repository is
+    another file)."""
     tracked = git(repo, "ls-files").splitlines()
     mine = {f for g in files for f in tracked if fnmatch.fnmatch(f, g)}
     out = []
-    for other in con.execute("SELECT version, pins FROM module_version WHERE status='candidate' AND version IS NOT ?", (version,)):
+    for other in con.execute("SELECT v.version, v.pins FROM module_version v JOIN module m ON m.name=v.module"
+                             " WHERE v.status='candidate' AND v.version IS NOT ? AND m.project=?",
+                             (version, project_cfg(repo)["project"])):
         theirs = {f for g in json.loads(other["pins"]).get("files", []) for f in tracked if fnmatch.fnmatch(f, g)}
         ov = sorted(mine & theirs)
         if ov:
@@ -133,8 +136,8 @@ def start(con, repo: Path, module: str, suffix: str, about: str, from_batch: str
     tracked = git(repo, "ls-files").splitlines()
     mine = {f for g in files for f in tracked if fnmatch.fnmatch(f, g)}
     warnings = []
-    for other in con.execute("SELECT version, pins, session FROM module_version WHERE status='candidate' AND version<>?",
-                             (version,)):
+    for other in con.execute("SELECT v.version, v.pins, v.session FROM module_version v JOIN module m ON m.name=v.module"
+                             " WHERE v.status='candidate' AND v.version<>? AND m.project=?", (version, cfg["project"])):
         theirs = {f for g in json.loads(other["pins"]).get("files", []) for f in tracked if fnmatch.fnmatch(f, g)}
         ov = sorted(mine & theirs)
         if ov:
