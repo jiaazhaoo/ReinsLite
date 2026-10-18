@@ -353,6 +353,18 @@ class Dev(Base):
         pushed = subprocess.run(["git", "--git-dir", str(remote), "rev-parse", "main"], capture_output=True, text=True).stdout
         self.assertEqual(head, pushed)
 
+    def test_overlap_counts_only_the_same_project(self):
+        other = self.tmp / "other"; other.mkdir()
+        run = lambda *a: subprocess.run(["git", "-C", str(other), *a], check=True, capture_output=True)
+        run("init", "-q", "-b", "main"); run("config", "user.email", "t@t"); run("config", "user.name", "t")
+        (other / "reins.toml").write_text('project = "other"\n[dev]\ngate = "true"\n[modules.cfg]\nabout = "project settings"\nfiles = ["reins.toml"]\n')
+        run("add", "-A"); run("commit", "-qm", "init")
+        (self.repo / "reins.toml").write_text((self.repo / "reins.toml").read_text() + '[modules.ctl]\nabout = "project settings"\nfiles = ["reins.toml"]\n')
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qam", "ctl module"], check=True)
+        dev.start(self.con, other, "cfg", "a", "change the other project settings")
+        r = dev.start(self.con, self.repo, "ctl", "b", "change this project settings")   # same file name, other repo
+        self.assertFalse(r["warnings"])
+
     def test_other_sessions_worktree_is_refused(self):
         r = dev.start(self.con, self.repo, "judge", "a", "a test version that does a")
         os.environ["REINS_SESSION"] = "sess-B"
