@@ -82,8 +82,9 @@ class BoardScript(unittest.TestCase):
         import shutil, subprocess
         if not shutil.which("node"):
             self.skipTest("node not installed")
-        r = subprocess.run(["node", "--check", str(board.UI / "app.js")], capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
+        for js in ("app.js", "production.js"):
+            r = subprocess.run(["node", "--check", str(board.UI / js)], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, js + ": " + r.stderr)
 
 
 class ConfigCheck(unittest.TestCase):

@@ -1,0 +1,105 @@
+/* the production page: one column, readable from across a desk; no sideways scrolling */
+body.prod { min-height: 100vh; }
+.pbar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 12px; padding: 12px 24px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
+.pbrand { display: flex; align-items: center; gap: 10px; font-size: 15px; letter-spacing: -.01em; }
+.plogo { width: 22px; height: 22px; border-radius: 7px; background: var(--accent); box-shadow: inset 0 0 0 5px color-mix(in srgb, var(--accent) 60%, #fff); }
+.pspacer { flex: 1; }
+.seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 999px; padding: 2px; background: var(--panel); }
+.seg button { border: 0; background: transparent; padding: 4px 12px; border-radius: 999px; cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 500; }
+.seg button.on { background: var(--text); color: var(--bg); }
+.pmain { max-width: 1180px; margin: 0 auto; padding: 28px 24px 64px; display: flex; flex-direction: column; gap: 28px; }
+
+.phead h1 { margin: 0; font-size: 28px; letter-spacing: -.02em; font-weight: 650; }
+.phead p { margin: 6px 0 0; color: var(--muted); }
+
+.pkpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 1060px) { .pkpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .pkpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .pkpi .v { font-size: 24px; } }
+.pkpi { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px 18px; box-shadow: var(--shadow); }
+.pkpi .l { color: var(--muted); font-size: 13px; }
+.pkpi .v { font-size: 30px; font-weight: 650; letter-spacing: -.02em; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.pkpi .v small { font-size: 14px; color: var(--muted); font-weight: 500; margin-left: 6px; }
+.pkpi .f { color: var(--faint); font-size: 12.5px; margin-top: 2px; }
+.pkpi .meter { margin-top: 10px; }
+
+.prow { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 12px; }
+@media (max-width: 860px) { .prow { grid-template-columns: minmax(0, 1fr); } }
+.pcard { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 18px 20px; box-shadow: var(--shadow); min-width: 0; }
+.pcard h2 { margin: 0 0 14px; font-size: 15px; font-weight: 600; }
+.pcard h2 small { color: var(--faint); font-weight: 400; margin-left: 8px; font-size: 12.5px; }
+
+.pcard.dl { container-type: inline-size; }
+.daily { display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 6px; align-items: end; height: 150px; }
+.daily .d { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; min-width: 0; }
+.daily .d i { display: block; width: 100%; max-width: 30px; background: var(--accent); border-radius: 5px 5px 2px 2px; min-height: 2px; opacity: .85; }
+.daily .d i.zero { background: var(--border); opacity: 1; }
+.daily .d b { font-size: 11px; color: var(--muted); font-weight: 500; margin-bottom: 3px; font-variant-numeric: tabular-nums; }
+.daily .d span { font-size: 10.5px; color: var(--faint); margin-top: 5px; white-space: nowrap; }
+
+@container (max-width: 420px) { .daily .d:nth-child(even) span { visibility: hidden; } }
+.stack { display: flex; height: 14px; border-radius: 999px; overflow: hidden; background: var(--gray-soft); }
+.stack i { display: block; height: 100%; min-width: 2px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 12px; font-size: 13px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.legend span b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.legend .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+
+.pfilters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.pfilters h2 { margin: 0 12px 0 0; font-size: 18px; font-weight: 600; letter-spacing: -.01em; }
+
+.wp { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow); overflow: hidden; }
+.wp-head { display: flex; gap: 16px; align-items: flex-start; padding: 18px 20px 0; flex-wrap: wrap; }
+.wp-head h3 { margin: 0; font-size: 18px; font-weight: 620; letter-spacing: -.01em; }
+.wp-head .sub { color: var(--muted); font-size: 13px; margin-top: 3px; }
+.wp-head .badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.wp-head .big { margin-left: auto; text-align: right; }
+.wp-head .big b { font-size: 30px; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.wp-head .big span { display: block; color: var(--muted); font-size: 12.5px; }
+.wp-body { padding: 14px 20px 18px; display: flex; flex-direction: column; gap: 16px; }
+.wp-bar { height: 8px; border-radius: 999px; background: var(--gray-soft); overflow: hidden; }
+.wp-bar i { display: block; height: 100%; background: var(--green); border-radius: 999px; }
+.wp-bar.going i { background: var(--accent); }
+.facts { display: flex; flex-wrap: wrap; gap: 4px 18px; color: var(--muted); font-size: 13px; }
+.facts b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.sub-h { font-size: 12px; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 8px; font-weight: 600; }
+.psteps { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+.pstep { border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; background: var(--sunken); min-width: 0; }
+.pstep .n { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 550; }
+.pstep .n em { font-style: normal; width: 19px; height: 19px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 11px;
+  background: var(--border); color: var(--muted); flex: none; }
+.pstep.full .n em { background: var(--green); color: #fff; }
+.pstep.part .n em { background: var(--accent); color: #fff; }
+.pstep .c { font-size: 12px; color: var(--muted); margin: 5px 0 6px; font-variant-numeric: tabular-nums; }
+.pstep .wp-bar { height: 4px; }
+.why { display: flex; flex-wrap: wrap; gap: 6px; }
+.why span { background: var(--amber-soft); color: var(--amber); border-radius: 999px; padding: 3px 10px; font-size: 12.5px; }
+.why span b { font-variant-numeric: tabular-nums; }
+
+details.parts { border-top: 1px solid var(--border); }
+details.parts summary { cursor: pointer; padding: 11px 20px; color: var(--muted); font-size: 13px; list-style: none; display: flex; align-items: center; gap: 8px; }
+details.parts summary::-webkit-details-marker { display: none; }
+details.parts summary::before { content: "›"; display: inline-block; transition: transform .15s; font-size: 16px; line-height: 1; }
+details.parts[open] summary::before { transform: rotate(90deg); }
+details.parts summary:hover { color: var(--text); }
+.plist { padding: 0 20px 14px; }
+.prow-h, .prow-i { display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(0, .8fr) minmax(0, 1.3fr) minmax(0, 1.3fr) minmax(0, 1.4fr) minmax(0, .8fr); gap: 10px; align-items: center; }
+.prow-h { font-size: 11.5px; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; padding: 4px 0 6px; border-bottom: 1px solid var(--border); }
+.prow-i { padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.prow-i:last-child { border-bottom: 0; }
+.prow-i .nm { overflow-wrap: anywhere; font-weight: 500; }
+.prow-i .num { font-variant-numeric: tabular-nums; }
+.prow-i .k { display: none; color: var(--faint); font-size: 11.5px; margin-right: 6px; }
+@media (max-width: 760px) {
+  .prow-h { display: none; }
+  .prow-i { grid-template-columns: 1fr 1fr; }
+  .prow-i .nm { grid-column: 1 / -1; }
+  .prow-i .k { display: inline; }
+}
+.pempty { color: var(--faint); padding: 40px; text-align: center; }
+.pfoot { color: var(--faint); font-size: 12px; text-align: center; }
+@media (max-width: 560px) {
+  .pbar { padding: 10px 16px; }
+  .pmain { padding: 20px 16px 48px; }
+  .wp-head .big { margin-left: 0; text-align: left; }
+}
