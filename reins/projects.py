@@ -77,6 +77,8 @@ def check_config(cfg: dict) -> list[str]:
                 for n in st.get(sec, []):
                     if n not in (cfg.get(sec) or {}):
                         out.append(f"[workflows.{w}] stage {st.get('name')!r} {sec} names {n!r}, which has no [{sec}.{n}]")
+    from . import resources
+    out += resources.check_rules(cfg)
     run_stages = (cfg.get("run") or {}).get("stages")
     for w, wf in (cfg.get("workflows") or {}).items():
         if run_stages and [s.get("name") for s in wf.get("stages", [])] != run_stages:

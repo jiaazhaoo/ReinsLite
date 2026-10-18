@@ -3,8 +3,10 @@
   module    add | new | release | retire | note | status | list           C2 module versions
   dev       start | finish | abandon | release | list                     C2 lifecycle with git worktrees
   batch     open | approve | stage-start | mark | stage-end | skip-stage | pause | resume | fail | close | status | list
-  run       BATCH STAGE [opts] -- CMD...                                  C7 launcher (supervised, pgid-controlled)
-  ctl       pause | resume | stop BATCH                                   C7/C10 control a running batch
+  run       BATCH STAGE [opts] -- CMD...                                  C7 launcher (supervised, pgid-controlled, detached)
+  wait      BATCH [--timeout S]                                           block until the batch's process exits
+  ctl       pause | resume [--after-kill] | stop BATCH                    C7/C10 control a running batch
+  resources [--json]                                                      C10 machine budget, granted and waiting claims
   config    check                                                         the project's reins.toml is consistent
   case      CASE_ID                                                       C1 one case's whole history
   spend     summary | price | unpriced | reprice MODEL --why | weekly | all  C9
@@ -41,7 +43,7 @@ import tomllib
 from pathlib import Path
 
 from . import (accept, artifacts, batches, bench, decisions, deliver, dev, envs, gate, glossary, issues, leases, modules,
-               names, notify, preflight, review, rules, runner, sessions, spend)
+               names, notify, preflight, resources, review, rules, runner, sessions, spend)
 from .store import ReinsError, connect
 
 
@@ -205,6 +207,11 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--cwd"); x.add_argument("--retries", type=int); x.add_argument("command", nargs=argparse.REMAINDER)
     x = sub.add_parser("ctl"); x.add_argument("verb", choices=["pause", "resume", "stop"]); x.add_argument("batch")
     x.add_argument("--why", default="")
+    x.add_argument("--after-kill", action="store_true", help="resume a batch paused because a process was killed")
+    x = sub.add_parser("wait", help="block until the batch's process exits (exit 0 = done, 1 = not done, 2 = timed out)")
+    x.add_argument("batch"); x.add_argument("--timeout", type=float)
+    x = sub.add_parser("resources", help="machine budget and the live resource claims of every batch")
+    x.add_argument("--json", action="store_true")
     x = sub.add_parser("case"); x.add_argument("case_id"); x.add_argument("--provenance", action="store_true")
 
     s = sub.add_parser("spend").add_subparsers(dest="sub", required=True)
@@ -396,11 +403,39 @@ def main(argv: list[str] | None = None) -> int:
                                args.module_version, args.retries)
             for w in res["warnings"]:
                 print(f"WARNING {w}", file=sys.stderr)
-            print(f"started (supervisor pid {res['supervisor_pid']}); log {res['log']}\n"
-                  f"  reins batch status {args.batch}   |   reins ctl pause|resume|stop {args.batch}")
+            if "process" in res:
+                first = f"live process #{res['process']} (pgid {res['pgid']})"
+            elif "waiting_claim" in res:
+                first = f"waiting for resources (claim #{res['waiting_claim']}, rule {res['rule']}; reins resources)"
+            elif "exited" in res:
+                first = f"supervisor already exited ({res['exited']}): see {res['log']}.supervisor"
+            else:
+                first = "supervisor starting"
+            print(f"detached: {first}, supervisor pid {res['supervisor_pid']}; this command returns now and the run "
+                  f"goes on without this session\n"
+                  f"  log {res['log']}\n"
+                  f"  the batch is marked done when its last stage ends; the process may still be finishing then\n"
+                  f"  block until it exits: reins wait {args.batch}   |   reins batch status {args.batch}"
+                  f"   |   reins ctl pause|resume|stop {args.batch}")
             return 0
         if args.cmd == "ctl":
-            print(runner.ctl(con, args.verb, args.batch, args.why)); return 0
+            print(runner.ctl(con, args.verb, args.batch, args.why, after_kill=args.after_kill)); return 0
+        if args.cmd == "wait":
+            r = runner.wait(con, args.batch, args.timeout)
+            print(f"{args.batch}: {r['status']}" + (f" ({r['reason']})" if r["reason"] else "")
+                  + ("  [timed out; still running]" if r["timed_out"] else ""))
+            return 2 if r["timed_out"] else (0 if r["status"] == "done" else 1)
+        if args.cmd == "resources":
+            v = resources.view(con)
+            if args.json:
+                print(json.dumps(v, ensure_ascii=False, indent=1)); return 0
+            bd = v["budget"]
+            print(f"budget: RAM {v['held']['mem']:g} of {bd['mem']:.1f} GB granted (total {bd['mem_total']:.0f} GB x "
+                  f"{bd['max_fraction']:g} - reserved)" + (f"; GPU {v['held']['gpu']:g} of {bd['gpu']:.1f} GB" if bd["gpu"] else "; no GPU budget"))
+            for c in v["claims"]:
+                print(f"  #{c['id']:<5} {c['state']:<8} {c['batch_id']} {c['stage'] or ''} {c['rule']} mem {c['mem_gb']:g} "
+                      f"gpu {c['gpu_gb']:g} {' '.join(json.loads(c['tags']))} {('pid ' + str(c['pid'])) if c['pid'] else ''}")
+            return 0
         if args.cmd == "case":
             return _case(con, args)
         if args.cmd == "spend":
@@ -690,7 +725,17 @@ def _batch(con, args, cfg) -> int:
     elif args.sub == "approve":
         batches.approve_spend(con, args.batch, args.cap, args.by); print(f"{args.batch} cap ${args.cap:.2f}")
     elif args.sub == "stage-start":
-        for w in batches.stage_start(con, args.batch, args.stage, args.module_version, args.output, args.log):
+        # a stage that declares resources waits here for its claim (a self-staged command is calling, so it waits too)
+        live = runner.live_processes(con, args.batch)
+        b = batches.get(con, args.batch)
+        resources.admit_stage(con, args.batch, args.stage, resources.project_rules(Path.cwd(), b["project"]),
+                              live[0]["pgid"] if live else None)
+        try:
+            warnings = batches.stage_start(con, args.batch, args.stage, args.module_version, args.output, args.log)
+        except ReinsError:
+            resources.release_stage(con, args.batch, args.stage)
+            raise
+        for w in warnings:
             print(f"WARNING {w}", file=sys.stderr)
     elif args.sub == "mark":
         if args.file:
@@ -701,7 +746,10 @@ def _batch(con, args, cfg) -> int:
             raise ReinsError("mark needs --file TSV or CASE_ID STATUS [REASON]")
         print(f"{batches.mark(con, args.batch, args.stage, rows)} events recorded")
     elif args.sub == "stage-end":
-        led = batches.stage_end(con, args.batch, args.stage, batches.read_checks(args.checks) if args.checks else None)
+        try:
+            led = batches.stage_end(con, args.batch, args.stage, batches.read_checks(args.checks) if args.checks else None)
+        finally:
+            resources.release_stage(con, args.batch, args.stage)
         print(f"{args.stage} {led['status']}: {led['done']} done, {led['skipped']} skipped, {led['failed']} failed")
         if led.get("without_input"):
             print(f"WARNING {len(led['without_input'])} cases done in {args.stage} were skipped or failed earlier "

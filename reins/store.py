@@ -494,9 +494,13 @@ def config() -> dict:
                 "disk_pause_pct": 90, "mem_pause_pct": 95, "gpu_warn_pct": 90, "default_call_estimate": 0.05,
                 "spend_warn_fraction": 0.8, "balance_poll_min": 10,
                 "pool": {"daily_cap": 20.0, "weekly_cap": 60.0, "hourly_cap": 6.0, "max_batch_cap": 15.0,
-                         "per_session_daily_cap": 10.0, "max_consecutive_failures": 10}}
-    pool = {**defaults["pool"], **(cfg.get("pool") or {})}
-    return {**defaults, **cfg, "pool": pool}
+                         "per_session_daily_cap": 10.0, "max_consecutive_failures": 10},
+                # C10 admission budget and C8 kill detection (reins/resources.py)
+                "resources": {"mem_total_gb": 0, "mem_reserved_gb": 0, "gpu_total_gb": 0, "gpu_reserved_gb": 0,
+                              "max_fraction": 0.75, "poll_s": 1.0},
+                "kill_watch": {"cmd": "", "pattern": r"(?i)kill\w*\s+(?:process\s+|pid[= ])(?P<pid>\d+)"}}
+    nested = {k: {**defaults[k], **(cfg.get(k) or {})} for k in ("pool", "resources", "kill_watch")}
+    return {**defaults, **cfg, **nested}
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
@@ -510,9 +514,10 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     _rename_legacy(con)
     con.executescript(SCHEMA)
     _migrate(con)
-    from . import artifacts, issues
+    from . import artifacts, issues, resources
     issues.ensure(con)
     artifacts.ensure(con)
+    resources.ensure(con)
     return con
 
 

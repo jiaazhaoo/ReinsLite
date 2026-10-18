@@ -99,6 +99,58 @@ reins bench init/freeze ──► 门禁打分（C5）──► 批次 ──►
 每个阈值 `reins threshold set --n`；n < 30 自动标 LOW_N。改规则 `reins rules freeze --old-lanes --new-lanes`，没有 lane diff 不生效。
 每周一次 `--type drift` 批次：不读缓存，对比上周结果，看托管模型有没有悄悄变。
 
+## 资源准入和被杀检测（2026-10-13）
+
+起因：两个批次（`mansfield-low-rework-20261012-3` / `-4`）并行，手写的 GPU 守卫只管 GPU，不管内存；每个托管判官进程约 11 GB，
+机器的 resource-watchdog 在 07:27、09:18、09:21 杀了子进程，流水线拿着缺失的输入继续跑，约 2 小时没人发现（守卫和等待脚本随启动它的会话一起没了）。
+
+**准入**：项目在 `reins.toml` 里声明每个阶段或每类步骤要什么，reins 在 `reins.db` 里记一本所有批次共用的占用账（`resource_claim`），
+超出机器预算的申请排队等，不启动。
+
+```toml
+# 项目的 reins.toml（项目的词和数字只写在这里）
+[resources.judge]
+match = "qa_judge\\.py"       # 正则，匹配批次进程树里任一进程的命令行；每个匹配的进程一份占用（它的子进程不重复算）
+mem_gb = 11
+[resources.ocr]
+match = "ocr_rotated"
+gpu_gb = 8
+exclusive = ["gpu"]             # 同一个标签同一时刻只放行一份占用：GPU 步骤互斥，代替手写的 guard 脚本
+[resources.check]
+stage = "check"                 # 或者整个阶段
+mem_gb = 4
+```
+```toml
+# 机器的 config.toml（$REINS_HOME/config.toml）
+[resources]
+mem_total_gb = 0       # 0 = 读 /proc/meminfo
+mem_reserved_gb = 8    # 机器上别的东西占的（桌面、服务、会话）
+gpu_total_gb = 0       # 0 = 问 nvidia-smi
+max_fraction = 0.75    # 已放行的占用合计不超过 total × max_fraction − reserved
+poll_s = 1.0
+```
+- 顺序：先到先得，不插队。一个申请只有在放得下、而且没有更早的（运行中批次的）申请还在等的时候才放行；暂停的批次不挡别人。
+  单个申请比整个预算还大：只在这一维没人占的时候放行（独占跑）。
+- 在哪里等：`reins run B STAGE` 的阶段规则 → 监督进程等到放行才启动命令；自带阶段的命令（`--self-staged`）→ `reins batch stage-start` 阻塞，
+  命令本身也就停在那里；`match` 规则 → 监督进程每 `poll_s` 秒看一次进程树，新出现的匹配进程放不下就 SIGSTOP（连同子进程），放行时 SIGCONT。
+- 占用在进程结束、阶段结束（`stage-end`）时释放；进程没了的占用由监督进程和 Watchdog 清掉，账上不留幽灵。
+- 查看：`reins resources`（预算、已放行、在等的），看板的提醒区也有一行。`reins config check` 会检查 `[resources]` 写得对不对。
+
+**被杀检测**：监督进程（独立于会话，会话退出它还在）负责：
+- 它启动的命令被 SIGKILL / SIGTERM 结束（rc −9 / −15 / 137 / 143），又不是 `reins ctl stop` 要求的；
+- 或者 `config.toml [kill_watch]` 跟踪的日志里有一行点名了它进程树里出现过的 pid：
+  ```toml
+  [kill_watch]
+  cmd = "journalctl --user -f -n 0 -o cat"
+  pattern = "killing pid=(?P<pid>\\d+)"
+  ```
+动作：批次记一条 `killed` 事件 → 批次暂停（整个进程组 SIGSTOP，下一步不会拿着缺失的输入开跑）→ 发通知（看板、`reins notify list`、`notify_cmd`）。
+不自动重试。之后二选一：`reins ctl stop B`，再从被杀的那一步重开；或者命令自己会补做时 `reins ctl resume B --after-kill`
+（不带 `--after-kill` 的 resume 会被拒绝）。
+
+**`reins run` 是分离启动**：命令立刻返回，输出写明 `detached: live process #N …`；批次在最后一个阶段结束时就标 done，那时进程可能还在收尾。
+脚本要等它真的结束：`reins wait B`（退出码 0 = done，1 = 没完成 / 暂停 / 失败，2 = 超时 `--timeout`）。
+
 ## 会话的硬规则
 
 1. 花钱或跑大任务前，先用规范词复述一遍：批次 id、阶段、case 数、预计花费、上限。用户回"对"再开始。

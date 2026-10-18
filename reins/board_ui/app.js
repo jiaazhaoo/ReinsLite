@@ -25,7 +25,7 @@ const I18N = {
     balance: "余额", calls: "今日调用", no_key: "未配置 key", no_balance_api: "无余额接口", query_failed: "查询失败",
     by_balance: "按余额变化计", per_call: "按调用数 × 牌价估算", ledger_only: "仅网关记账", by_batch: "本周按批次",
     tb_sub: "工作流用到的每一件东西，都有版本", search: "搜索工具…", shelf: "架子", tool: "工具", does: "做什么",
-    detail: "细节", stages: "阶段", unreg_run: "未经 reins 启动的运行", unreg_note: "看不到进度、花费和案件账本",
+    detail: "细节", stages: "阶段", unreg_run: "未经 reins 启动的运行", res_title: "资源占用", res_waiting: "等待", res_granted: "已放行", unreg_note: "看不到进度、花费和案件账本",
     theme: "主题", ok: "正常", attention: "注意", action: "需要处理", none: "无",
     s_trained: "自训模型", s_pretrained: "开源模型", s_paid: "付费模型", s_prompt: "提示词", s_code: "代码工具", s_api: "外部接口", s_data: "数据",
     st_running: "运行中", st_paused: "暂停", st_open: "未开始", st_closed: "已关闭", st_done: "完成", st_failed: "失败", st_planned: "未开始", st_skipped: "跳过",
@@ -63,7 +63,7 @@ const I18N = {
     balance: "Balance", calls: "Calls today", no_key: "no key", no_balance_api: "no balance API", query_failed: "query failed",
     by_balance: "from balance changes", per_call: "calls × list price", ledger_only: "gateway ledger only", by_batch: "This week by batch",
     tb_sub: "Everything the workflow uses, each with a version", search: "Search tools…", shelf: "Shelf", tool: "Tool", does: "Does",
-    detail: "Detail", stages: "Stages", unreg_run: "Run not started through reins", unreg_note: "no progress, spend or case ledger",
+    detail: "Detail", stages: "Stages", unreg_run: "Run not started through reins", res_title: "Resources", res_waiting: "waiting", res_granted: "granted", unreg_note: "no progress, spend or case ledger",
     theme: "Theme", ok: "OK", attention: "Attention", action: "Needs action", none: "none",
     s_trained: "Trained", s_pretrained: "Pretrained", s_paid: "Paid models", s_prompt: "Prompts", s_code: "Code", s_api: "APIs", s_data: "Data",
     st_running: "running", st_paused: "paused", st_open: "open", st_closed: "closed", st_done: "done", st_failed: "failed", st_planned: "planned", st_skipped: "skipped",
@@ -214,6 +214,15 @@ function runCard(r) {
 function alertsHtml() {
   const items = S.notifications.map((n) => `<div class="alert ${n.level}">${icon("alert")}<div style="min-width:0"><b>${esc(n.title)}</b><div class="body">${esc(n.body)}</div></div><span class="when">${when(n.at)}</span></div>`);
   S.unregistered_runs.forEach((u) => items.push(`<div class="alert warn">${icon("alert")}<div><b>${esc(t("unreg_run"))} · ${esc(u.kind)}</b><div class="body">${esc(u.what)} — ${esc(t("unreg_note"))}</div></div><span class="when">${when(u.at)}</span></div>`));
+  const R = S.resources;
+  if (R && R.claims && R.claims.length) {
+    const w = R.claims.filter((c) => c.state === "waiting");
+    const line = (c) => `${esc(c.state === "waiting" ? t("res_waiting") : t("res_granted"))} · ${esc(c.batch_id)} ${esc(c.rule)}`
+      + `${c.mem_gb ? ` ${c.mem_gb} GB RAM` : ""}${c.gpu_gb ? ` ${c.gpu_gb} GB GPU` : ""}${c.pid ? ` pid ${c.pid}` : ""}`;
+    const head = `RAM ${R.held.mem} / ${R.budget.mem.toFixed(0)} GB` + (R.budget.gpu ? ` · GPU ${R.held.gpu} / ${R.budget.gpu.toFixed(0)} GB` : "");
+    items.push(`<div class="alert ${w.length ? "warn" : "info"}">${icon("alert")}<div style="min-width:0"><b>${esc(t("res_title"))} · ${esc(head)}</b>`
+      + `<div class="body">${R.claims.map(line).join("<br>")}</div></div></div>`);
+  }
   return items.length ? `<div class="alerts">${items.join("")}</div>` : "";
 }
 

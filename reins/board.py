@@ -66,6 +66,14 @@ def _eta(con, bid: str, stage: str, n_cases: int, done: int) -> str:
     return f"{left / 60:.1f} h" if left > 90 else f"{left:.0f} min"
 
 
+def _resources(con) -> dict:
+    from . import resources
+    try:
+        return resources.view(con)
+    except Exception as e:                                                      # noqa: BLE001  the board never dies of it
+        return {"error": str(e)}
+
+
 def _latest_notes(con, hours: int = 6) -> list[dict]:
     """One line per notification key (the newest), from the last few hours; stale stage notices dropped."""
     since = (dt.datetime.now() - dt.timedelta(hours=hours)).isoformat(timespec="seconds")
@@ -316,7 +324,7 @@ def state(con) -> dict:
     developing = in_progress(con)
     return {"at": dt.datetime.now().isoformat(timespec="seconds"), "pipelines": pipeline_map(con, running, developing),
             "cost": spend.cost_view(con), "spend_all": spend.all_time(con), "pool": {**spend.pool_usage(con), "limits": config()["pool"]},
-            "notifications": _latest_notes(con),
+            "notifications": _latest_notes(con), "resources": _resources(con),
             "in_progress": developing, "dev_history": dev_history(con), "unregistered_dev": unregistered_dev(con),
             "running": running, "unregistered_runs": sessions.unregistered_runs(con),
             "run_history": run_history(con),

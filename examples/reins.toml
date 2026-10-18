@@ -32,6 +32,17 @@ probe = "python3 tools/progress.py {work_dir}"          # one screen of progress
 programs = ["run_all.sh", "form_extract.ocr.batch"]     # only `reins run` may start these (scripts and python -m modules)
 stages = ["prepare", "ocr", "extract", "check"]
 
+# what a stage or a step needs; reins holds a claim back while it would go past the machine budget (config.toml
+# [resources]) and keeps steps that share an exclusive tag apart (reins resources shows the ledger)
+[resources.ocr_gpu]
+match = "ocr_batch\\.py"             # regex on the command line of a process in the batch's tree
+gpu_gb = 6
+exclusive = ["gpu"]
+
+[resources.check]
+stage = "check"                       # or a whole stage
+mem_gb = 4
+
 [[preflight]]
 name = "inputs_present"
 cmd = "test -s $REINS_WORK_DIR/forms.csv"

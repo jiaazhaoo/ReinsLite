@@ -5,12 +5,18 @@
         the command moves through several stages itself and reports each boundary with
         `reins batch stage-start / mark / stage-end` (e.g. through a project hook); on exit 0 every stage must be done
     reins ctl pause|resume|stop BATCH
+    reins wait BATCH             block until the batch's process exits (reins run itself returns at once: detached)
 
 `run` records the stage start, then hands the command to a supervisor that lives in its own session (it survives the
 Claude session that launched it). The command runs in a fresh process group, so pause/stop act on the whole tree
 by pgid; nobody hunts PIDs. The supervisor marks the stage done when the command exits 0 and every case is
 accounted for, retries production/rework commands on failure (the command itself must be resumable), and
 notifies the user either way.
+
+Resources (C10, reins/resources.py): a stage rule in reins.toml makes the supervisor wait for its claim before starting
+the command; match rules hold (SIGSTOP) a process in the tree until its claim fits. Kills (C8): a command that dies by
+SIGKILL / SIGTERM (rc -9/-15/137/143) that nobody asked for, or a pid in the tree named by the kill log, pauses the batch,
+records a `killed` event and notifies; nothing is retried and the next step does not start on a missing input.
 
 Environment given to the command:
     REINS_BATCH, REINS_STAGE, REINS_MODULE_VERSION, REINS_HOME
@@ -29,7 +35,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import batches, leases, notify, providers
+from . import batches, leases, notify, providers, resources
 from .store import ReinsError, config, connect, home, now, session, tx
 
 DEFAULT_RETRIES = {"production": 3, "rework": 3}
@@ -70,12 +76,45 @@ def start(con, batch: str, stage: str, cmd: list[str], cwd: Path, module_version
     if retries is None:
         retries = DEFAULT_RETRIES.get(b["type"], 0)
     spec = {"batch": batch, "stage": stage, "cmd": cmd, "cwd": str(cwd.resolve()), "module_version": mv,
-            "retries": retries, "log": str(log), "session": session(), "home": str(home())}
+            "retries": retries, "log": str(log), "session": session(), "home": str(home()),
+            "rules": resources.project_rules(cwd.resolve(), b["project"])}
     sup = subprocess.Popen([sys.executable, "-m", "reins.runner", "--supervise", json.dumps(spec)],
                            start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                            stderr=open(str(log) + ".supervisor", "ab"), cwd=str(cwd),
                            env={**os.environ, "REINS_HOME": str(home())})
-    return {"supervisor_pid": sup.pid, "log": str(log), "warnings": warnings}
+    return {"supervisor_pid": sup.pid, "log": str(log), "warnings": warnings, **_started(con, sup)}
+
+
+def _started(con, sup, secs: float = 10) -> dict:
+    """What the detached supervisor did first: the process row it registered, or the claim it waits on."""
+    t0 = time.time()
+    while time.time() - t0 < secs:
+        p = con.execute("SELECT id, pgid FROM process WHERE supervisor_pid=? ORDER BY id DESC LIMIT 1", (sup.pid,)).fetchone()
+        if p:
+            return {"process": p["id"], "pgid": p["pgid"]}
+        c = con.execute("SELECT id, rule FROM resource_claim WHERE owner_pid=? AND state='waiting'", (sup.pid,)).fetchone()
+        if c:
+            return {"waiting_claim": c["id"], "rule": c["rule"]}
+        if sup.poll() is not None:
+            return {"exited": sup.returncode}
+        time.sleep(0.1)
+    return {}
+
+
+def wait(con, batch: str, timeout_s: float | None = None, poll_s: float = 2) -> dict:
+    """Block until nothing of the batch runs: no live process, no supervisor waiting for resources."""
+    batches.get(con, batch)
+    t0 = time.time()
+    while True:
+        live = [p for p in live_processes(con, batch) if _alive(p["pgid"]) or _alive(p["supervisor_pid"])]
+        waiting = [c for c in resources.live(con) if c["batch_id"] == batch and c["state"] == "waiting" and c["pid"] is None]
+        if not live and not waiting:
+            b = batches.get(con, batch)
+            return {"status": b["status"], "reason": b["status_reason"], "timed_out": False}
+        if timeout_s is not None and time.time() - t0 > timeout_s:
+            b = batches.get(con, batch)
+            return {"status": b["status"], "reason": b["status_reason"], "timed_out": True}
+        time.sleep(poll_s)
 
 
 def _env(spec: dict) -> dict:
@@ -87,10 +126,46 @@ def _env(spec: dict) -> dict:
             **providers.client_env(port, token)}
 
 
+def _on_kill(con, batch: str, stage: str, pid: int, cmd: str, how: str) -> None:
+    """A process of the batch was killed by someone other than reins: record it, pause the batch so its command does not
+    go on to the next step on a missing input, tell the user. Once per pid."""
+    if con.execute("SELECT 1 FROM batch_event WHERE batch_id=? AND event='killed' AND detail LIKE ?",
+                   (batch, f"pid {pid} %")).fetchone():
+        return
+    detail = f"pid {pid} ({cmd[:200]}) {how}"
+    with tx(con):
+        batches._event(con, batch, "killed", detail[:1000])
+    why = f"{resources.KILLED} pid {pid} {how}"[:300]
+    try:
+        if batches.get(con, batch)["status"] == "running":
+            ctl(con, "pause", batch, why, system=True)
+    except ReinsError:
+        pass
+    notify.send(con, f"killed:{batch}:{pid}", "action", f"{batch} paused: a process was killed",
+                f"{detail[:600]}\nthe step it ran did not finish. Either: reins ctl stop {batch}, then restart from that step;"
+                f" or: reins ctl resume {batch} --after-kill (the command goes on as it is)", cooldown_min=0)
+
+
 def supervise(spec: dict) -> int:
     os.environ["REINS_HOME"] = spec["home"]
     con = connect()
+    try:
+        return _supervise(con, spec)
+    finally:
+        resources.release_owner(con, os.getpid())
+
+
+def _supervise(con, spec: dict) -> int:
     batch, stage = spec["batch"], spec["stage"]
+    rs = spec.get("rules") or []
+    rule = resources.stage_rule(rs, stage) if stage != SELF else None
+    if rule:
+        try:
+            resources.acquire(con, batch, stage, rule, owner_pid=os.getpid())
+        except ReinsError as e:                      # stopped while it waited
+            notify.send(con, f"stopped:{batch}", "info", f"{batch}/{stage} did not start", str(e), cooldown_min=0)
+            return 1
+    watch = any(r.get("match") for r in rs) or bool(config()["kill_watch"]["cmd"])
     attempt = 0
     while True:
         attempt += 1
@@ -99,13 +174,22 @@ def supervise(spec: dict) -> int:
             logf.flush()
             child = subprocess.Popen(spec["cmd"], cwd=spec["cwd"], env=_env(spec), start_new_session=True,
                                      stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT)
+            started_at = now()
             with tx(con):
                 cur = con.execute("INSERT INTO process (batch_id, stage, pgid, supervisor_pid, cmd, cwd, log_path, session,"
                                   " state, attempt, started) VALUES (?,?,?,?,?,?,?,?, 'running', ?, ?)",
                                   (batch, stage, child.pid, os.getpid(), shlex.join(spec["cmd"]), spec["cwd"],
                                    spec["log"], spec["session"], attempt, now()))
                 pid_row = cur.lastrowid
+            mon = None
+            if watch:
+                mon = resources.Monitor(batch, stage, child.pid, rs,
+                                        lambda pid, cmd, line: _on_kill(connect(), batch, stage, pid, cmd,
+                                                                        f"named by the kill log: {line[:300]}"))
+                mon.start()
             code = child.wait()
+            if mon:
+                mon.stop()
         state = con.execute("SELECT state FROM process WHERE id=?", (pid_row,)).fetchone()[0]
         with tx(con):
             con.execute("UPDATE process SET state=CASE WHEN state='stopped' THEN 'stopped' ELSE 'exited' END,"
@@ -113,6 +197,13 @@ def supervise(spec: dict) -> int:
         if state == "stopped":
             notify.send(con, f"stopped:{batch}", "info", f"{batch}/{stage} stopped by request", "", cooldown_min=0)
             return 0
+        if code in resources.KILL_CODES:
+            _on_kill(con, batch, stage, child.pid, shlex.join(spec["cmd"]), f"exited {code} (killed by a signal)")
+            return code
+        killed = con.execute("SELECT detail FROM batch_event WHERE batch_id=? AND event='killed' AND at>=?"
+                             " ORDER BY id DESC LIMIT 1", (batch, started_at)).fetchone()
+        if code != 0 and killed:                     # a child was killed and the command failed for it: no retry
+            return code
         if code == 0 and stage == SELF:
             open_ = [r[0] for r in con.execute("SELECT stage FROM batch_stage WHERE batch_id=? AND status NOT IN ('done','skipped')"
                                                " ORDER BY ord", (batch,))]
@@ -159,12 +250,17 @@ def live_processes(con, batch: str) -> list:
     return con.execute("SELECT * FROM process WHERE batch_id=? AND state IN ('running','paused') ORDER BY id", (batch,)).fetchall()
 
 
-def ctl(con, verb: str, batch: str, why: str = "", system: bool = False) -> str:
-    """pause -> SIGSTOP the process group; resume -> SIGCONT; stop -> SIGTERM, then SIGKILL after 15 s."""
+def ctl(con, verb: str, batch: str, why: str = "", system: bool = False, after_kill: bool = False) -> str:
+    """pause -> SIGSTOP the process group; resume -> SIGCONT; stop -> SIGTERM, then SIGKILL after 15 s.
+    A batch paused because a process was killed resumes only with after_kill (its step did not finish)."""
     if not system:
         leases.check(con, f"batch:{batch}")
     procs = live_processes(con, batch)
     b = batches.get(con, batch)
+    if verb == "resume" and (b["status_reason"] or "").startswith(resources.KILLED) and not after_kill:
+        raise ReinsError(f"{batch} was paused because a process was killed ({b['status_reason']}); the step it ran did not "
+                         f"finish. Either: reins ctl stop {batch}, then restart from that step; or, if the command "
+                         f"redoes it itself: reins ctl resume {batch} --after-kill")
     if verb == "pause":
         for p in procs:
             try:
@@ -182,11 +278,20 @@ def ctl(con, verb: str, batch: str, why: str = "", system: bool = False) -> str:
             except ProcessLookupError:
                 pass
             con.execute("UPDATE process SET state='running' WHERE id=?", (p["id"],))
+        held = [c["pid"] for c in resources.live(con) if c["batch_id"] == batch and c["state"] == "waiting" and c["pid"]]
+        for pid in held:                             # still waiting for resources: they stay stopped
+            resources._signal(resources._subtree(resources.tree(pid), pid), signal.SIGSTOP)
+        if after_kill:
+            with tx(con):
+                batches._event(con, batch, "resume_after_kill", why or "resumed after a kill")
         if b["status"] == "paused":
             batches.set_status(con, batch, "running", why or "resumed", system=True)
         return f"resumed {len(procs)} process group(s)" if procs else \
             "no live process: batch marked running; start the stage again with reins run"
     if verb == "stop":
+        with tx(con):                                # a supervisor still waiting for resources gives up
+            con.execute("UPDATE resource_claim SET state='released', released=?, note='stopped while waiting'"
+                        " WHERE batch_id=? AND state='waiting'", (now(), batch))
         for p in procs:
             con.execute("UPDATE process SET state='stopped' WHERE id=?", (p["id"],))     # the supervisor must not retry
             for sig, wait in ((signal.SIGCONT, 0), (signal.SIGTERM, 15), (signal.SIGKILL, 0)):

@@ -6,6 +6,7 @@
 Checks, per running batch: a stage whose outputs stopped growing; cases past their stage's time limit; a process
 group that vanished; the paid gateway down while a paid stage runs. Per machine: disk, memory, GPU.
 Actions are only the safe ones: notify, pause (SIGSTOP + batch paused). It never edits code, rules or data.
+Resource claims (reins/resources.py) whose process is gone are released here too, in case their supervisor died.
 """
 from __future__ import annotations
 
@@ -155,7 +156,9 @@ def poll_balances_due(con, cfg) -> list[str]:
 def once(con=None) -> list[str]:
     con = con or connect()
     cfg = config()
-    return check_batches(con, cfg) + check_machine(con, cfg) + poll_balances_due(con, cfg)
+    from . import resources
+    n = resources.cleanup(con)                                  # claims of processes that are gone
+    return ([f"released {n} resource claim(s) of ended processes"] if n else []) + check_batches(con, cfg) + check_machine(con, cfg) + poll_balances_due(con, cfg)
 
 
 def run(interval: int = 60) -> None:
