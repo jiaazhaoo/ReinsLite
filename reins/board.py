@@ -91,6 +91,75 @@ def _latest_notes(con, hours: int = 6) -> list[dict]:
     return out
 
 
+ACTIVE_H = 2          # a batch with a new outcome, event or process within this is "moving"
+STALE_H = 24          # nothing at all for this long: forgotten, close it or pick it up
+STRICT = ("production", "rework")
+
+
+def _activity(con, bid: str) -> tuple[str | None, bool]:
+    """(newest sign of life: case outcome, batch event or process start/end; whether a process of it is alive now)."""
+    from . import runner
+    ts = [con.execute(q, (bid,)).fetchone()[0] for q in (
+        "SELECT MAX(at) FROM case_event WHERE batch_id=?", "SELECT MAX(at) FROM batch_event WHERE batch_id=?",
+        "SELECT MAX(COALESCE(ended, started)) FROM process WHERE batch_id=?")]
+    alive = any(runner._alive(p["pgid"]) or runner._alive(p["supervisor_pid"])
+                for p in runner.live_processes(con, bid) if p["state"] == "running")
+    ts = [t for t in ts if t]
+    return (max(ts) if ts else None), alive
+
+
+def _advice(con, b, cur, needs: list[str], idle_h: float | None, alive: bool) -> tuple[str, str, str]:
+    """(group, kind, command): what this batch needs from a person, in one word, and the command that does it.
+    group: active | decide | stuck | stale. The page words each kind; the reason text stays available as detail."""
+    bid, why = b["batch_id"], (b["status_reason"] or "")
+    stage = cur["stage"] if cur else "STAGE"
+    strict = b["type"] in STRICT
+    if b["status"] == "paused":
+        kind, cmd = "paused", f"reins batch status {bid}"
+        if why.startswith("sentinel"):
+            kind, cmd = "sentinel", f"reins sentinel check {bid} {stage}"
+        elif why.startswith("spend") or "cap" in why.lower() and "raised" not in why.lower():
+            kind, cmd = "spend_cap", f"reins batch approve {bid} --cap USD && reins ctl resume {bid}"
+        elif why.startswith("disk"):
+            kind, cmd = "disk", f"reins ctl resume {bid}"
+        elif "killed" in why:
+            kind, cmd = "killed", f"reins batch status {bid}"
+        elif "exited" in why:
+            kind, cmd = "exited", f"reins batch status {bid}"
+        elif "time budget" in why:
+            kind, cmd = "overtime", f"reins ctl resume {bid}"
+        elif "stopped" in why:
+            kind, cmd = "stopped", f"reins batch abandon {bid} --why '...'"
+        elif why:
+            kind = "note"
+        if not strict and idle_h is not None and idle_h >= STALE_H:
+            return "stale", kind, f"reins batch abandon {bid} --why '...'"
+        return "decide", kind, cmd
+    if needs:
+        return "decide", "approve", f"reins batch approve {bid} --cap USD"
+    unreported = con.execute("SELECT 1 FROM notification WHERE key=? AND at>?", (f"stage_incomplete:{bid}",
+                             (dt.datetime.now() - dt.timedelta(hours=STALE_H)).isoformat(timespec="seconds"))).fetchone()
+    if unreported and not alive:
+        return "decide", "unreported", f"reins batch status {bid}"
+    if alive or (idle_h is not None and idle_h < ACTIVE_H):
+        return "active", "moving", f"reins batch status {bid}"
+    if idle_h is None or idle_h >= STALE_H:
+        return ("stuck" if strict else "stale"), "idle", (f"reins batch status {bid}" if strict else f"reins batch abandon {bid} --why '...'")
+    return "stuck", "idle", f"reins batch status {bid}"
+
+
+SYSTEM_KEYS = ("disk", "gateway_down", "balance_low", "gpu", "mem")
+
+
+def _system_notes(con, hours: int = 6) -> list[dict]:
+    """Machine-level notices (disk, gateway, balance, memory, GPU): one per key, recent and unacknowledged. Batch-level
+    notices are not listed: each batch's state says what it needs."""
+    since = (dt.datetime.now() - dt.timedelta(hours=hours)).isoformat(timespec="seconds")
+    rows = con.execute("SELECT * FROM notification WHERE acked=0 AND at>? AND id IN (SELECT MAX(id) FROM notification GROUP BY key)"
+                       " ORDER BY id DESC", (since,)).fetchall()
+    return [dict(r) for r in rows if r["key"].split(":")[0] in SYSTEM_KEYS or r["key"].startswith("gpu")][:5]
+
+
 def running_cards(con) -> list[dict]:
     out = []
     for b in batches.live(con):
@@ -125,11 +194,18 @@ def running_cards(con) -> list[dict]:
                     "eta": _eta(con, b["batch_id"], cur["stage"], b["n_cases"], acc) if cur else "-",
                     "health": health, "needs": needs, "spent": st["batch"]["spent"], "cap": b["spend_cap"],
                     "time_used_h": round(batches.elapsed_h(con, b["batch_id"]) or 0, 1), "time_budget_h": b["time_budget_h"],
-                    "release": b["release_name"], "mixed": bool(b["mixed_version"]), "probe": probe(b),
+                    "release": b["release_name"], "mixed": bool(b["mixed_version"]), "probe": [],
                     "aliases": aliases[1:],
                     "stages": [{"stage": x["stage"], "status": x["status"], "paid": bool(x["paid"]),
                                 "done": x["done"] + x["skipped"] + x["failed"], "failed": x["failed"],
                                 "module_version": x["module_version"]} for x in st["stages"]]})
+        card = out[-1]
+        act, alive = _activity(con, b["batch_id"])
+        idle_h = round((dt.datetime.now() - dt.datetime.fromisoformat(act)).total_seconds() / 3600, 1) if act else None
+        group, kind, cmd = _advice(con, b, cur, needs, idle_h, alive)
+        card.update({"activity_at": act, "idle_h": idle_h, "alive": alive, "group": group, "kind": kind, "cmd": cmd})
+        if group == "active":
+            card["probe"] = probe(b)                    # only for batches that move: a probe per batch costs a process
     return out
 
 
@@ -324,7 +400,7 @@ def state(con) -> dict:
     developing = in_progress(con)
     return {"at": dt.datetime.now().isoformat(timespec="seconds"), "pipelines": pipeline_map(con, running, developing),
             "cost": spend.cost_view(con), "spend_all": spend.all_time(con), "pool": {**spend.pool_usage(con), "limits": config()["pool"]},
-            "notifications": _latest_notes(con), "resources": _resources(con),
+            "notifications": _latest_notes(con), "system": _system_notes(con), "resources": _resources(con),
             "in_progress": developing, "dev_history": dev_history(con), "unregistered_dev": unregistered_dev(con),
             "running": running, "unregistered_runs": sessions.unregistered_runs(con),
             "run_history": run_history(con),

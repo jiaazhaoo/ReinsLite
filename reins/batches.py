@@ -447,6 +447,64 @@ def set_status(con, batch: str, status: str, why: str, system: bool = False) -> 
         _event(con, batch, status, why)
 
 
+def idle_hours(con, batch: str) -> float | None:
+    ts = [con.execute(q, (batch,)).fetchone()[0] for q in (
+        "SELECT MAX(at) FROM case_event WHERE batch_id=?", "SELECT MAX(at) FROM batch_event WHERE batch_id=?",
+        "SELECT MAX(COALESCE(ended, started)) FROM process WHERE batch_id=?")]
+    ts = [t for t in ts if t]
+    if not ts:
+        return None
+    import datetime as _dt
+    return (_dt.datetime.now() - _dt.datetime.fromisoformat(max(ts))).total_seconds() / 3600
+
+
+def abandon(con, batch: str, why: str, stale_h: float = 24) -> None:
+    """Give up a batch that will not be finished: it becomes failed (with the reason) and closed; its outputs stay where
+    they are. The owner may do it any time; anyone else only when the owner is no longer active and the batch has had
+    no sign of life for `stale_h` hours. A batch with a live process is refused: stop it first (reins ctl stop)."""
+    from . import runner
+    if len(why.strip()) < 6:
+        raise ReinsError("abandon needs --why: one line saying why this batch will not be finished")
+    b = get(con, batch)
+    if b["status"] in ("closed", "done"):
+        raise ReinsError(f"{batch} is {b['status']}")
+    if any(p["state"] == "running" and (runner._alive(p["pgid"]) or runner._alive(p["supervisor_pid"]))
+           for p in runner.live_processes(con, batch)):
+        raise ReinsError(f"{batch} has a live process: reins ctl stop {batch} first")
+    try:
+        _own(con, batch)
+    except ReinsError:
+        idle = idle_hours(con, batch)
+        owner = leases.holder_of(con, f"batch:{batch}") or b["owner_session"]
+        o = con.execute("SELECT status, last_seen FROM session WHERE id=?", (owner,)).fetchone() if owner else None
+        import datetime as _dt
+        owner_active = bool(o and o["status"] == "active" and o["last_seen"] and
+                            _dt.datetime.fromisoformat(o["last_seen"]) > _dt.datetime.now() - _dt.timedelta(minutes=30))
+        if owner_active or idle is None or idle < stale_h:
+            raise ReinsError(f"{batch} belongs to session {str(owner)[:8]}" + (" (active)" if owner_active else "") +
+                             f"; others may abandon it only when that session is inactive and the batch idle {stale_h:g} h")
+    with tx(con):
+        con.execute("UPDATE batch SET status='failed', status_reason=?, closed=? WHERE batch_id=?",
+                    (f"abandoned: {why.strip()}", now(), batch))
+        _event(con, batch, "abandoned", f"{why.strip()} (by session {str(session())[:8]})")
+        con.execute("UPDATE batch SET status='closed' WHERE batch_id=?", (batch,))
+        _event(con, batch, "closed", "abandoned")
+    leases.release(con, f"batch:{batch}", force=True)
+
+
+def stale(con, hours: float = 24, type_: str | None = None) -> list[dict]:
+    """Live batches (open/running/paused) with no sign of life for `hours`, oldest first."""
+    out = []
+    for b in con.execute("SELECT * FROM batch WHERE status IN ('open','running','paused') ORDER BY created"):
+        if type_ and b["type"] != type_:
+            continue
+        idle = idle_hours(con, b["batch_id"])
+        if idle is None or idle >= hours:
+            out.append({"batch_id": b["batch_id"], "type": b["type"], "status": b["status"], "idle_h": idle,
+                        "reason": b["status_reason"] or ""})
+    return out
+
+
 def close(con, batch: str) -> None:
     with tx(con):
         b = get(con, batch)
