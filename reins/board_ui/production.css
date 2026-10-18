@@ -103,3 +103,64 @@ details.parts summary:hover { color: var(--text); }
   .pmain { padding: 20px 16px 48px; }
   .wp-head .big { margin-left: 0; text-align: left; }
 }
+
+/* cost and time first */
+.ghead { font-size: 12px; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; margin: 0 0 8px 2px; }
+.pkpis.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 900px) { .pkpis.four { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.pkpi.hero { background: linear-gradient(160deg, var(--accent-soft), var(--panel) 70%); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.pkpi.hero .v { color: var(--accent-text); }
+.prow.even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+@media (max-width: 860px) { .prow.even { grid-template-columns: minmax(0, 1fr); } }
+.crow-h, .crow-i { display: grid; grid-template-columns: minmax(0, 2.6fr) repeat(7, minmax(0, 1fr)); gap: 10px; align-items: center; }
+.crow-h { font-size: 11.5px; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; padding: 2px 0 8px; border-bottom: 1px solid var(--border); }
+.crow-h > div:not(:first-child), .crow-i > .num { text-align: right; }
+.crow-i { padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+.crow-i .nm { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-weight: 550; overflow-wrap: anywhere; }
+.crow-i .num { font-variant-numeric: tabular-nums; }
+.crow-i .strong { font-weight: 650; }
+.crow-i.total { border-bottom: 0; border-top: 1px solid var(--border-strong); font-weight: 600; }
+.crow-i .k { display: none; color: var(--faint); font-size: 11.5px; margin-right: 6px; font-weight: 400; }
+@media (max-width: 860px) {
+  .crow-h { display: none; }
+  .crow-i { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .crow-i .nm { grid-column: 1 / -1; }
+  .crow-i > .num { text-align: left; }
+  .crow-i .k { display: inline; }
+  .crow-i.total > div:empty { display: none; }
+}
+.ctbox { border: 1px solid var(--border); border-radius: 12px; background: var(--sunken); padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; }
+.ctstats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 700px) { .ctstats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.ct .l { font-size: 12px; color: var(--muted); }
+.ct .v { font-size: 21px; font-weight: 650; letter-spacing: -.01em; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.ct .v .small { font-size: 13px; font-weight: 500; }
+.ct .f { font-size: 12px; color: var(--faint); margin-top: 1px; }
+.ctsplit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+@media (max-width: 700px) { .ctsplit { grid-template-columns: minmax(0, 1fr); } }
+
+/* production vs development */
+.stack.thin { height: 6px; margin-top: 10px; }
+.daily .col { width: 100%; max-width: 30px; display: flex; flex-direction: column; border-radius: 5px 5px 2px 2px; overflow: hidden; min-height: 2px; }
+.daily .col i { display: block; width: 100%; max-width: none; border-radius: 0; min-height: 0; opacity: .9; }
+.daily .col i.pr { background: var(--accent); }
+.daily .col i.dv { background: var(--violet); }
+.daily .col i.zero { flex: 1; background: var(--border); }
+.ctstats.five { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 860px) { .ctstats.five { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+details.parts.flat { border-top: 1px solid var(--border); margin: 16px -20px -18px; }
+.drow-h, .drow-i { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 1fr) minmax(0, .8fr) minmax(0, .8fr); gap: 10px; align-items: center; }
+.drow-h { font-size: 11.5px; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; padding: 4px 0 6px; border-bottom: 1px solid var(--border); }
+.drow-h > div:nth-child(n+3), .drow-i > .num { text-align: right; }
+.drow-i { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.drow-i:last-child { border-bottom: 0; }
+.drow-i .nm { overflow-wrap: anywhere; }
+.drow-i .num { font-variant-numeric: tabular-nums; }
+.drow-i .k { display: none; color: var(--faint); font-size: 11.5px; margin-right: 6px; }
+@media (max-width: 760px) {
+  .drow-h { display: none; }
+  .drow-i { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .drow-i .nm { grid-column: 1 / -1; }
+  .drow-i > .num { text-align: left; }
+  .drow-i .k { display: inline; }
+}
