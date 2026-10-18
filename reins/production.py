@@ -392,7 +392,8 @@ def view(con) -> dict:
     tot["spent_7d"] = round(sum(v for d, v in spend_daily.items() if d in week), 2)
     tot["running"] = sum(1 for p in out if p["status"] == "running")
     dev = development(con, ids_all, imported, days)
-    return {"at": now.isoformat(timespec="seconds"), "totals": tot, "dev": dev, "packages": out, "labels": labels,
+    table = batch_table(con, rows, ledger, imported)
+    return {"at": now.isoformat(timespec="seconds"), "totals": tot, "dev": dev, "batches": table, "packages": out, "labels": labels,
             "reasons": reasons_cfg, "daily": [{"day": d, "n": daily.get(d, 0), "usd": round(spend_daily.get(d, 0), 2)} for d in days]}
 
 
@@ -464,3 +465,83 @@ def development(con, prod_ids: set, prod_imported: dict, days: list[str]) -> dic
             "released_14d": len(released_14), "in_progress": sum(1 for c in changes if c["status"] == "candidate"),
             "median_h": hrs[len(hrs) // 2] if hrs else None, "max_h": hrs[-1] if hrs else None,
             "changes": [c for c in changes if c["status"] == "candidate" or c in released_14 or c["spent"] > 0][:40]}
+
+
+def batch_table(con, rows, ledger: dict, imported: dict) -> list[dict]:
+    """One row per production / rework batch, for comparing batches of one project: its own cases, its own result rows
+    (a results file shared by several batches belongs to the newest; the older ones say so), reviewers' verdicts,
+    spend and running time. Columns a project does not have are absent, not zero."""
+    now_iso = _iso(dt.datetime.now())
+    by_project: dict[str, list] = {}
+    for b in rows:
+        by_project.setdefault(b["project"], []).append(b)
+    out = []
+    for project, bs in by_project.items():
+        cfg = _cfg(project)
+        spec = cfg.get("results") or {}
+        scope_names = (cfg.get("batch") or {}).get("scope") or ["scope"]
+        good_vals = set(spec.get("good") or [])
+        owner: dict[str, str] = {}                          # results file -> newest batch using it
+        for b in sorted(bs, key=lambda b: b["created"]):
+            if spec.get("file") and b["work_dir"]:
+                owner[str(Path(b["work_dir"]) / spec["file"])] = b["batch_id"]
+        values, details, table = {}, {}, []
+        for b in sorted(bs, key=lambda b: b["created"]):
+            bid = b["batch_id"]
+            cases = {r[0] for r in con.execute("SELECT case_id FROM batch_case WHERE batch_id=?", (bid,))}
+            row = {"batch_id": bid, "name": (json.loads(b["aliases"] or "[]") or [b["purpose"][:60]])[0], "type": b["type"],
+                   "status": b["status"], "date": (b["created"] or "")[:10], "closed": (b["closed"] or "")[:10],
+                   "scope": dict(zip(scope_names, _split_scope(b["scope"], len(scope_names)))), "n": len(cases)}
+            f = str(Path(b["work_dir"]) / spec["file"]) if spec.get("file") and b["work_dir"] else None
+            if f and owner.get(f) != bid:
+                row["results_in"] = next((x["name"] for x in table if x["batch_id"] == owner[f]), None) or \
+                    (json.loads(next(x for x in bs if x["batch_id"] == owner[f])["aliases"] or "[]") or [owner[f]])[0]
+            res = {} if not f or "results_in" in row else {c: v for c, v in _results(Path(f), spec).items() if c in cases}
+            if res:
+                vc, dc = {}, {}
+                for v, d in res.values():
+                    vc[v] = vc.get(v, 0) + 1
+                    values[v] = values.get(v, 0) + 1
+                    if d and v not in good_vals:
+                        dc[d] = dc.get(d, 0) + 1
+                        details[d] = details.get(d, 0) + 1
+                row.update({"with_result": len(res), "values": vc, "details": dc})
+            # reviewers: the latest verdict per (case, reviewer); a case two reviewers judged is consistent or not
+            verd: dict[tuple, str] = {}
+            last_review = None
+            for case, rev, v, at in con.execute("SELECT case_id, reviewer, verdict, at FROM review_event WHERE batch_id=?"
+                                                " AND action='verdict' ORDER BY id", (bid,)):
+                verd[(case, rev)] = v
+                last_review = at
+            if verd:
+                per_case: dict[str, list] = {}
+                for (case, _), v in verd.items():
+                    per_case.setdefault(case, []).append(v)
+                final = {c: vs[-1] for c, vs in per_case.items()}
+                two = {c: vs for c, vs in per_case.items() if len(vs) > 1}
+                good_reviewed = [c for c in final if res.get(c, ("",))[0] in good_vals]
+                row["review"] = {"date": (last_review or "")[:10], "n": len(final),
+                                 "correct": sum(1 for v in final.values() if v == "correct"),
+                                 "wrong": sum(1 for v in final.values() if v == "wrong"),
+                                 "unsure": sum(1 for v in final.values() if v == "unsure"),
+                                 "double": len(two), "agree": sum(1 for vs in two.values() if len(set(vs)) == 1),
+                                 "good_reviewed": len(good_reviewed),
+                                 "good_wrong": sum(1 for c in good_reviewed if final[c] == "wrong")}
+            spent = sum(u for _, _, u in ledger.get(bid, [])) + sum(u for _, _, u in imported.get(bid, []))
+            iv = _run_intervals(con, bid, now_iso)
+            row.update({"spent": round(spent, 2), "per_case": round(spent / len(cases), 4) if cases else None,
+                        "run_h": round(_union_h(iv), 1) if iv else None,
+                        "note": b["status_reason"] if b["status"] == "paused" else None,
+                        "pause": _pause_word(b["status_reason"]) if b["status"] == "paused" else None})
+            table.append(row)
+        order = list(spec.get("good") or []) + [v for v in sorted(values, key=lambda v: -values[v]) if v not in good_vals]
+        out.append({"project": project, "scope_names": scope_names, "good": sorted(good_vals),
+                    "values": [v for v in order if v in values], "details": sorted(details),
+                    "rows": table})
+    return out
+
+
+def _split_scope(scope: str, n: int) -> list[str]:
+    """'mansfield-low' with scope parts [council, wp] -> ['mansfield', 'low']; extra dashes stay in the last part."""
+    parts = scope.split("-", n - 1) if n > 1 else [scope]
+    return parts + [""] * (n - len(parts))

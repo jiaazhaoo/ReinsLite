@@ -18,6 +18,13 @@ const I18N = {
     parts: "包含 {n} 个批次", h_part: "批次", h_cases: "案件", h_state: "状态", h_done: "已出结果", h_when: "时间", h_spent: "花费",
     t_production: "生产", t_rework: "返工", delivered: "已交付 v{v} · {d}", accepted_ship: "抽检通过", accepted_ship_with_note: "抽检通过（附说明）",
     accepted_rework: "抽检不通过，返工", empty: "还没有生产批次", until: "至 {d}", none_yet: "还没有结果",
+    tab_overview: "总览", tab_batches: "批次对比", bt_sub: "每行一个生产或返工批次；同一项目的批次列相同，可以直接对比",
+    cg_ai: "AI 分流", cg_review: "人工审核", cg_cost: "成本耗时", m_n: "数量", m_pct: "比例", all_sites: "全部地区",
+    all_types: "全部类型", csv: "导出 CSV", total: "合计", b_date: "日期", b_batch: "批次", b_cases: "案件",
+    b_result: "已出结果", r_date: "复核日期", r_n: "已复核", r_ok: "对", r_bad: "错", r_unsure: "拿不准",
+    r_double: "两人复核", r_agree: "一致 {a} / 不一致 {b}", r_good: "自动通过抽查", r_good_bad: "其中判错",
+    b_note: "备注", results_in_other: "结果已被「{b}」覆盖", no_review: "未做人工复核", sort_hint: "点列名排序",
+    rows_n: "{n} 个批次",
     a_all: "全部 AI 花费", a_all_f: "生产 {p} · 开发 {d}", a_prod: "生产花费", a_prod_f: "每千个案件 {v}",
     a_dev: "开发花费", a_dev_f: "占全部 AI 花费的 {n}%", a_7d: "近 7 天花费", a_7d_f: "生产 {p} · 开发 {d}",
     g_time: "生产耗时与结果", k_results_all: "共 {n} 个案件", s_prod: "生产", s_dev: "开发",
@@ -55,6 +62,13 @@ const I18N = {
     parts: "Batches ({n})", h_part: "Batch", h_cases: "Cases", h_state: "State", h_done: "With result", h_when: "When", h_spent: "Spent",
     t_production: "production", t_rework: "rework", delivered: "Delivered v{v} · {d}", accepted_ship: "Spot check passed", accepted_ship_with_note: "Spot check passed (with a note)",
     accepted_rework: "Spot check failed: rework", empty: "No production batches yet", until: "to {d}", none_yet: "No results yet",
+    tab_overview: "Overview", tab_batches: "Batch comparison", bt_sub: "one row per production or rework batch; batches of one project share columns",
+    cg_ai: "AI routing", cg_review: "Human review", cg_cost: "Cost and time", m_n: "Counts", m_pct: "Shares", all_sites: "All sites",
+    all_types: "All types", csv: "Export CSV", total: "Total", b_date: "Date", b_batch: "Batch", b_cases: "Cases",
+    b_result: "With result", r_date: "Review date", r_n: "Reviewed", r_ok: "Correct", r_bad: "Error", r_unsure: "Unsure",
+    r_double: "Two reviewers", r_agree: "{a} agree / {b} not", r_good: "Auto-pass checked", r_good_bad: "of which error",
+    b_note: "Notes", results_in_other: "results overwritten by “{b}”", no_review: "no human review", sort_hint: "click a column to sort",
+    rows_n: "{n} batches",
     a_all: "All AI spend", a_all_f: "production {p} · development {d}", a_prod: "Production spend", a_prod_f: "{v} per 1,000 cases",
     a_dev: "Development spend", a_dev_f: "{n}% of all AI spend", a_7d: "Spend, last 7 days", a_7d_f: "production {p} · development {d}",
     g_time: "Production time and results", k_results_all: "of {n} cases", s_prod: "Production", s_dev: "Development",
@@ -82,6 +96,8 @@ const store = { get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (
 let LANG = store.get("reins.lang", "zh");
 let FILTER = store.get("reins.prod.filter", "all");
 let D = null, OK = true;
+const BT = { group: store.get("reins.bt.group", "ai"), mode: store.get("reins.bt.mode", "n"), site: "", type: "", sort: store.get("reins.bt.sort", "date"), dir: +store.get("reins.bt.dir", "1") };
+const tab = () => (location.hash.replace(/^#\/?/, "") === "batches" ? "batches" : "overview");
 const t = (k, vars) => { let s = I18N[LANG][k] ?? I18N.zh[k] ?? k; if (vars) for (const [a, b] of Object.entries(vars)) s = s.replace(`{${a}}`, b); return s; };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const num = (n) => Number(n || 0).toLocaleString(LANG === "zh" ? "zh-CN" : "en-GB");
@@ -299,6 +315,112 @@ function packageHtml(p, showProject) {
   </article>`;
 }
 
+// ---------- batch comparison ----------
+const partName = (proj, k) => { const l = (D.labels[proj] || {})[k]; return (l && (l[LANG] || l.zh || l.en)) || k.replace(/^\w/, (c) => c.toUpperCase()); };
+const partVal = (v) => scopeName(v || "");
+function btColumns(g) {
+  const pctOf = (n, d) => (n == null || !d ? null : (100 * n) / d);
+  const cnt = (n, d) => (BT.mode === "pct" ? pctOf(n, d) : n);
+  const ai = [{ k: "with_result", h: t("b_result"), v: (r) => r.with_result, fmt: "n" }]
+    .concat(g.values.map((v) => ({ k: "v:" + v, h: lab(g.project, v), good: g.good.includes(v), v: (r) => (r.values ? cnt(r.values[v] || 0, r.with_result) : null), fmt: BT.mode })))
+    .concat(g.details.map((d) => ({ k: "d:" + d, h: lab(g.project, d), sub: true, v: (r) => (r.details ? cnt(r.details[d] || 0, r.with_result) : null), fmt: BT.mode })));
+  const rv = (f) => (r) => (r.review ? f(r.review) : null);
+  const review = [
+    { k: "r_date", h: t("r_date"), v: rv((x) => x.date), fmt: "date" },
+    { k: "r_n", h: t("r_n"), v: rv((x) => x.n), fmt: "n" },
+    { k: "r_ok", h: t("r_ok"), v: rv((x) => cnt(x.correct, x.n)), fmt: BT.mode, cls: "ok" },
+    { k: "r_bad", h: t("r_bad"), v: rv((x) => cnt(x.wrong, x.n)), fmt: BT.mode, cls: "bad" },
+    { k: "r_unsure", h: t("r_unsure"), v: rv((x) => cnt(x.unsure, x.n)), fmt: BT.mode },
+    { k: "r_double", h: t("r_double"), v: rv((x) => x.double), fmt: "n", extra: (r) => (r.review && r.review.double ? t("r_agree", { a: r.review.agree, b: r.review.double - r.review.agree }) : "") },
+    { k: "r_good", h: t("r_good"), v: rv((x) => x.good_reviewed), fmt: "n" },
+    { k: "r_good_bad", h: t("r_good_bad"), v: rv((x) => (BT.mode === "pct" ? pctOf(x.good_wrong, x.good_reviewed) : x.good_wrong)), fmt: BT.mode, cls: "bad" },
+  ];
+  const cost = [
+    { k: "spent", h: t("h_cost"), v: (r) => r.spent, fmt: "usd" },
+    { k: "per_case", h: t("h_per"), v: (r) => (r.per_case == null ? null : r.per_case * 1000), fmt: "usd" },
+    { k: "run_h", h: t("h_run"), v: (r) => r.run_h, fmt: "h" },
+    { k: "note", h: t("b_note"), v: (r) => (r.pause ? t("p_" + r.pause) : t("s_" + (r.status === "closed" ? "done" : r.status === "open" ? "waiting" : r.status))), fmt: "text" },
+  ];
+  return { ai, review, cost }[BT.group];
+}
+function fmtCell(v, fmt) {
+  if (v == null || v === "") return `<span class="faint">—</span>`;
+  if (fmt === "pct") return `${v.toFixed(1)}%`;
+  if (fmt === "usd") return usd(v);
+  if (fmt === "h") return dur(v);
+  if (fmt === "date") return day(v);
+  if (fmt === "text") return esc(v);
+  return num(v);
+}
+function btTotals(g, rows) {
+  // sums of counts; shares from the sums (not an average of shares)
+  const sum = (f) => rows.reduce((a, r) => a + (f(r) || 0), 0);
+  const res = sum((r) => r.with_result);
+  const values = {}, details = {};
+  for (const r of rows) { for (const [k, n] of Object.entries(r.values || {})) values[k] = (values[k] || 0) + n; for (const [k, n] of Object.entries(r.details || {})) details[k] = (details[k] || 0) + n; }
+  const revRows = rows.filter((r) => r.review);
+  const review = revRows.length ? ["n", "correct", "wrong", "unsure", "double", "agree", "good_reviewed", "good_wrong"].reduce((o, k) => ((o[k] = revRows.reduce((a, r) => a + r.review[k], 0)), o), { date: "" }) : null;
+  const spent = sum((r) => r.spent), n = sum((r) => r.n);
+  return { name: t("total"), n, with_result: res || null, values: res ? values : null, details: res ? details : null, review,
+    spent, per_case: n ? spent / n : null, run_h: sum((r) => r.run_h), status: "", scope: {}, total: true };
+}
+function btCsv(g, rows) {
+  const head = [t("b_date"), ...g.scope_names.map((k) => partName(g.project, k)), t("b_batch"), "type", t("b_cases"), t("b_result"),
+    ...g.values.map((v) => lab(g.project, v)), ...g.details.map((d) => lab(g.project, d)),
+    t("r_date"), t("r_n"), t("r_ok"), t("r_bad"), t("r_unsure"), t("r_double"), "agree", t("r_good"), t("r_good_bad"), t("h_cost"), t("h_run"), "status"];
+  const line = (r) => [r.date, ...g.scope_names.map((k) => r.scope[k] || ""), r.name, r.type, r.n, r.with_result ?? "",
+    ...g.values.map((v) => (r.values ? r.values[v] || 0 : "")), ...g.details.map((d) => (r.details ? r.details[d] || 0 : "")),
+    ...(r.review ? [r.review.date, r.review.n, r.review.correct, r.review.wrong, r.review.unsure, r.review.double, r.review.agree, r.review.good_reviewed, r.review.good_wrong] : Array(9).fill("")),
+    r.spent, r.run_h ?? "", r.status];
+  const q = (x) => { const v = String(x ?? ""); return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v; };
+  return "﻿" + [head, ...rows.map(line)].map((l) => l.map(q).join(",")).join("\n");
+}
+let BT_VIEW = {};
+function batchesView() {
+  if (!D.batches || !D.batches.length) return `<div class="pempty">${t("empty")}</div>`;
+  return D.batches.map((g, gi) => {
+    const sites = [...new Set(g.rows.map((r) => r.scope[g.scope_names[0]]))];
+    const types = [...new Set(g.rows.map((r) => r.type))];
+    let rows = g.rows.filter((r) => (!BT.site || r.scope[g.scope_names[0]] === BT.site) && (!BT.type || r.type === BT.type));
+    const cols = btColumns(g);
+    const fixed = [{ k: "date", v: (r) => r.date }, ...g.scope_names.map((k) => ({ k: "s:" + k, v: (r) => r.scope[k] })), { k: "name", v: (r) => r.name }, { k: "n", v: (r) => r.n }];
+    const key = [...fixed, ...cols].find((c) => c.k === BT.sort) || fixed[0];
+    rows = rows.slice().sort((a, b) => { const x = key.v(a), y = key.v(b); if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1;
+      return (typeof x === "number" ? x - y : String(x).localeCompare(String(y))) * BT.dir; });
+    BT_VIEW[gi] = { g, rows };
+    const th = (k, h, cls = "") => `<th class="${cls} ${BT.sort === k ? "sorted" : ""}" data-sort="${esc(k)}">${esc(h)}${BT.sort === k ? (BT.dir > 0 ? " ↑" : " ↓") : ""}</th>`;
+    const tot = btTotals(g, rows);
+    const tr = (r) => {
+      const over = r.results_in && BT.group === "ai";
+      const cells = over ? `<td colspan="${cols.length}" class="note-cell">${esc(t("results_in_other", { b: r.results_in }))}</td>`
+        : (BT.group === "review" && !r.review && !r.total) ? `<td colspan="${cols.length}" class="note-cell faint">${t("no_review")}</td>`
+        : cols.map((c) => `<td class="num ${c.cls || ""} ${c.good ? "good" : ""}" data-l="${esc(c.h)}">${fmtCell(c.v(r), c.fmt)}${c.extra && c.extra(r) ? `<small>${esc(c.extra(r))}</small>` : ""}</td>`).join("");
+      return `<tr class="${r.total ? "total" : ""}">
+        <td class="dt" data-l="${t("b_date")}">${r.total ? "" : day(r.date)}</td>
+        ${g.scope_names.map((k) => `<td data-l="${esc(partName(g.project, k))}">${esc(partVal(r.scope[k]))}</td>`).join("")}
+        <td class="bn" data-l="${t("b_batch")}">${r.total ? `<b>${esc(r.name)}</b> <span class="faint">${t("rows_n", { n: rows.length })}</span>` : `${esc(r.name)} <span class="faint">· ${t("t_" + r.type)}</span>`}</td>
+        <td class="num" data-l="${t("b_cases")}">${num(r.n)}</td>${cells}</tr>`;
+    };
+    const chip = (k, v, label, cur) => `<button class="fchip ${cur === v ? "on" : ""}" data-bt="${k}" data-v="${esc(v)}">${esc(label)}</button>`;
+    return `<div class="pcard bt">
+      <h2>${esc(g.project)}<small>${t("bt_sub")}</small></h2>
+      <div class="bt-bar">
+        <div class="seg">${["ai", "review", "cost"].map((k) => `<button class="${BT.group === k ? "on" : ""}" data-bt="group" data-v="${k}">${t("cg_" + k)}</button>`).join("")}</div>
+        ${BT.group !== "cost" ? `<div class="seg">${["n", "pct"].map((k) => `<button class="${BT.mode === k ? "on" : ""}" data-bt="mode" data-v="${k}">${t("m_" + k)}</button>`).join("")}</div>` : ""}
+        <div class="grow"></div>
+        <button class="fchip" data-csv="${gi}">${t("csv")}</button>
+      </div>
+      <div class="bt-bar">${chip("site", "", t("all_sites"), BT.site)}${sites.map((x) => chip("site", x, partVal(x), BT.site)).join("")}
+        <span class="sep"></span>${chip("type", "", t("all_types"), BT.type)}${types.map((x) => chip("type", x, t("t_" + x), BT.type)).join("")}</div>
+      <table class="btable"><thead><tr>
+        ${th("date", t("b_date"))}${g.scope_names.map((k) => th("s:" + k, partName(g.project, k))).join("")}${th("name", t("b_batch"), "bn")}${th("n", t("b_cases"), "num")}
+        ${cols.map((c) => th(c.k, c.h, "num" + (c.sub ? " subh" : "") + (c.good ? " good" : ""))).join("")}
+      </tr></thead><tbody>${rows.map(tr).join("")}${tr(tot)}</tbody></table>
+      <div class="faint small-note">${t("sort_hint")}</div>
+    </div>`;
+  }).join("");
+}
+
 function render() {
   document.documentElement.lang = LANG;
   document.title = t("title");
@@ -316,8 +438,11 @@ function render() {
   const shown = D.packages.filter((p) => FILTER === "all" || (FILTER === "done" ? p.status === "done" : p.status !== "done"));
   const fchip = (k) => `<button class="fchip ${FILTER === k ? "on" : ""}" data-f="${k}">${t("f_" + k)} <span class="faint">${
     D.packages.filter((p) => k === "all" || (k === "done" ? p.status === "done" : p.status !== "done")).length}</span></button>`;
+  const tabs = `<nav class="ptabs">${["overview", "batches"].map((k) => `<a href="#/${k}" class="${tab() === k ? "on" : ""}">${t("tab_" + k)}</a>`).join("")}</nav>`;
+  const head = `<section class="phead"><h1>${t("title")}</h1><p>${t("sub", { p: D.totals.packages, r: D.totals.running, at: dayTime(D.at) })}</p></section>${tabs}`;
+  if (tab() === "batches") { page.innerHTML = head + batchesView() + `<div class="pfoot">${t("foot")}</div>`; return; }
   page.innerHTML = `
-    <section class="phead"><h1>${t("title")}</h1><p>${t("sub", { p: D.totals.packages, r: D.totals.running, at: dayTime(D.at) })}</p></section>
+    ${head}
     ${kpis()}
     <section class="prow even">${dailySpend()}${daily()}</section>
     ${compare()}
@@ -342,9 +467,24 @@ document.getElementById("p-lang").onclick = (e) => {
   LANG = b.dataset.lang; store.set("reins.lang", LANG); render();
 };
 document.getElementById("p-page").onclick = (e) => {
+  const csv = e.target.closest("[data-csv]");
+  if (csv) {
+    const { g, rows } = BT_VIEW[csv.dataset.csv];
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([btCsv(g, rows)], { type: "text/csv;charset=utf-8" }));
+    a.download = `batches-${g.project}-${D.at.slice(0, 10)}.csv`; a.click(); return;
+  }
+  const th = e.target.closest("th[data-sort]");
+  if (th) {
+    const k = th.dataset.sort; BT.dir = BT.sort === k ? -BT.dir : (k === "date" || k.startsWith("s:") || k === "name" ? 1 : -1); BT.sort = k;
+    store.set("reins.bt.sort", BT.sort); store.set("reins.bt.dir", BT.dir); render(); return;
+  }
+  const bt = e.target.closest("[data-bt]");
+  if (bt) { BT[bt.dataset.bt] = bt.dataset.v; if (bt.dataset.bt !== "site" && bt.dataset.bt !== "type") store.set("reins.bt." + bt.dataset.bt, bt.dataset.v); render(); return; }
   const b = e.target.closest("button[data-f]"); if (!b) return;
   FILTER = b.dataset.f; store.set("reins.prod.filter", FILTER); render();
 };
+addEventListener("hashchange", () => { scrollTo(0, 0); render(); });
 const savedTheme = store.get("reins.theme", "");
 if (savedTheme) document.documentElement.dataset.theme = savedTheme;
 document.getElementById("p-theme").onclick = () => {
