@@ -36,6 +36,9 @@ const I18N = {
     k_moving: "正在跑", k_approve: "等你批花费", k_sentinel: "结果看起来不对", k_spend_cap: "花费到上限", k_disk: "磁盘满时暂停",
     k_killed: "进程被杀", k_exited: "报错退出", k_overtime: "超出时间预算", k_stopped: "被手动停止", k_note: "人工暂停",
     k_unreported: "结束了但没回报结果", k_idle: "没有新结果", k_paused: "已暂停",
+    k_reboot: "重启后进程没了", k_lost: "进程不在了", k_ended: "进程结束了，批次没收尾",
+    jobs: "机器上未登记的任务", jobs_sub: "在跑，但没经过 reins：看不到账本、进度和花费", plus_jobs: "另有 {n} 个未登记任务在跑",
+    gpu: "显卡", running_for: "已跑 {n} 小时",
     copy: "复制命令", copied: "已复制", idle_min: "{n} 分钟没动静", idle_h: "{n} 小时没动静", idle_d: "{n} 天没动静",
     more_n: "另外 {n} 个", stale_n: "另有 {n} 个长期没动", cleanup: "清理",
     stale_hint: "这些批次一天以上没有任何动静。先列出来看（不加 --yes 不会改动），确认后加 --yes 关闭；输出文件都保留。",
@@ -85,6 +88,9 @@ const I18N = {
     k_moving: "running", k_approve: "awaiting a spend cap", k_sentinel: "results look wrong", k_spend_cap: "spend cap reached", k_disk: "paused on a full disk",
     k_killed: "process killed", k_exited: "exited with an error", k_overtime: "over its time budget", k_stopped: "stopped by hand", k_note: "paused by a person",
     k_unreported: "ended without reporting results", k_idle: "no new results", k_paused: "paused",
+    k_reboot: "process gone after a reboot", k_lost: "process gone", k_ended: "process ended, batch not wrapped up",
+    jobs: "Unregistered jobs on this machine", jobs_sub: "running, but not through reins: no ledger, progress or spend", plus_jobs: "+{n} unregistered job(s) running",
+    gpu: "GPU", running_for: "running {n} h",
     copy: "copy command", copied: "copied", idle_min: "idle {n} min", idle_h: "idle {n} h", idle_d: "idle {n} days",
     more_n: "{n} more", stale_n: "{n} more long idle", cleanup: "clean up",
     stale_hint: "These batches show no sign of life for over a day. The command lists them first (nothing changes without --yes); add --yes to close them. Outputs are kept.",
@@ -292,6 +298,13 @@ function todoPanel(full) {
   return (sys || unreg ? `<div class="alerts">${sys}${unreg}</div>` : "") +
     (body ? `<div class="card todos">${body}</div>` : `<div class="card empty">${esc(t("all_clear"))}</div>`);
 }
+function jobsHtml() {
+  const J = S.machine_jobs || [];
+  if (!J.length) return "";
+  return `<div class="card mini jobs">${J.map((j) => `<div class="mini-row"><span class="t mono" title="${esc(j.cmd)}">${esc(j.cmd)}</span>
+    <span class="faint nowrap" style="font-size:12px">pid ${j.pid}</span>
+    <span class="s">${esc(t("running_for", { n: j.elapsed_h }))} · CPU ${j.cpu}% · RAM ${j.rss_gb} GB${j.gpu_mb ? ` · ${esc(t("gpu"))} ${j.gpu_mb} MB` : ""}</span></div>`).join("")}</div>`;
+}
 function resourcesLine() {
   const R = S.resources;
   if (!R || !R.claims || !R.claims.length) return "";
@@ -307,7 +320,7 @@ const VIEWS = {
     const lastRel = S.dev_history.find((v) => v.status === "released");
     const kpis = `<div class="grid g4">
       <a class="card kpi" href="#/runs"><div class="label"><span class="dot ${n("active") ? "pulse" : ""}" style="${n("active") ? "background:var(--green)" : ""}"></span>${esc(t("g_active"))}</div>
-        <div class="value">${n("active")}</div><div class="foot">${esc(t("of_live", { n: S.running.length }))}</div></a>
+        <div class="value">${n("active")}</div><div class="foot">${(S.machine_jobs || []).length ? `<span style="color:var(--amber)">${esc(t("plus_jobs", { n: S.machine_jobs.length }))}</span>` : esc(t("of_live", { n: S.running.length }))}</div></a>
       <a class="card kpi ${n("decide") ? "hot" : ""}" href="#/runs"><div class="label"><span class="dot red"></span>${esc(t("g_decide"))}</div>
         <div class="value">${n("decide")}</div><div class="foot">${esc(t("g_stuck"))} ${n("stuck")} · ${esc(t("g_stale"))} ${n("stale")}</div></a>
       <a class="card kpi" href="#/dev"><div class="label"><span class="dot violet"></span>${esc(t("developing"))}</div><div class="value">${S.in_progress.length}</div>
@@ -327,7 +340,8 @@ const VIEWS = {
       ${kpis}
       <div class="section">${sectionHead(t("needs_you"), t("needs_you_sub"), `<a class="more" href="#/runs">${esc(t("all"))} →</a>`)}${todoPanel(false)}</div>
       ${flows}
-      <div class="section cols"><div>${sectionHead(t("g_active"), t("active_sub"), `<a class="more" href="#/runs">${esc(t("all"))} →</a>`)}${runs}</div>
+      <div class="section cols"><div>${sectionHead(t("g_active"), t("active_sub"), `<a class="more" href="#/runs">${esc(t("all"))} →</a>`)}${runs}
+          ${(S.machine_jobs || []).length ? `<div class="section" style="margin-top:22px">${sectionHead(t("jobs"), t("jobs_sub"))}${jobsHtml()}</div>` : ""}</div>
         <div>${sectionHead(t("dev_now"), "", `<a class="more" href="#/dev">${esc(t("all"))} →</a>`)}${devs}</div></div>`;
   },
   pipeline() {
@@ -351,6 +365,7 @@ const VIEWS = {
     return `<div class="page-head"><div><h1>${esc(t("runs"))}</h1><p>${esc(t("runs_sub"))}</p></div></div>
       <div class="section" style="margin-top:0">${sectionHead(t("g_active"), t("active_sub"))}${resourcesLine()}
         ${act.length ? `<div class="runs-grid">${act.map(runCard).join("")}</div>` : `<div class="card empty">${esc(t("nothing_running"))}</div>`}</div>
+      ${(S.machine_jobs || []).length ? `<div class="section">${sectionHead(t("jobs"), t("jobs_sub"))}${jobsHtml()}</div>` : ""}
       <div class="section">${sectionHead(t("needs_you"), t("needs_you_sub"))}${todoPanel(true)}</div>
       <div class="section">${sectionHead(t("history"), t("history_sub"))}${hist}</div>`;
   },

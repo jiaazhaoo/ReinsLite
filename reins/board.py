@@ -96,19 +96,29 @@ STALE_H = 24          # nothing at all for this long: forgotten, close it or pic
 STRICT = ("production", "rework")
 
 
-def _activity(con, bid: str) -> tuple[str | None, bool]:
-    """(newest sign of life: case outcome, batch event or process start/end; whether a process of it is alive now)."""
+def _boot_time() -> str | None:
+    try:
+        for line in open("/proc/stat"):
+            if line.startswith("btime "):
+                return dt.datetime.fromtimestamp(int(line.split()[1])).isoformat(timespec="seconds")
+    except OSError:
+        pass
+    return None
+
+
+def _activity(con, bid: str) -> dict:
+    """Signs of life that mean work, not paperwork: a live process of the batch, or new case outcomes. Batch events
+    (an approval, a pause, a released hold) are not progress. Also the newest process record, to say what became of it."""
     from . import runner
-    ts = [con.execute(q, (bid,)).fetchone()[0] for q in (
-        "SELECT MAX(at) FROM case_event WHERE batch_id=?", "SELECT MAX(at) FROM batch_event WHERE batch_id=?",
-        "SELECT MAX(COALESCE(ended, started)) FROM process WHERE batch_id=?")]
+    progress = con.execute("SELECT MAX(at) FROM case_event WHERE batch_id=?", (bid,)).fetchone()[0]
+    last = con.execute("SELECT * FROM process WHERE batch_id=? ORDER BY id DESC LIMIT 1", (bid,)).fetchone()
     alive = any(runner._alive(p["pgid"]) or runner._alive(p["supervisor_pid"])
                 for p in runner.live_processes(con, bid) if p["state"] == "running")
-    ts = [t for t in ts if t]
-    return (max(ts) if ts else None), alive
+    ts = [t for t in (progress, last and (last["ended"] or last["started"])) if t]
+    return {"at": max(ts) if ts else None, "progress": progress, "alive": alive, "last": dict(last) if last else None}
 
 
-def _advice(con, b, cur, needs: list[str], idle_h: float | None, alive: bool) -> tuple[str, str, str]:
+def _advice(con, b, cur, needs: list[str], idle_h: float | None, alive: bool, act: dict | None = None) -> tuple[str, str, str]:
     """(group, kind, command): what this batch needs from a person, in one word, and the command that does it.
     group: active | decide | stuck | stale. The page words each kind; the reason text stays available as detail."""
     bid, why = b["batch_id"], (b["status_reason"] or "")
@@ -141,11 +151,80 @@ def _advice(con, b, cur, needs: list[str], idle_h: float | None, alive: bool) ->
                              (dt.datetime.now() - dt.timedelta(hours=STALE_H)).isoformat(timespec="seconds"))).fetchone()
     if unreported and not alive:
         return "decide", "unreported", f"reins batch status {bid}"
-    if alive or (idle_h is not None and idle_h < ACTIVE_H):
+    act = act or {}
+    prog_h = ((dt.datetime.now() - dt.datetime.fromisoformat(act["progress"])).total_seconds() / 3600) if act.get("progress") else None
+    if alive or (prog_h is not None and prog_h < ACTIVE_H):
         return "active", "moving", f"reins batch status {bid}"
+    last = act.get("last")
+    if last:                                            # it ran under reins and nothing of it is alive now
+        import shlex as _sh
+        try:
+            raw = last["cmd"] or ""
+            body = _sh.join(json.loads(raw)) if raw.startswith("[") else raw
+            again = f"reins run {bid} " + ("--self-staged" if last["stage"] == "*" else last["stage"]) + " -- " + body
+        except (ValueError, TypeError):
+            again = f"reins batch status {bid}"
+        boot = _boot_time()
+        if last["state"] in ("running", "lost"):
+            kind = "reboot" if boot and last["started"] and last["started"] < boot else "lost"
+        elif last["state"] == "stopped":
+            kind = "stopped"
+        else:
+            kind = "ended"
+        if strict:
+            return "decide", kind, again if kind in ("reboot", "lost") else f"reins batch status {bid}"
+        if idle_h is not None and idle_h >= STALE_H:
+            return "stale", kind, f"reins batch abandon {bid} --why '...'"
+        return "stuck", kind, again if kind in ("reboot", "lost") else f"reins batch status {bid}"
     if idle_h is None or idle_h >= STALE_H:
         return ("stuck" if strict else "stale"), "idle", (f"reins batch status {bid}" if strict else f"reins batch abandon {bid} --why '...'")
     return "stuck", "idle", f"reins batch status {bid}"
+
+
+_JOBS: tuple[float, list] = (0.0, [])
+JOB_CPU, JOB_SECS = 50, 120    # a CPU core for two minutes, or anything on the GPU, counts as heavy work
+QUIET = ("chrome", "claude", "Xorg", "gnome-shell", "gnome-remote-de", "Xwayland", "pulseaudio", "pipewire", "code", "electron")
+
+
+def machine_jobs(con) -> list[dict]:
+    """Heavy work on this machine that reins did not start (a training run, a script run by hand): processes on the GPU,
+    or using a CPU core for minutes, outside every registered batch's process group and outside reins itself. The board
+    shows them so 'what is running' matches the machine, not only the registry. Cached 30 s."""
+    global _JOBS
+    if time.time() - _JOBS[0] < 30:
+        return _JOBS[1]
+    from . import runner
+    mine = set()
+    for b in batches.live(con):
+        for p in runner.live_processes(con, b["batch_id"]):
+            mine.add(p["pgid"])
+    gpu = {}
+    try:
+        q = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=5)
+        for line in q.stdout.splitlines():
+            pid, mem = [x.strip() for x in line.split(",")[:2]]
+            gpu[int(pid)] = int(float(mem))
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    out = []
+    try:
+        ps = subprocess.run(["ps", "-eo", "pid=,pgid=,etimes=,pcpu=,rss=,comm=,args="], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        ps = ""
+    for line in ps.splitlines():
+        f = line.split(None, 6)
+        if len(f) < 7:
+            continue
+        pid, pgid, et, cpu, rss, comm, args = int(f[0]), int(f[1]), int(f[2]), float(f[3]), int(f[4]), f[5], f[6]
+        heavy = pid in gpu or (cpu >= JOB_CPU and et >= JOB_SECS)
+        if not heavy or pgid in mine or comm.startswith(QUIET) or "reins " in args or "-m reins" in args or "resource_watchdog" in args:
+            continue
+        out.append({"pid": pid, "elapsed_h": round(et / 3600, 1), "cpu": round(cpu), "rss_gb": round(rss / 1e6, 1),
+                    "gpu_mb": gpu.get(pid), "cmd": args[:200]})
+    out.sort(key=lambda j: (-(j["gpu_mb"] or 0), -j["cpu"]))
+    _JOBS = (time.time(), out[:8])
+    return _JOBS[1]
 
 
 SYSTEM_KEYS = ("disk", "gateway_down", "balance_low", "gpu", "mem")
@@ -200,10 +279,11 @@ def running_cards(con) -> list[dict]:
                                 "done": x["done"] + x["skipped"] + x["failed"], "failed": x["failed"],
                                 "module_version": x["module_version"]} for x in st["stages"]]})
         card = out[-1]
-        act, alive = _activity(con, b["batch_id"])
-        idle_h = round((dt.datetime.now() - dt.datetime.fromisoformat(act)).total_seconds() / 3600, 1) if act else None
-        group, kind, cmd = _advice(con, b, cur, needs, idle_h, alive)
-        card.update({"activity_at": act, "idle_h": idle_h, "alive": alive, "group": group, "kind": kind, "cmd": cmd})
+        a = _activity(con, b["batch_id"])
+        since = a["at"] or b["created"]
+        idle_h = round((dt.datetime.now() - dt.datetime.fromisoformat(since)).total_seconds() / 3600, 1)
+        group, kind, cmd = _advice(con, b, cur, needs, idle_h, a["alive"], a)
+        card.update({"activity_at": a["at"], "idle_h": idle_h, "alive": a["alive"], "group": group, "kind": kind, "cmd": cmd})
         if group == "active":
             card["probe"] = probe(b)                    # only for batches that move: a probe per batch costs a process
     return out
@@ -402,7 +482,8 @@ def state(con) -> dict:
             "cost": spend.cost_view(con), "spend_all": spend.all_time(con), "pool": {**spend.pool_usage(con), "limits": config()["pool"]},
             "notifications": _latest_notes(con), "system": _system_notes(con), "resources": _resources(con),
             "in_progress": developing, "dev_history": dev_history(con), "unregistered_dev": unregistered_dev(con),
-            "running": running, "unregistered_runs": sessions.unregistered_runs(con),
+            "running": running, "unregistered_runs": sessions.unregistered_runs(con), "machine_jobs": machine_jobs(con),
+            "boot": _boot_time(),
             "run_history": run_history(con),
             # kept for callers of the previous shape
             "developing": [], "recent": [], "production": [], "retired": [], "spend_weekly": []}
