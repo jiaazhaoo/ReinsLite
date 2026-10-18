@@ -206,6 +206,10 @@ def build_parser() -> argparse.ArgumentParser:
     for verb in ("pause", "resume", "fail"):
         x = b.add_parser(verb); x.add_argument("batch"); x.add_argument("--why", required=True)
     x = b.add_parser("close"); x.add_argument("batch")
+    x = b.add_parser("abandon", help="give up batches that will not be finished (failed + closed, outputs kept)")
+    x.add_argument("batches", nargs="*"); x.add_argument("--why", required=True)
+    x.add_argument("--stale", type=float, help="every live batch idle this many hours (listed; add --yes to act)")
+    x.add_argument("--type", dest="btype"); x.add_argument("--yes", action="store_true")
     x = b.add_parser("status"); x.add_argument("batch"); x.add_argument("--json", action="store_true")
     x = b.add_parser("list"); x.add_argument("--live", action="store_true")
 
@@ -767,6 +771,27 @@ def _batch(con, args, cfg) -> int:
                             case_pattern=cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN), note=args.note,
                             case_key=_key(cfg))
         print(bid)
+    elif args.sub == "abandon":
+        todo = list(args.batches)
+        if args.stale is not None:
+            found = batches.stale(con, args.stale, args.btype)
+            for f in found:
+                print(f"  {f['batch_id']:<46} {f['type']:<10} {f['status']:<7} idle {f['idle_h'] or 0:6.1f} h  {f['reason'][:50]}")
+            if not args.yes:
+                print(f"{len(found)} batches idle >= {args.stale:g} h; nothing changed. Add --yes to abandon them.")
+                return 0
+            todo += [f["batch_id"] for f in found]
+        if not todo:
+            raise ReinsError("name batches, or --stale HOURS")
+        done, refused = 0, []
+        for bid in todo:
+            try:
+                batches.abandon(con, bid, args.why, args.stale or 24); done += 1
+            except ReinsError as e:
+                refused.append(f"{bid}: {e}")
+        print(f"abandoned {done}" + (f"; refused {len(refused)}:" if refused else ""))
+        for r in refused:
+            print(f"  {r}")
     elif args.sub == "probe":
         batches.set_probe(con, args.batch, args.cmd); print("probe set")
     elif args.sub == "skip-cases":

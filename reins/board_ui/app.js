@@ -7,9 +7,9 @@ const I18N = {
     workspace: "工作区", governance: "治理", updated: "更新于", live: "实时", sub: "开发与运行的缰绳",
     ov_sub: "现在在跑什么、在改什么、花了多少", running_now: "运行中", developing: "开发中", spend_today: "今日花费",
     lowest_balance: "最低余额", paused: "暂停", need_action: "需要处理", last_release: "最近发布", of_daily: "日上限",
-    flow: "流程", flow_sub: "每个阶段现在跑的代码版本", view_map: "查看图谱", runs_now: "正在运行", dev_now: "正在开发",
+    flow: "流程", flow_sub: "流水线按顺序做哪几步，每步上有多少批次", view_map: "查看图谱", runs_now: "正在运行", dev_now: "正在开发",
     recent_releases: "最近发布", all: "全部", nothing_running: "没有在跑的批次", nothing_dev: "没有进行中的开发",
-    pipe_sub: "最新冻结的工作流，每个阶段的代码版本和它从工具箱里拿的东西", frozen: "冻结于", click_stage: "点阶段看详情",
+    pipe_sub: "上面是步骤，下面是分工；点步骤看它的代码版本和工具", frozen: "冻结于", click_stage: "点阶段看详情",
     steps: "步骤", step_n: "第 {n} 步", code: "代码版本", no_module: "无代码模块（流水线自带）", batches_here: "在这一阶段",
     in_dev: "开发中", paid_stage: "付费阶段", paid_note: "先批花费上限", tools: "工具", stale: "生产已是 {v}，工作流未重新冻结",
     used_by: "也用于", newer: "有新版本", runs_sub: "正在跑的批次和跑完的批次", history: "运行记录", history_sub: "跑完的批次",
@@ -31,6 +31,17 @@ const I18N = {
     st_running: "运行中", st_paused: "暂停", st_open: "未开始", st_closed: "已关闭", st_done: "完成", st_failed: "失败", st_planned: "未开始", st_skipped: "跳过",
     t_production: "生产", t_rework: "返工", t_experiment: "实验", t_pilot: "试跑", t_eval: "评测", t_smoke: "冒烟", t_drift: "漂移", t_benchmark_build: "建基准",
     d_ship: "交付", d_ship_with_note: "带说明交付", d_rework: "返工",
+    g_active: "在动", g_decide: "要你决定", g_stuck: "停住了", g_stale: "长期没动",
+    gs_decide: "暂停了或在等你：看原因，照命令处理", gs_stuck: "两小时到一天没有新结果", gs_stale: "一天以上没有任何动静，大多可以清理",
+    k_moving: "正在跑", k_approve: "等你批花费", k_sentinel: "结果看起来不对", k_spend_cap: "花费到上限", k_disk: "磁盘满时暂停",
+    k_killed: "进程被杀", k_exited: "报错退出", k_overtime: "超出时间预算", k_stopped: "被手动停止", k_note: "人工暂停",
+    k_unreported: "结束了但没回报结果", k_idle: "没有新结果", k_paused: "已暂停",
+    copy: "复制命令", copied: "已复制", idle_min: "{n} 分钟没动静", idle_h: "{n} 小时没动静", idle_d: "{n} 天没动静",
+    more_n: "另外 {n} 个", stale_n: "另有 {n} 个长期没动", cleanup: "清理",
+    stale_hint: "这些批次一天以上没有任何动静。先列出来看（不加 --yes 不会改动），确认后加 --yes 关闭；输出文件都保留。",
+    all_clear: "没有需要你处理的事", needs_you: "需要你处理", needs_you_sub: "按状态分组，每条附下一步命令",
+    active_sub: "两小时内有新结果或进程在跑", of_live: "共 {n} 个未关闭的批次", view_division: "看分工",
+    division: "分工", division_sub: "每一步上现在有哪些批次和开发", toolbox_per_stage: "点步骤看这一步的代码版本和工具",
     unreg_dev: "未登记的开发", unreg_dev_sub: "领先 main、但没经过 reins 登记的分支：登记（reins dev adopt 工作区 --about ...）或放弃",
     branch: "分支", worktree: "工作区", ahead: "领先 main", uncommitted: "未提交", last_commit: "最后提交", stale_days: "{d} 天未动",
     plus_unreg: "另有 {n} 个未登记分支",
@@ -45,7 +56,7 @@ const I18N = {
     workspace: "Workspace", governance: "Governance", updated: "Updated", live: "Live", sub: "reins for dev and runs",
     ov_sub: "What runs, what changes, what it costs", running_now: "Running", developing: "In development", spend_today: "Spent today",
     lowest_balance: "Lowest balance", paused: "paused", need_action: "need action", last_release: "Last release", of_daily: "daily cap",
-    flow: "Pipeline", flow_sub: "The code version each stage runs now", view_map: "Open map", runs_now: "Running now", dev_now: "In development",
+    flow: "Pipeline", flow_sub: "the steps of the pipeline, in order, with what stands at each", view_map: "Open map", runs_now: "Running now", dev_now: "In development",
     recent_releases: "Recent releases", all: "All", nothing_running: "No batch is running", nothing_dev: "Nothing in development",
     pipe_sub: "The newest frozen workflow: each stage's code and the versioned tools it uses", frozen: "Frozen", click_stage: "Click a stage for details",
     steps: "Steps", step_n: "step {n}", code: "Code", no_module: "No module (part of the pipeline)", batches_here: "In this stage",
@@ -69,6 +80,17 @@ const I18N = {
     st_running: "running", st_paused: "paused", st_open: "open", st_closed: "closed", st_done: "done", st_failed: "failed", st_planned: "planned", st_skipped: "skipped",
     t_production: "production", t_rework: "rework", t_experiment: "experiment", t_pilot: "pilot", t_eval: "eval", t_smoke: "smoke", t_drift: "drift", t_benchmark_build: "benchmark build",
     d_ship: "ship", d_ship_with_note: "ship with note", d_rework: "rework",
+    g_active: "Moving", g_decide: "Needs you", g_stuck: "Stuck", g_stale: "Long idle",
+    gs_decide: "paused or waiting for you: read the reason, run the command", gs_stuck: "no new result for 2 h to a day", gs_stale: "no sign of life for over a day; most can be closed",
+    k_moving: "running", k_approve: "awaiting a spend cap", k_sentinel: "results look wrong", k_spend_cap: "spend cap reached", k_disk: "paused on a full disk",
+    k_killed: "process killed", k_exited: "exited with an error", k_overtime: "over its time budget", k_stopped: "stopped by hand", k_note: "paused by a person",
+    k_unreported: "ended without reporting results", k_idle: "no new results", k_paused: "paused",
+    copy: "copy command", copied: "copied", idle_min: "idle {n} min", idle_h: "idle {n} h", idle_d: "idle {n} days",
+    more_n: "{n} more", stale_n: "{n} more long idle", cleanup: "clean up",
+    stale_hint: "These batches show no sign of life for over a day. The command lists them first (nothing changes without --yes); add --yes to close them. Outputs are kept.",
+    all_clear: "Nothing needs you", needs_you: "Needs you", needs_you_sub: "grouped by state, each with its next command",
+    active_sub: "a new result or a live process within 2 h", of_live: "of {n} open batches", view_division: "Who is where",
+    division: "Division of work", division_sub: "which batches and changes stand at each step", toolbox_per_stage: "click a step for its code version and tools",
     unreg_dev: "Unregistered development", unreg_dev_sub: "Branches ahead of main that reins never registered: adopt them (reins dev adopt WORKTREE --about ...) or abandon them",
     branch: "Branch", worktree: "Worktree", ahead: "Ahead of main", uncommitted: "Uncommitted", last_commit: "Last commit", stale_days: "idle {d} days",
     plus_unreg: "+{n} unregistered branch(es)",
@@ -102,6 +124,7 @@ const ICON = {
   moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
   alert: '<path d="M12 3.5 2.8 19.5h18.4z"/><path d="M12 10v4.5M12 17.2v.3"/>',
   x: '<path d="M6 6l12 12M18 6 6 18"/>',
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
   globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.6 2.5 14.4 0 17M12 3.5c-2.5 2.6-2.5 14.4 0 17"/>',
 };
 const icon = (n) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[n] || ""}</svg>`;
@@ -147,24 +170,49 @@ function shelfCounts(tools) {
   return SHELVES.filter((s) => c[s]).map((s) => `<span class="shelf-n s-${s}" title="${esc(t("s_" + s))}">${esc(t("s_" + s))} ${c[s]}</span>`).join("");
 }
 
-function stageCard(st, i, pi) {
-  const status = [];
-  st.batches.forEach((b) => { const c = b.status === "running" ? "green" : b.status === "paused" ? "amber" : "";
-    status.push(badge(`${b.title} · ${b.status === "running" ? b.pct + "%" : t("st_" + b.status)}`, c, c || false)); });
-  st.developing.forEach(() => status.push(badge(t("in_dev"), "amber", "amber")));
-  if (st.stale) status.push(badge("!", "red"));
-  if (st.paid) status.push(badge(t("paid_stage"), "outline"));
-  const ver = st.code.length ? st.code[0].version : null;
-  return `<button class="stage ${st.batches.some((b) => b.status === "running") ? "busy" : ""}" data-stage="${pi}:${i}">
-    <div class="top">${crab(st.mascot)}<span class="idx">${String(i + 1).padStart(2, "0")}</span></div>
-    <div><h3>${esc(st.title)}</h3><div class="key">${esc(st.name)}${st.steps ? " · " + esc(t("step_n", { n: st.steps })) : ""}</div></div>
-    <div class="about">${esc(st.module_about || "")}</div>
-    ${ver ? `<span class="chip" title="${esc(st.code[0].about)}">${esc(ver)}${st.code.length > 1 ? ` +${st.code.length - 1}` : ""}</span>` : `<span class="faint" style="font-size:12px">${esc(t("no_module"))}</span>`}
-    <div class="status">${status.join("")}</div>
-    <div class="shelves">${shelfCounts(st.tools)}</div>
+/* ---------- the flow: a step diagram (what the pipeline does, in order) ---------- */
+const shortVer = (v) => String(v || "").replace(/^[a-z][a-z0-9_]*-/, "").replace(/-(\d{4})(\d{2})(\d{2})-(\d+)$/, " · $2-$3");
+const GROUPS = ["active", "decide", "stuck", "stale"];
+function stageLoad(st) {                         // batches standing at this stage, by group, and changes in progress
+  const at = S.running.filter((r) => r.stage === st.name);
+  const by = {}; GROUPS.forEach((g) => (by[g] = at.filter((r) => r.group === g)));
+  return { by, dev: st.developing.length };
+}
+function stepNode(st, i, pi, big) {
+  const L = stageLoad(st);
+  const busy = L.by.active.length > 0;
+  const ver = st.code.length ? st.code[0].version : "";
+  const counters = [
+    L.by.active.length ? `<span class="cnt green" title="${esc(t("g_active"))}"><span class="dot green"></span>${L.by.active.length}</span>` : "",
+    L.by.decide.length ? `<span class="cnt red" title="${esc(t("g_decide"))}"><span class="dot red"></span>${L.by.decide.length}</span>` : "",
+    L.by.stuck.length ? `<span class="cnt amber" title="${esc(t("g_stuck"))}"><span class="dot amber"></span>${L.by.stuck.length}</span>` : "",
+    L.dev ? `<span class="cnt violet" title="${esc(t("in_dev"))}">✎ ${L.dev}</span>` : "",
+  ].join("");
+  return `<button class="snode ${busy ? "busy" : ""}" data-stage="${pi}:${i}">
+    <div class="sdot">${big ? crab(st.mascot, "crab") : `<span>${i + 1}</span>`}</div>
+    <div class="slabel"><b>${esc(st.title)}</b><span>${esc(st.steps ? t("step_n", { n: st.steps }) : st.name)}</span></div>
+    ${big && ver ? `<div class="sver" title="${esc(ver + " — " + st.code[0].about)}">${esc(shortVer(ver))}</div>` : ""}
+    <div class="scnt">${counters || `<span class="faint">—</span>`}</div>
   </button>`;
 }
-const flowHtml = (p, pi, compact) => `<div class="flow-wrap"><div class="flow ${compact ? "compact" : ""}" style="--n:${p.stages.length}">${p.stages.map((st, i) => stageCard(st, i, pi)).join("")}</div></div>`;
+const stepFlow = (p, pi, big) => `<div class="steps-wrap"><div class="steps ${big ? "big" : ""}" style="--n:${p.stages.length}">${p.stages.map((st, i) => stepNode(st, i, pi, big)).join("")}</div>
+  <div class="steps-legend"><span><span class="dot green"></span>${esc(t("g_active"))}</span><span><span class="dot red"></span>${esc(t("g_decide"))}</span><span><span class="dot amber"></span>${esc(t("g_stuck"))}</span><span>✎ ${esc(t("in_dev"))}</span><span class="faint">${esc(t("click_stage"))}</span></div></div>`;
+
+/* ---------- the division of work: who stands at which step ---------- */
+function divisionBoard(p) {
+  const col = (st) => {
+    const L = stageLoad(st);
+    const row = (r) => `<a class="drow" href="#/runs" title="${esc(r.batch_id)}"><span class="dot ${GCOLOR[r.group]}"></span><span class="dt">${esc(r.title)}</span><span class="dm">${r.group === "active" ? r.pct + "%" : esc(kindText(r))}</span></a>`;
+    const shown = [...L.by.active, ...L.by.decide, ...L.by.stuck];
+    const devs = st.developing.map((d) => `<a class="drow" href="#/dev" title="${esc((d.version || "") + " — " + (d.about || ""))}"><span class="dot violet"></span><span class="dt">${esc(shortVer(d.version) || d.about || "")}</span></a>`).join("");
+    return `<div class="dcol"><div class="dhead"><b>${esc(st.title)}</b><span class="faint">${esc(st.name)}</span></div>
+      ${shown.slice(0, 6).map(row).join("")}${shown.length > 6 ? `<div class="dmore">${esc(t("more_n", { n: shown.length - 6 }))}</div>` : ""}
+      ${L.by.stale.length ? `<div class="dmore">${esc(t("stale_n", { n: L.by.stale.length }))}</div>` : ""}
+      ${devs ? `<div class="dsub">${esc(t("in_dev"))}</div>${devs}` : ""}
+      ${!shown.length && !devs && !L.by.stale.length ? `<div class="dmore">${esc(t("none"))}</div>` : ""}</div>`;
+  };
+  return `<div class="division-wrap"><div class="division" style="--n:${p.stages.length}">${p.stages.map(col).join("")}</div></div>`;
+}
 
 /* tables: fixed columns that wrap; below 720 px of room each row becomes a card (no sideways scrolling anywhere) */
 function tbl(cols, rows, empty = "—", small = false) {
@@ -184,7 +232,7 @@ function stepper(r) {
 
 function runNotes(r) {
   const out = [];
-  if (r.status_reason) out.push(`<div class="note warn">⏸ ${esc(r.status_reason)}</div>`);
+  if (r.status_reason && r.status === "paused") out.push(`<div class="note warn">⏸ ${esc(r.status_reason)}</div>`);
   r.needs.forEach((n) => out.push(`<div class="note bad">⚠ ${esc(n)}</div>`));
   r.issues.forEach((i) => out.push(`<div class="note ${i.status === "fixed" ? "ok" : "bad"}">#${i.id} ${esc(t(i.status === "fixed" ? "issue_fixed" : i.status === "in_progress" ? "issue_fixing" : "issue_todo"))} · ${i.n} ${esc(t("cases"))} · ${esc(i.symptom)}${i.version ? " → " + esc(i.version) : ""}</div>`));
   if (r.mixed) out.push(`<div class="note warn">${esc(t("mixed"))}</div>`);
@@ -194,81 +242,103 @@ function runNotes(r) {
 
 function runCard(r) {
   const [hk, hc] = HEALTH[r.health] || HEALTH.green;
-  return `<div class="card run">
-    <div class="run-head"><div style="min-width:0"><h3>${esc(r.title)}</h3><div class="id">${esc(r.batch_id)}</div></div>
-      <div class="right">${statusBadge(r.status)}${typeBadge(r.type)}${badge(t(hk), hc)}</div></div>
-    <div class="purpose">${esc(r.purpose)}</div>
+  const same = (r.purpose || "").trim() === (r.title || "").trim();
+  const stat = (k, v) => `<span><span class="k">${esc(k)}</span> ${v}</span>`;
+  return `<div class="card run compact">
+    <div class="run-head"><div style="min-width:0"><h3 title="${esc(r.purpose)}">${esc(r.title)}</h3><div class="id">${esc(r.batch_id)}</div></div>
+      <div class="right">${r.status !== "running" ? statusBadge(r.status) : ""}${typeBadge(r.type)}${r.health !== "green" ? badge(t(hk), hc) : ""}</div></div>
+    ${same ? "" : `<div class="purpose">${esc(r.purpose)}</div>`}
     ${stepper(r)}
-    <div class="stats">
-      <div class="stat"><div class="k">${esc(t("cases"))}</div><div class="v">${r.n_cases}${r.n_skipped ? ` <small>· ${r.n_skipped} ${esc(t("skipped"))}</small>` : ""}</div></div>
-      <div class="stat"><div class="k">${esc(t("progress"))} · ${esc(r.stage)}</div><div class="v">${r.adopted ? "—" : esc(r.progress)} <small>${esc(r.stage_ord)}</small></div></div>
-      <div class="stat"><div class="k">${esc(t("eta"))}</div><div class="v">${esc(r.eta)}</div></div>
-      <div class="stat"><div class="k">${esc(t("spend"))}</div><div class="v">${usd(r.spent)} <small>/ ${usd(r.cap)}</small></div></div>
-      <div class="stat"><div class="k">${esc(t("time"))}</div><div class="v">${r.time_used_h} h${r.time_budget_h ? ` <small>/ ${r.time_budget_h} h</small>` : ""}</div></div>
+    <div class="statline">
+      ${stat(t("cases"), `<b>${r.n_cases}</b>${r.n_skipped ? ` <span class="faint">(${r.n_skipped} ${esc(t("skipped"))})</span>` : ""}`)}
+      ${stat(t("progress"), `<b>${r.adopted ? "—" : esc(r.progress)}</b> <span class="faint">${esc(r.stage)} ${esc(r.stage_ord)}</span>`)}
+      ${r.eta && r.eta !== "-" ? stat(t("eta"), `<b>${esc(r.eta)}</b>`) : ""}
+      ${stat(t("spend"), `<b>${usd(r.spent)}</b> <span class="faint">/ ${usd(r.cap)}</span>`)}
+      ${stat(t("time"), `<b>${r.time_used_h} h</b>${r.time_budget_h ? ` <span class="faint">/ ${r.time_budget_h} h</span>` : ""}`)}
     </div>
     ${runNotes(r)}
     ${r.probe.length ? `<details class="probe"><summary>${esc(t("probe"))}</summary><pre>${esc(r.probe.join("\n"))}</pre></details>` : ""}
   </div>`;
 }
 
-function alertsHtml() {
-  const items = S.notifications.map((n) => `<div class="alert ${n.level}">${icon("alert")}<div style="min-width:0"><b>${esc(n.title)}</b><div class="body">${esc(n.body)}</div></div><span class="when">${when(n.at)}</span></div>`);
-  S.unregistered_runs.forEach((u) => items.push(`<div class="alert warn">${icon("alert")}<div><b>${esc(t("unreg_run"))} · ${esc(u.kind)}</b><div class="body">${esc(u.what)} — ${esc(t("unreg_note"))}</div></div><span class="when">${when(u.at)}</span></div>`));
+/* ---------- what needs a person: grouped by state, each with the command that does it ---------- */
+const GCOLOR = { active: "green", decide: "red", stuck: "amber", stale: "" };
+const kindText = (r) => t("k_" + r.kind);
+function copyBtn(cmd) { return `<button class="copy" data-copy="${esc(cmd)}" title="${esc(t("copy"))}">${icon("copy")}</button>`; }
+const idleText = (r) => (r.idle_h == null ? "" : r.idle_h < 1 ? t("idle_min", { n: Math.round(r.idle_h * 60) }) : r.idle_h < 48 ? t("idle_h", { n: Math.round(r.idle_h) }) : t("idle_d", { n: Math.round(r.idle_h / 24) }));
+function todoRow(r) {
+  return `<div class="todo">
+    <span class="tk ${GCOLOR[r.group]}">${esc(kindText(r))}</span>
+    <div class="tm"><div class="tt"><b title="${esc(r.batch_id)}">${esc(r.title)}</b><span class="faint">${[t("t_" + r.type), r.stage !== "-" ? r.stage : "", idleText(r)].filter(Boolean).map(esc).join(" · ")}</span></div>
+      ${r.status_reason ? `<div class="tr" title="${esc(r.status_reason)}">${esc(r.status_reason)}</div>` : ""}
+      <div class="tc"><code>${esc(r.cmd)}</code>${copyBtn(r.cmd)}</div></div></div>`;
+}
+function todoPanel(full) {
+  const g = {}; GROUPS.forEach((k) => (g[k] = S.running.filter((r) => r.group === k)));
+  const order = (a, b) => (b.type === "production") - (a.type === "production") || (b.type === "rework") - (a.type === "rework") || (a.idle_h || 0) - (b.idle_h || 0);
+  const sec = (k, rows, open) => rows.length ? `<details class="tgroup" data-k="${k}" ${open ? "open" : ""}><summary><span class="dot ${GCOLOR[k]}"></span><b>${esc(t("g_" + k))}</b><span class="tn">${rows.length}</span><span class="faint">${esc(t("gs_" + k))}</span></summary>
+      ${rows.sort(order).slice(0, full ? 999 : 6).map(todoRow).join("")}${!full && rows.length > 6 ? `<a class="tall" href="#/runs">${esc(t("more_n", { n: rows.length - 6 }))} →</a>` : ""}</details>` : "";
+  const st = g.stale;
+  const types = {}; st.forEach((r) => (types[r.type] = (types[r.type] || 0) + 1));
+  const staleCmd = "reins batch abandon --stale 24 --why '...'";
+  const stale = st.length ? `<details class="tgroup" data-k="stale"><summary><span class="dot"></span><b>${esc(t("g_stale"))}</b><span class="tn">${st.length}</span>
+      <span class="faint">${Object.entries(types).map(([k, n]) => `${esc(t("t_" + k))} ${n}`).join(" · ")}</span></summary>
+      <div class="todo"><span class="tk">${esc(t("cleanup"))}</span><div class="tm"><div class="tr">${esc(t("stale_hint"))}</div>
+        <div class="tc"><code>${esc(staleCmd)}</code>${copyBtn(staleCmd)}</div></div></div>
+      ${st.sort((a, b) => (b.idle_h || 0) - (a.idle_h || 0)).map((r) => `<div class="srow"><span class="mono">${esc(r.batch_id)}</span><span class="faint">${esc(idleText(r))}</span><span class="faint">${esc(r.status_reason || "")}</span></div>`).join("")}</details>` : "";
+  const sys = (S.system || []).map((n) => `<div class="alert ${n.level}">${icon("alert")}<div style="min-width:0"><b>${esc(n.title)}</b><div class="body">${esc(n.body)}</div></div><span class="when">${when(n.at)}</span></div>`).join("");
+  const unreg = (S.unregistered_runs || []).map((u) => `<div class="alert warn">${icon("alert")}<div><b>${esc(t("unreg_run"))} · ${esc(u.kind)}</b><div class="body">${esc(u.what)} — ${esc(t("unreg_note"))}</div></div><span class="when">${when(u.at)}</span></div>`).join("");
+  const body = sec("decide", g.decide, true) + sec("stuck", g.stuck, full) + stale;
+  return (sys || unreg ? `<div class="alerts">${sys}${unreg}</div>` : "") +
+    (body ? `<div class="card todos">${body}</div>` : `<div class="card empty">${esc(t("all_clear"))}</div>`);
+}
+function resourcesLine() {
   const R = S.resources;
-  if (R && R.claims && R.claims.length) {
-    const w = R.claims.filter((c) => c.state === "waiting");
-    const line = (c) => `${esc(c.state === "waiting" ? t("res_waiting") : t("res_granted"))} · ${esc(c.batch_id)} ${esc(c.rule)}`
-      + `${c.mem_gb ? ` ${c.mem_gb} GB RAM` : ""}${c.gpu_gb ? ` ${c.gpu_gb} GB GPU` : ""}${c.pid ? ` pid ${c.pid}` : ""}`;
-    const head = `RAM ${R.held.mem} / ${R.budget.mem.toFixed(0)} GB` + (R.budget.gpu ? ` · GPU ${R.held.gpu} / ${R.budget.gpu.toFixed(0)} GB` : "");
-    items.push(`<div class="alert ${w.length ? "warn" : "info"}">${icon("alert")}<div style="min-width:0"><b>${esc(t("res_title"))} · ${esc(head)}</b>`
-      + `<div class="body">${R.claims.map(line).join("<br>")}</div></div></div>`);
-  }
-  return items.length ? `<div class="alerts">${items.join("")}</div>` : "";
+  if (!R || !R.claims || !R.claims.length) return "";
+  const w = R.claims.filter((c) => c.state === "waiting").length;
+  return `<div class="faint" style="font-size:12.5px;margin:-6px 0 14px">${esc(t("res_title"))}: RAM ${R.held.mem} / ${R.budget.mem.toFixed(0)} GB${R.budget.gpu ? ` · GPU ${R.held.gpu} / ${R.budget.gpu.toFixed(0)} GB` : ""}${w ? ` · ${w} ${esc(t("res_waiting"))}` : ""}</div>`;
 }
 
 /* ---------- views ---------- */
 const VIEWS = {
   overview() {
-    const running = S.running.filter((r) => r.status === "running").length;
-    const paused = S.running.filter((r) => r.status === "paused").length;
-    const act = S.running.filter((r) => r.health === "red").length;
+    const n = (g) => S.running.filter((r) => r.group === g).length;
     const P = S.pool, L = P.limits;
-    const bals = S.cost.filter((c) => c.has_endpoint && c.balance != null).sort((a, b) => a.balance - b.balance);
-    const low = bals[0];
     const lastRel = S.dev_history.find((v) => v.status === "released");
     const kpis = `<div class="grid g4">
-      <div class="card kpi"><div class="label"><span class="dot ${running ? "pulse" : ""}" style="${running ? "background:var(--green)" : ""}"></span>${esc(t("running_now"))}</div>
-        <div class="value">${running}<small>/ ${S.running.length}</small></div><div class="foot">${paused} ${esc(t("paused"))} · ${act} ${esc(t("need_action"))}</div></div>
-      <div class="card kpi"><div class="label"><span class="dot amber"></span>${esc(t("developing"))}</div><div class="value">${S.in_progress.length}</div>
-        <div class="foot">${(S.unregistered_dev || []).length ? `<a href="#/dev" style="color:var(--amber)">${esc(t("plus_unreg", { n: S.unregistered_dev.length }))}</a>` : `${esc(t("last_release"))} ${lastRel ? when(lastRel.released_at) : "—"}`}</div></div>
-      <div class="card kpi"><div class="label"><span class="dot accent"></span>${esc(t("spend_today"))}</div><div class="value">${usd(P.today)}<small>/ ${usd(L.daily_cap)}</small></div>
-        <div class="meter"><i class="${meterCls(pct(P.today, L.daily_cap))}" style="width:${pct(P.today, L.daily_cap)}%"></i></div></div>
-      <div class="card kpi"><div class="label"><span class="dot blue"></span>${esc(t("lowest_balance"))}</div><div class="value">${low ? usd(low.balance) : "—"}</div>
-        <div class="foot">${low ? esc(low.provider) : ""}</div></div></div>`;
-    const flows = S.pipelines.map((p, pi) => `<div class="section">${sectionHead(t("flow") + (S.pipelines.length > 1 ? " · " + p.project : ""), t("flow_sub"), `<a class="more" href="#/pipeline">${esc(t("view_map"))} →</a>`)}${flowHtml(p, pi, true)}</div>`).join("");
-    const runs = S.running.length ? `<div class="card mini">${S.running.map((r) => `<a class="mini-row" href="#/runs">
-        <span class="t">${esc(r.title)}</span><span>${statusBadge(r.status)}</span>
-        <span class="s">${esc(t("t_" + r.type))} · ${esc(r.stage)} ${esc(r.stage_ord)} · ${r.adopted ? esc(t("adopted")) : esc(r.progress)} · ${usd(r.spent)} / ${usd(r.cap)}</span>
+      <a class="card kpi" href="#/runs"><div class="label"><span class="dot ${n("active") ? "pulse" : ""}" style="${n("active") ? "background:var(--green)" : ""}"></span>${esc(t("g_active"))}</div>
+        <div class="value">${n("active")}</div><div class="foot">${esc(t("of_live", { n: S.running.length }))}</div></a>
+      <a class="card kpi ${n("decide") ? "hot" : ""}" href="#/runs"><div class="label"><span class="dot red"></span>${esc(t("g_decide"))}</div>
+        <div class="value">${n("decide")}</div><div class="foot">${esc(t("g_stuck"))} ${n("stuck")} · ${esc(t("g_stale"))} ${n("stale")}</div></a>
+      <a class="card kpi" href="#/dev"><div class="label"><span class="dot violet"></span>${esc(t("developing"))}</div><div class="value">${S.in_progress.length}</div>
+        <div class="foot">${(S.unregistered_dev || []).length ? `<span style="color:var(--amber)">${esc(t("plus_unreg", { n: S.unregistered_dev.length }))}</span>` : `${esc(t("last_release"))} ${lastRel ? when(lastRel.released_at) : "—"}`}</div></a>
+      <a class="card kpi" href="#/cost"><div class="label"><span class="dot accent"></span>${esc(t("spend_today"))}</div><div class="value">${usd(P.today)}<small>/ ${usd(L.daily_cap)}</small></div>
+        <div class="meter"><i class="${meterCls(pct(P.today, L.daily_cap))}" style="width:${pct(P.today, L.daily_cap)}%"></i></div></a></div>`;
+    const flows = S.pipelines.map((p, pi) => `<div class="section">${sectionHead(t("flow") + (S.pipelines.length > 1 ? " · " + p.project : ""), t("flow_sub"), `<a class="more" href="#/pipeline">${esc(t("view_division"))} →</a>`)}${stepFlow(p, pi, false)}</div>`).join("");
+    const act = S.running.filter((r) => r.group === "active");
+    const runs = act.length ? `<div class="card mini">${act.map((r) => `<a class="mini-row" href="#/runs">
+        <span class="t">${esc(r.title)}</span><span class="faint nowrap" style="font-size:12px">${esc(r.stage)} ${esc(r.stage_ord)}</span>
+        <span class="s">${esc(t("t_" + r.type))} · ${r.adopted ? esc(t("adopted")) : esc(r.progress)} · ${usd(r.spent)} / ${usd(r.cap)}${r.eta && r.eta !== "-" ? " · " + esc(t("eta")) + " " + esc(r.eta) : ""}</span>
         <div class="meter"><i style="width:${r.pct}%"></i></div></a>`).join("")}</div>` : `<div class="card empty">${esc(t("nothing_running"))}</div>`;
     const devs = S.in_progress.length ? `<div class="card mini">${S.in_progress.map((d) => `<a class="mini-row" href="#/dev"><span class="t">${esc(d.module)}</span>
         <span>${badge(d.gate_status === "green" ? t("gate") + " ✓" : d.registered ? t("candidate") : t("unregistered"), d.gate_status === "green" ? "green" : "amber")}</span>
         <span class="s">${esc(d.about || "")}</span></a>`).join("")}</div>` : `<div class="card empty">${esc(t("nothing_dev"))}</div>`;
-    const rel = `<div class="card mini">${S.dev_history.slice(0, 5).map((v) => `<a class="mini-row" href="#/dev"><span class="t">${esc(v.module)}</span>
-        <span class="faint nowrap" style="font-size:12px">${when(v.released_at)}</span><span class="s mono" style="font-size:12px">${esc(v.version)}</span><span class="s">${esc(v.about)}</span></a>`).join("")}</div>`;
     return `<div class="page-head"><div><h1>${esc(t("overview"))}</h1><p>${esc(t("ov_sub"))}</p></div></div>
-      ${alertsHtml()}${kpis}${flows}
-      <div class="section cols"><div>${sectionHead(t("runs_now"), "", `<a class="more" href="#/runs">${esc(t("all"))} →</a>`)}${runs}</div>
-        <div>${sectionHead(t("dev_now"), "", `<a class="more" href="#/dev">${esc(t("all"))} →</a>`)}${devs}
-          <div class="section" style="margin-top:22px">${sectionHead(t("recent_releases"))}${rel}</div></div></div>`;
+      ${kpis}
+      <div class="section">${sectionHead(t("needs_you"), t("needs_you_sub"), `<a class="more" href="#/runs">${esc(t("all"))} →</a>`)}${todoPanel(false)}</div>
+      ${flows}
+      <div class="section cols"><div>${sectionHead(t("g_active"), t("active_sub"), `<a class="more" href="#/runs">${esc(t("all"))} →</a>`)}${runs}</div>
+        <div>${sectionHead(t("dev_now"), "", `<a class="more" href="#/dev">${esc(t("all"))} →</a>`)}${devs}</div></div>`;
   },
   pipeline() {
     const legend = SHELVES.map((s) => `<span class="shelf-n s-${s}">${esc(t("s_" + s))}</span>`).join("");
     return `<div class="page-head"><div><h1>${esc(t("pipeline"))}</h1><p>${esc(t("pipe_sub"))}</p></div></div>
       ${S.pipelines.map((p, pi) => `<div class="section" style="margin-top:${pi ? 34 : 0}px">
-        <div class="section-head"><h2>${esc(p.project || "")}</h2><span class="sub">${esc(p.about || "")}</span>
+        <div class="section-head"><h2>${esc(t("flow"))}${S.pipelines.length > 1 ? " · " + esc(p.project) : ""}</h2><span class="sub">${esc(p.about || "")}</span>
           <span class="more" style="color:var(--muted)"><span class="chip">${esc(p.workflow)}</span> · ${esc(t("frozen"))} ${when(p.frozen)}</span></div>
-        ${flowHtml(p, pi, false)}
-        <div class="filters" style="margin-top:12px"><span class="faint" style="font-size:12.5px">${esc(t("click_stage"))}</span><span style="margin-left:auto;display:flex;gap:5px;flex-wrap:wrap">${legend}</span></div>
+        ${stepFlow(p, pi, true)}
+        <div class="section">${sectionHead(t("division"), t("division_sub"))}${divisionBoard(p)}</div>
+        <div class="filters" style="margin-top:14px"><span class="faint" style="font-size:12.5px">${esc(t("toolbox_per_stage"))}</span><span style="margin-left:auto;display:flex;gap:5px;flex-wrap:wrap">${legend}</span></div>
       </div>`).join("") || `<div class="card empty">workflow freeze NAME</div>`}`;
   },
   runs() {
@@ -277,8 +347,11 @@ const VIEWS = {
       S.run_history.map((h) => [when(h.closed), `<b>${esc(h.title)}</b><div class="sub mono">${esc(h.batch_id)}</div>`, typeBadge(h.type), String(h.n_cases),
         esc(t("stages_done", { a: h.stages_done, b: h.stages })) + (h.done != null ? `<div class="sub">${esc(t("done"))} ${h.done}${h.skipped ? ` · ${esc(t("skipped"))} ${h.skipped}` : ""}${h.failed ? ` · <span style="color:var(--red)">${esc(t("failed"))} ${h.failed}</span>` : ""}</div>` : ""),
         usd(h.spent), h.hours != null ? h.hours + " h" : "—", h.decision ? badge(t("d_" + h.decision), "green") : `<span class="faint">${esc(t("not_accepted"))}</span>`]));
-    return `<div class="page-head"><div><h1>${esc(t("runs"))}</h1><p>${esc(t("runs_sub"))}</p></div></div>${alertsHtml()}
-      ${S.running.length ? S.running.map(runCard).join("") : `<div class="card empty">${esc(t("nothing_running"))}</div>`}
+    const act = S.running.filter((r) => r.group === "active");
+    return `<div class="page-head"><div><h1>${esc(t("runs"))}</h1><p>${esc(t("runs_sub"))}</p></div></div>
+      <div class="section" style="margin-top:0">${sectionHead(t("g_active"), t("active_sub"))}${resourcesLine()}
+        ${act.length ? `<div class="runs-grid">${act.map(runCard).join("")}</div>` : `<div class="card empty">${esc(t("nothing_running"))}</div>`}</div>
+      <div class="section">${sectionHead(t("needs_you"), t("needs_you_sub"))}${todoPanel(true)}</div>
       <div class="section">${sectionHead(t("history"), t("history_sub"))}${hist}</div>`;
   },
   dev() {
@@ -430,10 +503,17 @@ function render() {
   const p = S.pipelines[0];
   document.getElementById("crumbs").innerHTML = `${p ? `<span>${esc(p.project || "")}</span><span class="sep">/</span>` : ""}<b>${esc(t(v))}</b>`;
   document.getElementById("live").innerHTML = `<span class="dot pulse" style="background:var(--green)"></span>${esc(t("updated"))} ${esc(S.at.slice(11, 16))}`;
+  const openK = {}; document.querySelectorAll("details[data-k]").forEach((d) => (openK[d.dataset.k] = d.open));
   const y = scrollY;
   document.getElementById("page").innerHTML = VIEWS[v]();
   scrollTo(0, y);
   document.querySelectorAll("[data-stage]").forEach((el) => (el.onclick = () => { const [a, b] = el.dataset.stage.split(":").map(Number); openStage(a, b); }));
+  document.querySelectorAll("details[data-k]").forEach((d) => { if (d.dataset.k in openK) d.open = openK[d.dataset.k]; });
+  document.querySelectorAll("[data-copy]").forEach((el) => (el.onclick = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const done = () => { el.classList.add("ok"); el.title = t("copied"); setTimeout(() => el.classList.remove("ok"), 1200); };
+    try { navigator.clipboard.writeText(el.dataset.copy).then(done, done); } catch (err) { done(); }
+  }));
   document.querySelectorAll("[data-shelf]").forEach((el) => (el.onclick = () => { TB.shelf = el.dataset.shelf; render(); }));
   const q = document.getElementById("tbq");
   if (q) q.oninput = () => { TB.q = q.value; const pos = q.selectionStart; render(); const q2 = document.getElementById("tbq"); q2.focus(); q2.setSelectionRange(pos, pos); };
