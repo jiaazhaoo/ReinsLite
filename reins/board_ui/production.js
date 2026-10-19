@@ -19,7 +19,7 @@ const I18N = {
     t_production: "生产", t_rework: "返工", delivered: "已交付 v{v} · {d}", accepted_ship: "抽检通过", accepted_ship_with_note: "抽检通过（附说明）",
     accepted_rework: "抽检不通过，返工", empty: "还没有生产批次", until: "至 {d}", none_yet: "还没有结果",
     xlsx: "下载 Excel", tab_overview: "总览", tab_batches: "批次对比", bt_sub: "每行一个生产或返工批次；同一项目的批次列相同，可以直接对比",
-    cg_ai: "AI 分流", cg_review: "人工审核", cg_cost: "成本耗时", m_n: "数量", m_pct: "比例", all_sites: "全部地区",
+    cg_delivered: "交付状态", b_delivered: "已交付", b_not_delivered: "未交付", tot_distinct: "合计按不重复案件", cg_ai: "AI 分流", cg_review: "人工审核", cg_cost: "成本耗时", m_n: "数量", m_pct: "比例", all_sites: "全部地区",
     all_types: "全部类型", csv: "导出 CSV", total: "合计", b_date: "日期", b_batch: "批次", b_cases: "案件",
     b_result: "已出结果", r_date: "复核日期", r_n: "已复核", r_ok: "对", r_bad: "错", r_unsure: "拿不准",
     r_double: "两人复核", r_agree: "一致 {a} / 不一致 {b}", r_good: "自动通过抽查", r_good_bad: "其中判错",
@@ -63,7 +63,7 @@ const I18N = {
     t_production: "production", t_rework: "rework", delivered: "Delivered v{v} · {d}", accepted_ship: "Spot check passed", accepted_ship_with_note: "Spot check passed (with a note)",
     accepted_rework: "Spot check failed: rework", empty: "No production batches yet", until: "to {d}", none_yet: "No results yet",
     xlsx: "Download Excel", tab_overview: "Overview", tab_batches: "Batch comparison", bt_sub: "one row per production or rework batch; batches of one project share columns",
-    cg_ai: "AI routing", cg_review: "Human review", cg_cost: "Cost and time", m_n: "Counts", m_pct: "Shares", all_sites: "All sites",
+    cg_delivered: "Delivered status", b_delivered: "Delivered", b_not_delivered: "Not delivered", tot_distinct: "totals count each case once", cg_ai: "AI routing", cg_review: "Human review", cg_cost: "Cost and time", m_n: "Counts", m_pct: "Shares", all_sites: "All sites",
     all_types: "All types", csv: "Export CSV", total: "Total", b_date: "Date", b_batch: "Batch", b_cases: "Cases",
     b_result: "With result", r_date: "Review date", r_n: "Reviewed", r_ok: "Correct", r_bad: "Error", r_unsure: "Unsure",
     r_double: "Two reviewers", r_agree: "{a} agree / {b} not", r_good: "Auto-pass checked", r_good_bad: "of which error",
@@ -96,7 +96,7 @@ const store = { get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (
 let LANG = store.get("reins.lang", document.documentElement.dataset.lang || "zh");   // a published copy sets data-lang
 let FILTER = store.get("reins.prod.filter", "all");
 let D = null, OK = true;
-const BT = { group: store.get("reins.bt.group", "ai") === "cost" ? "cost" : "ai", mode: store.get("reins.bt.mode", "n"), site: "", type: "", sort: store.get("reins.bt.sort", "date"), dir: +store.get("reins.bt.dir", "1") };
+const BT = { group: ["ai", "cost", "delivered"].includes(store.get("reins.bt.group2", "")) ? store.get("reins.bt.group2", "") : "delivered", mode: store.get("reins.bt.mode", "n"), site: "", type: "", sort: store.get("reins.bt.sort2", "date"), dir: +store.get("reins.bt.dir2", "-1") };   // newest first
 const tab = () => (location.hash.replace(/^#\/?/, "") === "batches" ? "batches" : "overview");
 const t = (k, vars) => { let s = I18N[LANG][k] ?? I18N.zh[k] ?? k; if (vars) for (const [a, b] of Object.entries(vars)) s = s.replace(`{${a}}`, b); return s; };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -111,6 +111,7 @@ const per1k = (v) => (v == null ? "—" : usd(v * 1000));
 const STAGE_COLORS = ["var(--accent)", "var(--blue)", "var(--teal)", "var(--violet)", "var(--amber)", "var(--red)", "var(--faint)"];
 const etaText = (s) => (s ? s.replace(" h", LANG === "zh" ? " 小时" : " h").replace(" min", LANG === "zh" ? " 分钟" : " min") : "");
 const lab = (proj, key) => { const l = (D.labels[proj] || {})[key]; return (l && (l[LANG] || l.zh || l.en)) || key; };
+const labShort = (proj, key) => { const l = (D.labels[proj] || {})[key]; return (l && l[LANG + "_short"]) || lab(proj, key); };   // table headers
 const reason = (proj, w) => { if (w === "other") return t("other"); const r = (D.reasons[proj] || [])[+w.slice(1)]; return (r && (r[LANG] || r.zh || r.en)) || w; };
 const CJK = /[\u3000-\u9fff\uff00-\uffef]+/g, HAS_CJK = /[\u3000-\u9fff\uff00-\uffef]/;   // test with HAS_CJK: a /g regex keeps state
 const noCjk = (s, fallback) => {                 // English: a name with Chinese in it loses those words (or falls back)
@@ -347,7 +348,12 @@ function btColumns(g) {
     { k: "run_h", h: t("h_run"), v: (r) => r.run_h, fmt: "h" },
     { k: "note", h: t("b_note"), v: (r) => (r.pause ? t("p_" + r.pause) : t("s_" + (r.state || (r.status === "closed" ? "done" : r.status === "open" ? "waiting" : r.status)))), fmt: "text" },
   ];
-  return { ai, review, cost }[BT.group];
+  const delivered = [{ k: "dn", h: t("b_delivered"), v: (r) => (r.delivered ? r.delivered_n : null), fmt: "n" }]
+    .concat(g.delivered_order.map((st) => ({ k: "st:" + st, h: labShort(g.project, st), full: lab(g.project, st),
+      good: g.delivered_good.includes(st), cls: g.delivered_bad.includes(st) ? "bad" : "",
+      v: (r) => (r.delivered ? cnt(r.delivered[st] || 0, r.delivered_n) : null), fmt: BT.mode })))
+    .concat([{ k: "nd", h: t("b_not_delivered"), v: (r) => (r.delivered ? cnt(r.n - r.delivered_n, r.n) : null), fmt: BT.mode }]);
+  return { ai, review, cost, delivered }[BT.group] || ai;
 }
 function fmtCell(v, fmt) {
   if (v == null || v === "") return `<span class="faint">—</span>`;
@@ -394,8 +400,10 @@ function batchesView() {
     rows = rows.slice().sort((a, b) => { const x = key.v(a), y = key.v(b); if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1;
       return (typeof x === "number" ? x - y : String(x).localeCompare(String(y))) * BT.dir; });
     BT_VIEW[gi] = { g, rows };
-    const th = (k, h, cls = "") => `<th class="${cls} ${BT.sort === k ? "sorted" : ""}" data-sort="${esc(k)}">${esc(h)}${BT.sort === k ? (BT.dir > 0 ? " ↑" : " ↓") : ""}</th>`;
+    const th = (k, h, cls = "", full = "") => `<th class="${cls} ${BT.sort === k ? "sorted" : ""}" data-sort="${esc(k)}" title="${esc(full || h)}">${esc(h)}${BT.sort === k ? (BT.dir > 0 ? " ↑" : " ↓") : ""}</th>`;
     const tot = btTotals(g, rows);
+    const dt = (g.delivered_totals || {})[`${BT.site}|${BT.type}`];
+    if (dt) Object.assign(tot, { n: BT.group === "delivered" ? dt.n : tot.n, delivered: dt.delivered, delivered_n: dt.delivered_n });
     // each column's bar is the value against the column's largest (shares against 100%)
     const colMax = {};
     for (const c of cols) colMax[c.k] = c.fmt === "pct" ? 100 : Math.max(0, ...rows.map((r) => (typeof c.v(r) === "number" ? c.v(r) : 0)));
@@ -419,7 +427,7 @@ function batchesView() {
     return `<div class="pcard bt">
       <h2>${esc(g.project)}<small>${t("bt_sub")}</small></h2>
       <div class="bt-bar">
-        <div class="seg">${["ai", "cost"].map((k) => `<button class="${BT.group === k ? "on" : ""}" data-bt="group" data-v="${k}">${t("cg_" + k)}</button>`).join("")}</div>
+        <div class="seg">${(g.delivered_order.length ? ["delivered", "ai", "cost"] : ["ai", "cost"]).map((k) => `<button class="${BT.group === k ? "on" : ""}" data-bt="group" data-v="${k}">${t("cg_" + k)}</button>`).join("")}</div>
         ${BT.group !== "cost" ? `<div class="seg">${["n", "pct"].map((k) => `<button class="${BT.mode === k ? "on" : ""}" data-bt="mode" data-v="${k}">${t("m_" + k)}</button>`).join("")}</div>` : ""}
         <div class="grow"></div>
         <button class="fchip" data-csv="${gi}">${t("csv")}</button>
@@ -428,9 +436,9 @@ function batchesView() {
         <span class="sep"></span>${chip("type", "", t("all_types"), BT.type)}${types.map((x) => chip("type", x, t("t_" + x), BT.type)).join("")}</div>
       <table class="btable"><thead><tr>
         ${th("date", t("b_date"))}${g.scope_names.map((k) => th("s:" + k, partName(g.project, k))).join("")}${th("name", t("b_batch"), "bn")}${th("n", t("b_cases"), "num")}
-        ${cols.map((c) => th(c.k, c.h, (c.fmt === "text" ? "txt" : "num") + (c.sub ? " subh" : "") + (c.good ? " good" : ""))).join("")}
+        ${cols.map((c) => th(c.k, c.h, (c.fmt === "text" ? "txt" : "num") + (c.sub ? " subh" : "") + (c.good ? " good" : "") + (c.cls === "bad" ? " badh" : ""), c.full)).join("")}
       </tr></thead><tbody>${rows.map(tr).join("")}${tr(tot)}</tbody></table>
-      <div class="faint small-note">${t("sort_hint")}</div>
+      <div class="faint small-note">${t("sort_hint")}${BT.group === "delivered" ? ` · ${t("tot_distinct")}` : ""}</div>
     </div>`;
   }).join("");
 }
@@ -493,10 +501,10 @@ document.getElementById("p-page").onclick = (e) => {
   const th = e.target.closest("th[data-sort]");
   if (th) {
     const k = th.dataset.sort; BT.dir = BT.sort === k ? -BT.dir : (k === "date" || k.startsWith("s:") || k === "name" ? 1 : -1); BT.sort = k;
-    store.set("reins.bt.sort", BT.sort); store.set("reins.bt.dir", BT.dir); render(); return;
+    store.set("reins.bt.sort2", BT.sort); store.set("reins.bt.dir2", BT.dir); render(); return;
   }
   const bt = e.target.closest("[data-bt]");
-  if (bt) { BT[bt.dataset.bt] = bt.dataset.v; if (bt.dataset.bt !== "site" && bt.dataset.bt !== "type") store.set("reins.bt." + bt.dataset.bt, bt.dataset.v); render(); return; }
+  if (bt) { BT[bt.dataset.bt] = bt.dataset.v; if (bt.dataset.bt !== "site" && bt.dataset.bt !== "type") store.set("reins.bt." + bt.dataset.bt + (bt.dataset.bt === "group" ? "2" : ""), bt.dataset.v); render(); return; }
   const b = e.target.closest("button[data-f]"); if (!b) return;
   FILTER = b.dataset.f; store.set("reins.prod.filter", FILTER); render();
 };

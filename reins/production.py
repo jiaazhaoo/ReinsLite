@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import glob
 import json
+import os
 import re
 from pathlib import Path
 
@@ -467,6 +469,60 @@ def development(con, prod_ids: set, prod_imported: dict, days: list[str]) -> dic
             "changes": [c for c in changes if c["status"] == "candidate" or c in released_14 or c["spent"] > 0][:40]}
 
 
+_DELIV: dict[str, tuple] = {}
+
+
+def _delivered(cfg: dict) -> dict[str, str]:
+    """case_id -> delivered status, from the project's delivery workbooks ([results.delivered]); the newest file
+    (by modification time) that has a case wins. Cached until a file changes."""
+    spec = (cfg.get("results") or {}).get("delivered") or {}
+    if not spec.get("files"):
+        return {}
+    files = sorted({f for g in spec["files"] for f in glob.glob(g, recursive=True) if os.path.isfile(f)}, key=os.path.getmtime)
+    sig = tuple((f, os.path.getmtime(f)) for f in files)
+    key = cfg.get("project", "")
+    if key in _DELIV and _DELIV[key][0] == sig:
+        return _DELIV[key][1]
+    from openpyxl import load_workbook
+    pat = re.compile((cfg.get("results") or {}).get("key_pattern") or r"(.+)")
+    idpat = re.compile(cfg.get("case_id_pattern") or r".+")
+    out: dict[str, str] = {}
+    for f in files:
+        try:
+            wb = load_workbook(f, read_only=True, data_only=True)
+        except Exception:                                                       # noqa: BLE001  one bad file is skipped
+            continue
+        if spec.get("sheet", "") not in wb.sheetnames and spec.get("sheet"):
+            continue
+        rows = wb[spec["sheet"]].iter_rows(values_only=True) if spec.get("sheet") else wb.worksheets[0].iter_rows(values_only=True)
+        head = [str(h or "").strip() for h in next(rows, [])]
+        if spec.get("value", "Status") not in head:
+            continue
+        data = list(rows)
+        vi = head.index(spec.get("value", "Status"))
+
+        def norm(v):
+            m = pat.search(str(v or "").strip())
+            return m.group(1) if m else None
+        ki = None
+        for k in spec.get("keys") or []:                 # the first key column whose values look like case ids
+            if k in head:
+                i = head.index(k)
+                vals = [norm(r[i]) for r in data[:200] if i < len(r)]
+                if vals and sum(1 for v in vals if v and idpat.fullmatch(v)) >= 0.9 * len(vals):
+                    ki = i
+                    break
+        if ki is None:
+            continue
+        for r in data:
+            c, v = norm(r[ki]), r[vi] if vi < len(r) else None
+            if c and v:
+                out[c] = str(v).strip()
+        wb.close()
+    _DELIV[key] = (sig, out)
+    return out
+
+
 def batch_table(con, rows, ledger: dict, imported: dict) -> list[dict]:
     """One row per production / rework batch, for comparing batches of one project: its own cases, its own result rows
     (a results file shared by several batches belongs to the newest; the older ones say so), reviewers' verdicts,
@@ -486,6 +542,10 @@ def batch_table(con, rows, ledger: dict, imported: dict) -> list[dict]:
             if spec.get("file") and b["work_dir"]:
                 owner[str(Path(b["work_dir"]) / spec["file"])] = b["batch_id"]
         values, details, table = {}, {}, []
+        dspec = spec.get("delivered") or {}
+        delivered = _delivered(cfg)
+        dcount: dict[str, int] = {}
+        case_sets: dict[str, set] = {}
         for b in sorted(bs, key=lambda b: b["created"]):
             bid = b["batch_id"]
             cases = {r[0] for r in con.execute("SELECT case_id FROM batch_case WHERE batch_id=?", (bid,))}
@@ -529,6 +589,16 @@ def batch_table(con, rows, ledger: dict, imported: dict) -> list[dict]:
                                  "good_wrong": sum(1 for c in good_reviewed if final[c] == "wrong")}
             spent = sum(u for _, _, u in ledger.get(bid, [])) + sum(u for _, _, u in imported.get(bid, []))
             iv = _run_intervals(con, bid, now_iso)
+            if delivered:
+                dv = {}
+                for c in cases:
+                    v = delivered.get(c)
+                    if v:
+                        dv[v] = dv.get(v, 0) + 1
+                        dcount[v] = dcount.get(v, 0) + 1
+                row["delivered"] = dv
+                row["delivered_n"] = sum(dv.values())
+                case_sets[bid] = cases
             row["state"] = _part_state(con, b)[0]                         # running / stopped (process gone) / paused / ...
             row.update({"spent": round(spent, 2), "per_case": round(spent / len(cases), 4) if cases else None,
                         "run_h": round(_union_h(iv), 1) if iv else None,
@@ -536,7 +606,27 @@ def batch_table(con, rows, ledger: dict, imported: dict) -> list[dict]:
                         "pause": _pause_word(b["status_reason"]) if b["status"] == "paused" else None})
             table.append(row)
         order = list(spec.get("good") or []) + [v for v in sorted(values, key=lambda v: -values[v]) if v not in good_vals]
+        dorder = [v for v in (dspec.get("order") or []) if v in dcount] + sorted(v for v in dcount if v not in (dspec.get("order") or []))
+        # totals over distinct cases (batches overlap: a re-run holds the cases of the run it repeats), per filter
+        dtot = {}
+        if delivered:
+            sites = {r["scope"].get(scope_names[0], "") for r in table}
+            types = {r["type"] for r in table}
+            for site in [""] + sorted(sites):
+                for ty in [""] + sorted(types):
+                    cs = set()
+                    for r in table:
+                        if (not site or r["scope"].get(scope_names[0], "") == site) and (not ty or r["type"] == ty):
+                            cs |= case_sets.get(r["batch_id"], set())
+                    st: dict[str, int] = {}
+                    for c in cs:
+                        v = delivered.get(c)
+                        if v:
+                            st[v] = st.get(v, 0) + 1
+                    dtot[f"{site}|{ty}"] = {"n": len(cs), "delivered_n": sum(st.values()), "delivered": st}
         out.append({"project": project, "scope_names": scope_names, "good": sorted(good_vals),
+                    "delivered_order": dorder, "delivered_good": list(dspec.get("good") or []),
+                    "delivered_bad": list(dspec.get("bad") or []), "delivered_totals": dtot,
                     "values": [v for v in order if v in values], "details": sorted(details),
                     "rows": table})
     return out
