@@ -199,7 +199,7 @@ details.parts.flat { border-top: 1px solid var(--border); margin: 16px -20px -18
   .btable td[data-l]::before { content: attr(data-l); display: block; font-size: 11px; color: var(--faint); font-weight: 400; }
   .btable td.bn::before { display: none; }
 }
-.btable th:nth-child(-n+3), .btable td:nth-child(-n+3) { white-space: nowrap; overflow-wrap: normal; }
+.btable td:nth-child(-n+3) { white-space: nowrap; overflow-wrap: normal; }
 .btable th:nth-child(1) { width: 7.5%; }
 .btable th:nth-child(2), .btable th:nth-child(3) { width: 8.5%; }
 @media (max-width: 860px) { .btable td:nth-child(-n+3) { white-space: normal; } }
@@ -207,3 +207,15 @@ details.parts.flat { border-top: 1px solid var(--border); margin: 16px -20px -18
 @media (max-width: 480px) { .pbar .live { display: none; } .pbrand b { font-size: 14px; } }
 .phead a.dl { color: var(--accent-text); font-weight: 600; }
 .phead a.dl:hover { text-decoration: underline; }
+
+/* headers wrap instead of running into each other; bars behind the numbers */
+.btable th { white-space: normal; overflow-wrap: normal; word-break: normal; hyphens: auto; line-height: 1.25; }
+.btable td.num .bar { position: relative; display: block; padding: 2px 6px; border-radius: 4px; overflow: hidden; }
+.btable td.num .bar i { position: absolute; inset: 0 auto 0 0; background: var(--accent); opacity: .16; border-radius: 4px; }
+.btable td.num.good .bar i { background: var(--green); opacity: .22; }
+.btable td.num.bad .bar i { background: var(--red); opacity: .18; }
+.btable td.num .bar span { position: relative; }
+.btable tr.total td.num .bar i { display: none; }
+@media (max-width: 860px) { .btable td.num .bar { display: inline-block; min-width: 70%; } }
+.btable td.txt { text-align: left; color: var(--muted); }
+.btable th.txt { width: 16%; }
