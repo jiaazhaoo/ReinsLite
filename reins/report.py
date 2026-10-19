@@ -39,7 +39,7 @@ WORDS = {
         "date": "Date", "batch": "Batch", "type": "Type", "review_date": "Review date", "reviewed": "Reviewed",
         "correct": "Correct", "error": "Error", "unsure": "Unsure", "two": "Two reviewers", "agree": "Two reviewers agree",
         "disagree": "Two reviewers disagree", "auto_checked": "Auto-pass checked", "auto_wrong": "Auto-pass judged error",
-        "note": "Notes", "results_in": "results overwritten by", "total": "Total",
+        "note": "Notes", "results_in": "results overwritten by", "total": "Total", "delivered": "Delivered",
         "dev_kind": "Spend by purpose", "dev_module": "Spend by module", "changes": "Changes", "module": "Module",
         "about": "What changed", "took_h": "Took (h)", "released_14": "Changes released, last 14 days", "in_progress": "Changes in progress",
         "median_h": "Start to release, median (h)", "day": "Day", "prod": "Production", "dev": "Development",
@@ -67,7 +67,7 @@ WORDS = {
         "date": "日期", "batch": "批次", "type": "类型", "review_date": "复核日期", "reviewed": "已复核",
         "correct": "对", "error": "错", "unsure": "拿不准", "two": "两人复核", "agree": "两人一致",
         "disagree": "两人不一致", "auto_checked": "自动通过抽查", "auto_wrong": "自动通过里判错",
-        "note": "备注", "results_in": "结果已被覆盖：", "total": "合计",
+        "note": "备注", "results_in": "结果已被覆盖：", "total": "合计", "delivered": "已交付",
         "dev_kind": "花费按用途", "dev_module": "花费按模块", "changes": "改动", "module": "模块",
         "about": "改了什么", "took_h": "用时（小时）", "released_14": "近 14 天上线的改动", "in_progress": "开发中的改动",
         "median_h": "从开始到上线，中位数（小时）", "day": "日期", "prod": "生产", "dev": "开发",
@@ -256,6 +256,9 @@ def build(out: Path, lang: str = "en", hide: set[str] | None = None, con=None) -
         sites = [b["scope"].get(sn[0], "") for b in g["rows"]]
         cols = [(T("date"), "text"), (T("site"), "text")] + [(T.label(P, n), "text") for n in sn[1:]] + \
                [(T("batch"), "text"), (T("type"), "text"), (T("status"), "text"), (T("cases"), "n"), (T("with_result"), "n")]
+        dord = g.get("delivered_order") or []
+        if dord:                                      # what each case was delivered as, first: the comparison that matters
+            cols += [(T("delivered"), "n")] + [(T.label(P, x), "n") for x in dord] + [(f"{T.label(P, x)} %", "pct") for x in dord]
         cols += [(T.label(P, x), "n") for x in g["values"]] + [(f"{T.label(P, x)} %", "pct") for x in g["values"]]
         cols += [(T.label(P, x), "n") for x in g["details"]] + [(f"{T.label(P, x)} %", "pct") for x in g["details"]]
         cols += [(T("review_date"), "text"), (T("reviewed"), "n"), (T("correct"), "n"), (T("error"), "n"), (T("unsure"), "n"),
@@ -265,13 +268,17 @@ def build(out: Path, lang: str = "en", hide: set[str] | None = None, con=None) -
             cols += [(T("spend"), "usd"), (T("per1000"), "usd")]
         cols += [(T("run_h"), "h"), (T("note"), "text")]
         rows = []
-        for b in g["rows"]:
+        for b in sorted(g["rows"], key=lambda b: b["date"], reverse=True):             # newest first
             parts = [b["scope"].get(k, "") for k in sn]
             res = b.get("with_result")
             pct = lambda n, d: (n / d) if (n is not None and d) else None
             row = [b["date"], T.site(parts[0])] + [_title(x) for x in parts[1:]] + \
                   [T.name(b["name"], b["batch_id"], sites), T("t_" + b["type"]),
                    T("st_" + b.get("state", b["status"])) + (f" ({T('p_' + b['pause'])})" if b.get("pause") and b["pause"] != "other" else ""), b["n"], res]
+            if dord:
+                dv, dn = b.get("delivered") or {}, b.get("delivered_n")
+                row += [dn] + [dv.get(x, 0) if dn is not None else None for x in dord] + \
+                       [pct(dv.get(x, 0), dn) if dn else None for x in dord]
             vals, dets = b.get("values"), b.get("details")
             row += [(vals or {}).get(x, 0) if vals else None for x in g["values"]] + [pct((vals or {}).get(x, 0), res) if vals else None for x in g["values"]]
             row += [(dets or {}).get(x, 0) if vals else None for x in g["details"]] + [pct((dets or {}).get(x, 0), res) if vals else None for x in g["details"]]

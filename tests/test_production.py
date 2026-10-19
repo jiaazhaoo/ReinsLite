@@ -144,6 +144,25 @@ class Production(unittest.TestCase):
         self.assertNotIn("eeds", out.lower()); self.assertNotIn("york", out.lower())
         self.assertIn("Client A-wp7", out); self.assertIn("Client B", out)
 
+    def test_delivered_status_newest_workbook_wins_and_totals_are_distinct(self):
+        import os as _os, time as _time
+        from openpyxl import Workbook
+        dl = self.tmp / "deliv"; dl.mkdir()
+        for name, rows, age in (("old_autoQA.xlsx", [("X_1", "Incorrect"), ("X_2", "Correct")], 100), ("new_autoQA.xlsx", [("X_1", "Correct")], 0)):
+            wb = Workbook(); ws = wb.active; ws.title = "Conclusion"; ws.append(["oachargeid", "Case", "Status"])
+            for c, v in rows:
+                ws.append(["ref/" + c, c, v])                  # oachargeid holds something else: Case is the key
+            wb.save(dl / name); t0 = _time.time() - age; _os.utime(dl / name, (t0, t0))
+        toml = TOML.replace('[[results.reasons]]', f'[results.delivered]\nfiles = ["{dl}/*_autoQA.xlsx"]\nsheet = "Conclusion"\n'
+                            'keys = ["oachargeid", "Case"]\nvalue = "Status"\ngood = ["Correct"]\norder = ["Correct", "Incorrect"]\n\n[[results.reasons]]', 1)
+        (self.tmp / "code" / "proj" / "reins.toml").write_text(toml, encoding="utf-8"); projects._CACHE.clear()
+        self.batch("g-wp8", "production", "done", ["1", "2"])
+        self.batch("g-wp8", "rework", "done", ["1"], created="2026-10-11T10:00:00")
+        g = production.view(self.con)["batches"][0]
+        self.assertEqual(g["delivered_order"], ["Correct"])                     # the newer file says 1 is correct
+        self.assertEqual([r["delivered"] for r in g["rows"]], [{"Correct": 2}, {"Correct": 1}])
+        self.assertEqual(g["delivered_totals"]["|"]["n"], 2)                     # case 1 counted once
+
     def test_all_results_but_a_paused_batch_is_not_complete(self):
         self.batch("d-wp4", "production", "paused", ["1", "2"], [("1", "auto", ""), ("2", "human", "c1")])
         p = production.view(self.con)["packages"][0]

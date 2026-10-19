@@ -219,3 +219,6 @@ details.parts.flat { border-top: 1px solid var(--border); margin: 16px -20px -18
 @media (max-width: 860px) { .btable td.num .bar { display: inline-block; min-width: 70%; } }
 .btable td.txt { text-align: left; color: var(--muted); }
 .btable th.txt { width: 16%; }
+.btable th.badh { color: var(--red); }
+.btable th.bn { width: 18%; }
+.btable td.num { font-size: 12.5px; }
