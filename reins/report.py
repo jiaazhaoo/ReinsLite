@@ -391,7 +391,7 @@ def publish(lang: str | None = None, hide: set[str] | None = None) -> dict:
 #   reins report revoke CODE   drop an access code
 #
 # $REINS_HOME/config.toml [report.cloudflare]: name = "reins-production" (the Worker), lang = "en", hide = [],
-# wrangler = "npx --yes wrangler@4". State (KV id, URL, codes) lives in $REINS_HOME/reports/cloudflare/state.json (0600).
+# wrangler = "npx --yes wrangler@4", login_home = "" (a directory: wrangler logs in there, `reins report login`). State (KV id, URL, codes) lives in $REINS_HOME/reports/cloudflare/state.json (0600).
 
 import json as _json
 import os as _os
@@ -404,8 +404,20 @@ UI = Path(__file__).with_name("board_ui")
 
 
 def _cf() -> dict:
-    return {"name": "reins-production", "lang": "en", "hide": [], "wrangler": "npx --yes wrangler@4",
+    return {"name": "reins-production", "lang": "en", "hide": [], "wrangler": "npx --yes wrangler@4", "login_home": "",
             **(settings().get("cloudflare") or {})}
+
+
+def _env() -> dict:
+    """wrangler's environment: with login_home set, its own login there (HOME), so this machine's other wrangler
+    projects keep theirs; the npm cache stays the user's."""
+    env = dict(_os.environ)
+    h = _cf()["login_home"]
+    if h:
+        Path(h).mkdir(parents=True, exist_ok=True)
+        env["NPM_CONFIG_CACHE"] = env.get("NPM_CONFIG_CACHE") or str(Path.home() / ".npm")
+        env["HOME"] = str(Path(h).expanduser())
+    return env
 
 
 def _dir() -> Path:
@@ -427,10 +439,20 @@ def _save(st: dict) -> None:
 
 def _wrangler(*args, stdin: str | None = None, cwd: Path | None = None) -> str:
     cmd = _shlex.split(_cf()["wrangler"]) + list(args)
-    p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=600, cwd=cwd or _dir())
+    p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=600, cwd=cwd or _dir(), env=_env())
     if p.returncode:
         raise ReinsError(f"wrangler {' '.join(args[:3])} failed: {(p.stderr or p.stdout).strip()[-600:]}")
     return p.stdout + p.stderr
+
+
+def _wrangler_out(*args) -> str:
+    """stdout only (JSON answers), not the banner wrangler writes to stderr."""
+    cmd = _shlex.split(_cf()["wrangler"]) + list(args)
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=_dir(), env=_env())
+    if p.returncode:
+        raise ReinsError(f"wrangler {' '.join(args[:3])} failed: {(p.stderr or p.stdout).strip()[-600:]}")
+    out = p.stdout
+    return out[out.index("["):] if "[" in out else out
 
 
 def _hide_sites(text: str, names: list[str]) -> str:
@@ -444,11 +466,16 @@ def deploy() -> dict:
     cf, st = _cf(), _state()
     d = _dir()
     if not st.get("kv_id"):
-        out = _wrangler("kv", "namespace", "create", f"{cf['name']}-data")
-        m = re.search(r'id\s*=\s*"([0-9a-f]{32})"|"id":\s*"([0-9a-f]{32})"', out)
-        if not m:
-            raise ReinsError(f"no KV namespace id in wrangler's answer: {out[-300:]}")
-        st["kv_id"] = m.group(1) or m.group(2)
+        title = f"{cf['name']}-data"
+        try:
+            _wrangler("kv", "namespace", "create", title)
+        except ReinsError as e:
+            if "already exists" not in str(e):
+                raise
+        found = [n["id"] for n in _json.loads(_wrangler_out("kv", "namespace", "list")) if n.get("title") == title]
+        if not found:
+            raise ReinsError(f"KV namespace {title} not found after creating it")
+        st["kv_id"] = found[0]
     pub = d / "public"
     if pub.exists():
         _shutil.rmtree(pub)
@@ -524,3 +551,11 @@ def revoke(code: str) -> int:
     _save(st)
     _wrangler("secret", "put", "VIEW_TOKENS", stdin=",".join(left) or "-")
     return len(left)
+
+
+def login() -> None:
+    """wrangler login into login_home (opens the browser; the person approves there)."""
+    cmd = _shlex.split(_cf()["wrangler"]) + ["login"]
+    p = subprocess.run(cmd, cwd=_dir(), env=_env(), timeout=900)
+    if p.returncode:
+        raise ReinsError("wrangler login did not finish")
