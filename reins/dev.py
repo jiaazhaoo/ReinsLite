@@ -158,6 +158,70 @@ def start(con, repo: Path, module: str, suffix: str, about: str, from_batch: str
             "pilot_cases": cases or []}
 
 
+def module_gates(cfg: dict, module: str, changed: list[str]) -> list[tuple[str, dict]]:
+    """[(module, gate)] to run: the candidate's own module and every other module whose files the change touches, each
+    one that declares [modules.<m>.gate] (cmd, benchmark). Empty: no module declares one -> the project-wide gate."""
+    mods = cfg.get("modules", {}) or {}
+    out = []
+    for m, spec in mods.items():
+        g = (spec or {}).get("gate")
+        if not isinstance(g, dict) or not g.get("cmd"):
+            continue
+        hit = m == module or any(fnmatch.fnmatch(f, pat) for f in changed for pat in (spec.get("files") or []))
+        if hit:
+            out.append((m, g))
+    out.sort(key=lambda x: (x[0] != module, x[0]))                    # the candidate's own module first
+    return out
+
+
+def _run_gate(con, version: str, wt: Path, gate_cmd: str, skip_tier: str | None, why: str | None,
+              module: str | None = None, bench: str | None = None) -> str:
+    """Run one gate command in the candidate's worktree; record its JSON result; raise when it is red."""
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, prefix="reins-gate-") as tf:
+        out = tf.name
+    env = {**os.environ, "REINS_GATE_OUT": out, "REINS_VERSION": version}
+    if module:
+        env["REINS_GATE_MODULE"] = module
+    if bench:
+        env["REINS_GATE_BENCH"] = bench
+    if skip_tier:
+        if not why:
+            raise ReinsError("--skip-tier needs --why (recorded)")
+        env["REINS_GATE_SKIP"] = skip_tier
+    g = subprocess.run(gate_cmd, shell=True, cwd=str(wt), env=env)
+    label = f"{module} gate" if module else "gate"
+    if g.returncode:
+        modules.note(con, version, "gate_red", f"{label}: exit {g.returncode}")
+        raise ReinsError(f"{label} failed (exit {g.returncode}); not merged")
+    if Path(out).stat().st_size:
+        res = json.loads(Path(out).read_text())
+        res.setdefault("skipped", f"{skip_tier}: {why}" if skip_tier else None)
+        if module:
+            res.setdefault("module", module)
+        import inspect
+        known = set(inspect.signature(gatemod.record).parameters) - {"con", "version"}
+        rec = gatemod.record(con, version, **{k: v for k, v in res.items() if k in known})   # extra keys are the gate's own
+        if rec["status"] != "green":
+            if rec["hard_worse"]:
+                raise ReinsError(f"{label} red on {res['benchmark']}: worse than base on {', '.join(rec['hard_worse'])}"
+                                 f"; golden regressions {rec['golden_regressions']}; not merged")
+            raise ReinsError(f"{label} red: missed_error {rec['missed_error']} vs baseline {rec['base_missed_error']}, "
+                             f"golden regressions {rec['golden_regressions']}; not merged")
+        if rec["metrics"]:
+            ev = f"{label} green on {res['benchmark']} tiers {res['tiers']}: " + ", ".join(
+                f"{k} {m['value']} (base {m.get('base')})" for k, m in rec["metrics"].items())
+        else:
+            ev = f"{label} green on {res['benchmark']} tiers {res['tiers']}: missed_error {rec['missed_error']} " \
+                 f"(base {rec['base_missed_error']}), review_load {rec['review_load']} (base {rec['base_review_load']})"
+        if rec["cases_rerun"] is not None:
+            ev += f"; downstream re-ran {rec['cases_rerun']} cases, reused {rec['cases_reused']}"
+    else:
+        ev = f"{label} command exit 0 ({gate_cmd})"
+    if skip_tier:
+        ev += f"; tier {skip_tier} skipped: {why}"
+    return ev
+
+
 def finish(con, version: str, skip_tier: str | None = None, why: str | None = None) -> dict:
     row = modules.get(con, version)
     if row["status"] != "candidate":
@@ -177,42 +241,28 @@ def finish(con, version: str, skip_tier: str | None = None, why: str | None = No
     up = cfg.get("dev", {}).get("upstream") or {}
     base = git(repo, "merge-base", "main", row["branch"])
     changed = git(repo, "diff", "--name-only", base, row["branch"]).splitlines()
-    up_hit = [f for f in changed if any(fnmatch.fnmatch(f, g) for g in up.get("files", []))]
-    if up_hit and up.get("gate"):
-        if skip_tier == "upstream":
-            if not why:
-                raise ReinsError("--skip-tier upstream needs --why (recorded)")
-        else:
-            gate_cmd = up["gate"]                         # upstream changes need the upstream gate
-    modules.note(con, version, "finish", f"changed {len(changed)} files; upstream {up_hit[:6] or 'none'}; gate {gate_cmd}")
-    evidence = ""
-    if gate_cmd:
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, prefix="reins-gate-") as tf:
-            out = tf.name
-        env = {**os.environ, "REINS_GATE_OUT": out, "REINS_VERSION": version}
-        if skip_tier:
-            if not why:
-                raise ReinsError("--skip-tier needs --why (recorded)")
-            env["REINS_GATE_SKIP"] = skip_tier
-        g = subprocess.run(gate_cmd, shell=True, cwd=str(wt), env=env)
-        if g.returncode:
-            modules.note(con, version, "gate_red", f"exit {g.returncode}")
-            raise ReinsError(f"gate failed (exit {g.returncode}); not merged")
-        if Path(out).stat().st_size:
-            res = json.loads(Path(out).read_text())
-            res.setdefault("skipped", f"{skip_tier}: {why}" if skip_tier else None)
-            rec = gatemod.record(con, version, **res)
-            if rec["status"] != "green":
-                raise ReinsError(f"gate red: missed_error {rec['missed_error']} vs baseline {rec['base_missed_error']}, "
-                                 f"golden regressions {rec['golden_regressions']}; not merged")
-            evidence = f"gate green on {res['benchmark']} tiers {res['tiers']}: missed_error {rec['missed_error']} " \
-                       f"(base {rec['base_missed_error']}), review_load {rec['review_load']} (base {rec['base_review_load']})"
-        else:
-            evidence = f"gate command exit 0 ({gate_cmd})"
-        if skip_tier:
-            evidence += f"; tier {skip_tier} skipped: {why}"
+    gated = module_gates(cfg, row["module"], changed)
+    if gated:
+        # module gates (2026-10-19): each module whose files changed is scored on its own benchmark by its own gate;
+        # the module's gate is responsible for its downstream (re-run only the cases whose outputs changed). The
+        # end-to-end [dev].gate / upstream pipeline tier is then not forced: it belongs to a release, not every change.
+        modules.note(con, version, "finish", f"changed {len(changed)} files; module gates {', '.join(m for m, _ in gated)}")
+        parts = [_run_gate(con, version, wt, g["cmd"], skip_tier, why, module=m, bench=g.get("benchmark"))
+                 for m, g in gated]
+        evidence = "; ".join(parts)
     else:
-        evidence = "no gate configured in reins.toml [dev].gate"
+        up_hit = [f for f in changed if any(fnmatch.fnmatch(f, g) for g in up.get("files", []))]
+        if up_hit and up.get("gate"):
+            if skip_tier == "upstream":
+                if not why:
+                    raise ReinsError("--skip-tier upstream needs --why (recorded)")
+            else:
+                gate_cmd = up["gate"]                         # upstream changes need the upstream gate
+        modules.note(con, version, "finish", f"changed {len(changed)} files; upstream {up_hit[:6] or 'none'}; gate {gate_cmd}")
+        if gate_cmd:
+            evidence = _run_gate(con, version, wt, gate_cmd, skip_tier, why)
+        else:
+            evidence = "no gate configured in reins.toml [dev].gate"
     msg = f"Merge {row['branch']}: {row['about']}\n\n{evidence}\n"
     r = subprocess.run(["git", *IDENT, "-C", str(repo), "merge", "--no-ff", "-m", msg, row["branch"]],
                        capture_output=True, text=True)

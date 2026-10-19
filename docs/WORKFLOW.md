@@ -85,6 +85,22 @@ reins dev start → 改代码 → pilot 批次（问题 case）→ eval 批次�
 ```
 上一步没完成，下一步开不了：production 批次只接受 released 版本 + release 名；paid 阶段在 `spend_cap` 为 $0 时拒绝启动。
 
+## 分模块的 benchmark 和门禁（2026-10-19）
+
+改哪一步就考哪一步：每个模块用自己的 benchmark 和自己的标准答案打分，下游只重跑输出变了的 case；端到端全量只在发版前跑。
+
+```toml
+# 项目的 reins.toml
+[modules.plan_crop.gate]
+cmd = "python3 benchmark/s2_crops/module_gate.py"   # 写 $REINS_GATE_OUT：metrics + cases_rerun / cases_reused
+benchmark = "bench-sheffield-crops"                 # 传给命令：$REINS_GATE_BENCH
+```
+```
+reins bench changed bench-sheffield-crops --stage plan_crop --dir OUT --ignore '*.log'   # 哪些 case 的裁图变了
+reins bench add-cases bench-sheffield-crops --issue 7 --split dev --why '生产上框错的页'      # benchmark 长大（开着的版本）
+```
+benchmark 自己也进化：生产错例 → dev；没调过参的新 case → holdout；冻结后改不了，要加就 `reins bench bump`。
+
 ## 提示词、模型、工作流的版本
 
 改提示词 = 改代码：在自己的候选分支里改 `PROMPT` 常量，`reins dev finish` 时 reins 读出新文本、登记 `prompt-<name>-vN`、钉在这个模块版本上。

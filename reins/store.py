@@ -523,7 +523,11 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     return con
 
 
-MIGRATIONS = [("batch", "probe_cmd", "TEXT"), ("batch", "time_budget_h", "REAL"), ("batch", "workflow", "TEXT")]
+MIGRATIONS = [("batch", "probe_cmd", "TEXT"), ("batch", "time_budget_h", "REAL"), ("batch", "workflow", "TEXT"),
+              # module gates (2026-10-19): which module a gate scored, its own metrics, how much of the downstream re-ran
+              ("gate_log", "module", "TEXT"), ("gate_log", "metrics", "TEXT"), ("gate_log", "cases_rerun", "INTEGER"),
+              ("gate_log", "cases_reused", "INTEGER"),
+              ("benchmark", "module", "TEXT")]                  # the module a benchmark scores (None: end to end)
 
 
 def _rename_legacy(con: sqlite3.Connection) -> None:
