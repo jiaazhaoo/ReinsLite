@@ -223,3 +223,22 @@ details.parts.flat { border-top: 1px solid var(--border); margin: 16px -20px -18
 .btable th.bn { width: 18%; }
 .btable td.num { font-size: 12.5px; }
 .btable th small { display: block; font-weight: 400; font-size: 10.5px; color: var(--faint); margin-top: 1px; }
+
+/* work packages: one compact row each */
+.wrow { display: grid; grid-template-columns: minmax(0, 2.3fr) minmax(0, .7fr) minmax(0, 2.2fr) repeat(6, minmax(0, .75fr)); gap: 12px;
+  align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+.wrow.head { font-size: 11.5px; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; padding: 2px 0 8px; border-bottom-color: var(--border-strong); }
+.wrow .nm { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.wrow .nm small { width: 100%; color: var(--muted); font-size: 12px; }
+.wrow .num { text-align: right; font-variant-numeric: tabular-nums; }
+.wrow .num.ok { color: var(--green); font-weight: 600; } .wrow .num.bad { color: var(--red); }
+.wrow .strong { font-weight: 650; }
+.wrow .bar-cell .stack { height: 12px; }
+.wrow .k { display: none; color: var(--faint); font-size: 11.5px; margin-right: 6px; font-weight: 400; }
+@media (max-width: 860px) {
+  .wrow.head { display: none; }
+  .wrow { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .wrow .nm, .wrow .bar-cell { grid-column: 1 / -1; }
+  .wrow .num { text-align: left; }
+  .wrow .k { display: inline; }
+}
