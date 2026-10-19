@@ -245,7 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_parser("once"); x = w.add_parser("run"); x.add_argument("--interval", type=int, default=60)
     x = sub.add_parser("board").add_subparsers(dest="sub", required=True).add_parser("serve"); x.add_argument("--port", type=int)
     rp = sub.add_parser("report").add_subparsers(dest="sub", required=True)
-    rp.add_parser("deploy"); rp.add_parser("push")
+    rp.add_parser("deploy"); rp.add_parser("push"); rp.add_parser("login")
     x = rp.add_parser("link"); x.add_argument("--new", action="store_true")
     x = rp.add_parser("revoke"); x.add_argument("code")
     for n in ("xlsx", "publish"):
@@ -397,6 +397,8 @@ def main(argv: list[str] | None = None) -> int:
                 r = report.deploy() if args.sub == "deploy" else report.push()
                 print(f"{r['remote']}: data of {r['packages']} work packages pushed" + (f"; viewer link: reins report link" if args.sub == "deploy" else ""))
                 return 0
+            if args.sub == "login":
+                report.login(); return 0
             if args.sub == "link":
                 print("\n".join(report.link(args.new))); return 0
             if args.sub == "revoke":
