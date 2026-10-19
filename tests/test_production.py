@@ -137,6 +137,13 @@ class Production(unittest.TestCase):
         self.assertIn("Leeds 第一批", [c.value for c in ws[2]])
         self.assertIn("花费（美元）", [c.value for c in ws[1]])
 
+    def test_published_data_hides_sites_everywhere(self):
+        from reins import report
+        text = '{"scope": "leeds-wp7", "id": "leeds-wp7-production-20261010-1", "name": "Leeds rework", "o": "york-wp1"}'
+        out = report._hide_sites(text, ["leeds", "york"])
+        self.assertNotIn("eeds", out.lower()); self.assertNotIn("york", out.lower())
+        self.assertIn("Client A-wp7", out); self.assertIn("Client B", out)
+
     def test_all_results_but_a_paused_batch_is_not_complete(self):
         self.batch("d-wp4", "production", "paused", ["1", "2"], [("1", "auto", ""), ("2", "human", "c1")])
         p = production.view(self.con)["packages"][0]

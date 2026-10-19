@@ -1,0 +1,9 @@
+# systemd --user unit, run by reins-report-push.timer: send the newest production data to the Cloudflare page
+# (reins report deploy once first; without it this unit fails quietly every 5 minutes)
+[Unit]
+Description=reins production page: push data to Cloudflare
+
+[Service]
+Type=oneshot
+Environment=PATH=@PATH@
+ExecStart=@REINS_DIR@/bin/reins report push

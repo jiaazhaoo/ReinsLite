@@ -245,6 +245,9 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_parser("once"); x = w.add_parser("run"); x.add_argument("--interval", type=int, default=60)
     x = sub.add_parser("board").add_subparsers(dest="sub", required=True).add_parser("serve"); x.add_argument("--port", type=int)
     rp = sub.add_parser("report").add_subparsers(dest="sub", required=True)
+    rp.add_parser("deploy"); rp.add_parser("push")
+    x = rp.add_parser("link"); x.add_argument("--new", action="store_true")
+    x = rp.add_parser("revoke"); x.add_argument("code")
     for n in ("xlsx", "publish"):
         x = rp.add_parser(n); x.add_argument("--lang", choices=["en", "zh"]); x.add_argument("--hide", default=None, help="site,spend")
         if n == "xlsx":
@@ -390,6 +393,14 @@ def main(argv: list[str] | None = None) -> int:
             gateway.serve(args.port); return 0
         if args.cmd == "report":
             from . import report
+            if args.sub in ("deploy", "push"):
+                r = report.deploy() if args.sub == "deploy" else report.push()
+                print(f"{r['remote']}: data of {r['packages']} work packages pushed" + (f"; viewer link: reins report link" if args.sub == "deploy" else ""))
+                return 0
+            if args.sub == "link":
+                print("\n".join(report.link(args.new))); return 0
+            if args.sub == "revoke":
+                print(f"{report.revoke(args.code)} access codes left"); return 0
             hide = None if args.hide is None else {h for h in args.hide.split(",") if h}
             if args.sub == "xlsx":
                 lang = args.lang or report.settings()["lang"]

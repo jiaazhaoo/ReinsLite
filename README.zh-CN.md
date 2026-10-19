@@ -48,6 +48,8 @@ ReinsLite 是一层很小的本地控制层。它不靠提醒智能体"小心一
 
 同样的数字也能导成 xlsx，给习惯用 Excel 的人：`reins report xlsx`（汇总、工作包、批次对比、开发、每日五张表；`--lang en|zh`，`--hide site,spend` 可隐藏地区或花费），`reins report publish` 用 rclone 把它传到 config.toml 里 `[report] remote` 指定的位置（OneDrive / SharePoint 上的文件分享链接不变）。`reins-report.timer` 每 30 分钟刷新一次。
 
+给办公室以外的人：`reins report deploy` 把同一个页面发布到 Cloudflare Workers（免费的 `*.workers.dev` 网址，Worker 代码在 `deploy/cloudflare`），要访问口令才能打开（`reins report link [--new]` 生成链接，`reins report revoke CODE` 收回）；`reins-report-push.timer` 每 5 分钟推送最新数据和 xlsx，外面的人碰不到这台机器。
+
 <p align="center"><img src="docs/images/runs-zh.png" alt="运行" width="100%"></p>
 
 <table>
