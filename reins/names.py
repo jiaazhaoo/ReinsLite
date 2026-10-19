@@ -11,7 +11,7 @@ from pathlib import Path
 from .store import ReinsError
 
 TOKEN = r"[a-z][a-z0-9_]*"
-BATCH_TYPES = ("production", "rework", "experiment", "pilot", "eval", "benchmark_build", "smoke", "drift")
+BATCH_TYPES = ("production", "rework", "experiment", "pilot", "eval", "benchmark_build", "smoke", "drift", "training")
 
 MODULE_VERSION = re.compile(rf"^(?P<module>{TOKEN})-(?P<suffix>[a-z0-9][a-z0-9_]*)-(?P<day>\d{{8}})-(?P<seq>[1-9]\d*)$")
 # <scope>-<type>-<YYYYMMDD>-<n>: scope is 1-4 tokens the project chooses (e.g. client-package: acme-q3)

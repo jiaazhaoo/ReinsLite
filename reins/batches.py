@@ -47,7 +47,7 @@ def parse_stage_spec(spec: str) -> dict:
     return out
 
 
-def open_(con, *, project: str, scope: str, type_: str, purpose: str, case_file: Path,
+def open_(con, *, project: str, scope: str, type_: str, purpose: str, case_file: Path | None,
           stages: list[dict], parent: str | None = None, release_name: str | None = None,
           aliases: list[str] | None = None, case_pattern: str = names.DEFAULT_CASE_PATTERN, case_key: str | None = None,
           work_dir: str | None = None, spend_cap: float = 0.0, day: str | None = None,
@@ -64,8 +64,13 @@ def open_(con, *, project: str, scope: str, type_: str, purpose: str, case_file:
                   for s in wst]
     if not stages:
         raise ReinsError("a batch needs at least one planned stage (or --workflow)")
-    ids = names.read_case_set(case_file, case_key)
-    problems = names.case_problems(ids, case_pattern, case_key)
+    if case_file is None:                                  # a training run has no cases (reins/training.py)
+        if type_ != "training":
+            raise ReinsError("a batch needs a case set (--cases FILE); only a training run has none")
+        ids = []
+    else:
+        ids = names.read_case_set(case_file, case_key)
+    problems = names.case_problems(ids, case_pattern, case_key) if ids else []
     if problems:
         shown = "\n  ".join(problems[:20]) + (f"\n  ... {len(problems) - 20} more" if len(problems) > 20 else "")
         raise ReinsError(f"case set {case_file} is not usable ({len(problems)} problems):\n  {shown}")
@@ -104,7 +109,7 @@ def open_(con, *, project: str, scope: str, type_: str, purpose: str, case_file:
                     " case_set_sha, n_cases, release_name, aliases, status, spend_cap, work_dir, ruleset, env_name,"
                     " config_sha, input_shas, owner_session, created)"
                     " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'open', ?,?,?,?,?,?,?,?)",
-                    (bid, project, scope, type_, day, seq, purpose, parent, str(case_file.resolve()),
+                    (bid, project, scope, type_, day, seq, purpose, parent, str(case_file.resolve()) if case_file else "",
                      names.sha256_lines(ids), len(ids), release_name, json.dumps(aliases or [], ensure_ascii=False),
                      spend_cap, work_dir, ruleset, env_name, config_sha, json.dumps(input_shas), session(), now()))
         con.executemany("INSERT INTO batch_case VALUES (?,?)", [(bid, i) for i in ids])
