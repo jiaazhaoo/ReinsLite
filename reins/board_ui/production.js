@@ -328,9 +328,12 @@ const partVal = (v) => scopeName(v || "");
 function btColumns(g) {
   const pctOf = (n, d) => (n == null || !d ? null : (100 * n) / d);
   const cnt = (n, d) => (BT.mode === "pct" ? pctOf(n, d) : n);
-  const ai = [{ k: "with_result", h: t("b_result"), v: (r) => r.with_result, fmt: "n" }]
-    .concat(g.values.map((v) => ({ k: "v:" + v, h: lab(g.project, v), good: g.good.includes(v), v: (r) => (r.values ? cnt(r.values[v] || 0, r.with_result) : null), fmt: BT.mode })))
-    .concat(g.details.map((d) => ({ k: "d:" + d, h: lab(g.project, d), sub: true, v: (r) => (r.details ? cnt(r.details[d] || 0, r.with_result) : null), fmt: BT.mode })));
+  const sh = (n, d) => (n == null || !d ? null : n / d);
+  const ai = [{ k: "with_result", h: t("b_result"), v: (r) => r.with_result, share: (r) => sh(r.with_result, r.n), fmt: "n" }]
+    .concat(g.values.map((v) => ({ k: "v:" + v, h: lab(g.project, v), good: g.good.includes(v), v: (r) => (r.values ? cnt(r.values[v] || 0, r.with_result) : null),
+      share: (r) => (r.values ? sh(r.values[v] || 0, r.with_result) : null), fmt: BT.mode })))
+    .concat(g.details.map((d) => ({ k: "d:" + d, h: lab(g.project, d), sub: true, v: (r) => (r.details ? cnt(r.details[d] || 0, r.with_result) : null),
+      share: (r) => (r.details ? sh(r.details[d] || 0, r.with_result) : null), fmt: BT.mode })));
   const rv = (f) => (r) => (r.review ? f(r.review) : null);
   const review = [
     { k: "r_date", h: t("r_date"), v: rv((x) => x.date), fmt: "date" },
@@ -348,11 +351,13 @@ function btColumns(g) {
     { k: "run_h", h: t("h_run"), v: (r) => r.run_h, fmt: "h" },
     { k: "note", h: t("b_note"), v: (r) => (r.pause ? t("p_" + r.pause) : t("s_" + (r.state || (r.status === "closed" ? "done" : r.status === "open" ? "waiting" : r.status)))), fmt: "text" },
   ];
-  const delivered = [{ k: "dn", h: t("b_delivered"), v: (r) => (r.delivered ? r.delivered_n : null), fmt: "n" }]
-    .concat(g.delivered_order.map((st) => ({ k: "st:" + st, h: labShort(g.project, st), full: lab(g.project, st),
+  const delivered = [{ k: "dn", h: t("b_delivered"), v: (r) => (r.delivered ? r.delivered_n : null), share: (r) => (r.delivered ? sh(r.delivered_n, r.n) : null), fmt: "n" }]
+    .concat(g.delivered_order.map((st) => ({ k: "st:" + st, h: lab(g.project, st), full: lab(g.project, st),
       good: g.delivered_good.includes(st), cls: g.delivered_bad.includes(st) ? "bad" : "",
-      v: (r) => (r.delivered ? cnt(r.delivered[st] || 0, r.delivered_n) : null), fmt: BT.mode })))
-    .concat([{ k: "nd", h: t("b_not_delivered"), v: (r) => (r.delivered ? cnt(r.n - r.delivered_n, r.n) : null), fmt: BT.mode }]);
+      v: (r) => (r.delivered ? cnt(r.delivered[st] || 0, r.delivered_n) : null),
+      share: (r) => (r.delivered ? sh(r.delivered[st] || 0, r.delivered_n) : null), fmt: BT.mode })))
+    .concat([{ k: "nd", h: t("b_not_delivered"), v: (r) => (r.delivered ? cnt(r.n - r.delivered_n, r.n) : null),
+      share: (r) => (r.delivered ? sh(r.n - r.delivered_n, r.n) : null), fmt: BT.mode }]);
   return { ai, review, cost, delivered }[BT.group] || ai;
 }
 function fmtCell(v, fmt) {
@@ -400,20 +405,19 @@ function batchesView() {
     rows = rows.slice().sort((a, b) => { const x = key.v(a), y = key.v(b); if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1;
       return (typeof x === "number" ? x - y : String(x).localeCompare(String(y))) * BT.dir; });
     BT_VIEW[gi] = { g, rows };
-    const th = (k, h, cls = "", full = "") => `<th class="${cls} ${BT.sort === k ? "sorted" : ""}" data-sort="${esc(k)}" title="${esc(full || h)}">${esc(h)}${BT.sort === k ? (BT.dir > 0 ? " ↑" : " ↓") : ""}</th>`;
+    const split = (h) => { const m = String(h).match(/^(.*?)\s*(\(.*\)|-\s.*|（.*）|·.*)$/); return m && m[1] ? [m[1], m[2].replace(/^-\s*/, "")] : [h, ""]; };
+    const th = (k, h, cls = "", full = "") => { const [a, b] = split(h);
+      return `<th class="${cls} ${BT.sort === k ? "sorted" : ""}" data-sort="${esc(k)}" title="${esc(full || h)}">${esc(a)}${b ? `<small>${esc(b)}</small>` : ""}${BT.sort === k ? (BT.dir > 0 ? " ↑" : " ↓") : ""}</th>`; };
     const tot = btTotals(g, rows);
     const dt = (g.delivered_totals || {})[`${BT.site}|${BT.type}`];
     if (dt) Object.assign(tot, { n: BT.group === "delivered" ? dt.n : tot.n, delivered: dt.delivered, delivered_n: dt.delivered_n });
-    // each column's bar is the value against the column's largest (shares against 100%)
-    const colMax = {};
-    for (const c of cols) colMax[c.k] = c.fmt === "pct" ? 100 : Math.max(0, ...rows.map((r) => (typeof c.v(r) === "number" ? c.v(r) : 0)));
     const tr = (r) => {
       const over = r.results_in && BT.group === "ai";
       const cells = over ? `<td colspan="${cols.length}" class="note-cell">${esc(t("results_in_other", { b: noCjk(r.results_in) }))}</td>`
         : (BT.group === "review" && !r.review && !r.total) ? `<td colspan="${cols.length}" class="note-cell faint">${t("no_review")}</td>`
         : cols.map((c) => {
-            const v = c.v(r), barred = typeof v === "number" && c.fmt !== "date" && c.fmt !== "text";
-            const w = barred && colMax[c.k] ? Math.max(0, Math.min(100, (100 * v) / colMax[c.k])) : 0;
+            const v = c.v(r), share = c.share ? c.share(r) : null, barred = typeof v === "number" && share != null;
+            const w = barred ? Math.max(0, Math.min(100, 100 * share)) : 0;      // the bar is the share, whatever the number shows
             const cell = barred ? `<span class="bar"><i style="width:${w.toFixed(1)}%"></i><span>${fmtCell(v, c.fmt)}</span></span>` : fmtCell(v, c.fmt);
             return `<td class="${c.fmt === "text" ? "txt" : "num"} ${c.cls || ""} ${c.good ? "good" : ""}" data-l="${esc(c.h)}">${cell}${c.extra && c.extra(r) ? `<small>${esc(c.extra(r))}</small>` : ""}</td>`;
           }).join("");

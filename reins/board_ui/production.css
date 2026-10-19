@@ -222,3 +222,4 @@ details.parts.flat { border-top: 1px solid var(--border); margin: 16px -20px -18
 .btable th.badh { color: var(--red); }
 .btable th.bn { width: 18%; }
 .btable td.num { font-size: 12.5px; }
+.btable th small { display: block; font-weight: 400; font-size: 10.5px; color: var(--faint); margin-top: 1px; }
