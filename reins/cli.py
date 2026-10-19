@@ -244,6 +244,7 @@ def build_parser() -> argparse.ArgumentParser:
     w = sub.add_parser("watchdog").add_subparsers(dest="sub", required=True)
     w.add_parser("once"); x = w.add_parser("run"); x.add_argument("--interval", type=int, default=60)
     x = sub.add_parser("board").add_subparsers(dest="sub", required=True).add_parser("serve"); x.add_argument("--port", type=int)
+    x = sub.add_parser("backup"); x.add_argument("--now", action="store_true", help="make one now, whatever the last one's age")
     rp = sub.add_parser("report").add_subparsers(dest="sub", required=True)
     rp.add_parser("deploy"); rp.add_parser("push"); rp.add_parser("login")
     x = rp.add_parser("link"); x.add_argument("--new", action="store_true")
@@ -400,6 +401,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "gateway":
             from . import gateway
             gateway.serve(args.port); return 0
+        if args.cmd == "backup":
+            from . import upkeep
+            from contextlib import closing as _closing
+            with _closing(connect()) as c:
+                lines = upkeep.backup(c, force=args.now)
+            for line in lines or [f"last backup: {upkeep.last_backup() or 'none'} (less than a day old)"]:
+                print(line)
+            return 0
         if args.cmd == "report":
             from . import report
             if args.sub in ("deploy", "push"):

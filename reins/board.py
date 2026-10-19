@@ -120,6 +120,17 @@ def _activity(con, bid: str) -> dict:
     return {"at": max(ts) if ts else None, "progress": progress, "alive": alive, "last": dict(last) if last else None}
 
 
+def _rerun(bid: str, last) -> str:
+    """The command that starts a batch's last process again."""
+    import shlex as _sh
+    try:
+        raw = last["cmd"] or ""
+        body = _sh.join(json.loads(raw)) if raw.startswith("[") else raw
+        return f"reins run {bid} " + ("--self-staged" if last["stage"] == "*" else last["stage"]) + " -- " + body
+    except (ValueError, TypeError):
+        return f"reins batch status {bid}"
+
+
 def _advice(con, b, cur, needs: list[str], idle_h: float | None, alive: bool, act: dict | None = None) -> tuple[str, str, str]:
     """(group, kind, command): what this batch needs from a person, in one word, and the command that does it.
     group: active | decide | stuck | stale. The page words each kind; the reason text stays available as detail."""
@@ -128,7 +139,11 @@ def _advice(con, b, cur, needs: list[str], idle_h: float | None, alive: bool, ac
     strict = b["type"] in STRICT
     if b["status"] == "paused":
         kind, cmd = "paused", f"reins batch status {bid}"
-        if why.startswith("sentinel"):
+        if why.startswith("process gone"):              # the watchdog paused it: what became of the process, and the rerun
+            last = (act or {}).get("last")
+            kind = "reboot" if "restarted" in why else "ended" if "exit 0" in why else "exited" if "failed (exit" in why else "lost"
+            cmd = _rerun(bid, last) if last and kind != "ended" else f"reins batch status {bid}"
+        elif why.startswith("sentinel"):
             kind, cmd = "sentinel", f"reins sentinel check {bid} {stage}"
         elif why.startswith("spend") or "cap" in why.lower() and "raised" not in why.lower():
             kind, cmd = "spend_cap", f"reins batch approve {bid} --cap USD && reins ctl resume {bid}"
@@ -159,13 +174,7 @@ def _advice(con, b, cur, needs: list[str], idle_h: float | None, alive: bool, ac
         return "active", "moving", f"reins batch status {bid}"
     last = act.get("last")
     if last:                                            # it ran under reins and nothing of it is alive now
-        import shlex as _sh
-        try:
-            raw = last["cmd"] or ""
-            body = _sh.join(json.loads(raw)) if raw.startswith("[") else raw
-            again = f"reins run {bid} " + ("--self-staged" if last["stage"] == "*" else last["stage"]) + " -- " + body
-        except (ValueError, TypeError):
-            again = f"reins batch status {bid}"
+        again = _rerun(bid, last)
         boot = _boot_time()
         if last["state"] in ("running", "lost"):
             kind = "reboot" if boot and last["started"] and last["started"] < boot else "lost"
