@@ -9,7 +9,7 @@ const I18N = {
     k_spent: "累计花费", k_spent_f: "AI 调用，按批次记账",
     daily: "每天出结果的案件", daily_sub: "近 14 天", mix: "结果分布", mix_sub: "全部工作包",
     packages: "工作包", f_all: "全部", f_active: "未完成", f_done: "已完成",
-    s_running: "运行中", s_stopped: "已停下，需要重启", s_paused: "暂停", s_waiting: "未开始", s_done: "已完成", s_results_in: "结果已出，收尾中",
+    s_running: "运行中", s_stopped: "已停下，需要重启", s_paused: "暂停", s_waiting: "未开始", s_done: "已完成", s_results_in: "结果已出，收尾中", s_delivered: "已交付",
     p_disk_full: "磁盘空间不足", p_out_of_memory: "内存不足被停下", p_program_error: "程序出错停下", p_budget: "等待预算批准",
     p_waiting: "等前一部分跑完", p_other: "已暂停",
     of_results: "已出结果", cases: "{n} 个案件", got: "已出结果 {n}", today: "近 24 小时 +{n}", eta: "预计还要 {t}",
@@ -18,7 +18,7 @@ const I18N = {
     parts: "包含 {n} 个批次", h_part: "批次", h_cases: "案件", h_state: "状态", h_done: "已出结果", h_when: "时间", h_spent: "花费",
     t_production: "生产", t_rework: "返工", delivered: "已交付 v{v} · {d}", accepted_ship: "抽检通过", accepted_ship_with_note: "抽检通过（附说明）",
     accepted_rework: "抽检不通过，返工", empty: "还没有生产批次", until: "至 {d}", none_yet: "还没有结果",
-    xlsx: "下载 Excel", tab_overview: "总览", tab_batches: "批次对比", bt_sub: "每行一个生产或返工批次；同一项目的批次列相同，可以直接对比",
+    xlsx: "下载 Excel", pk_sub: "每行一个工作包；结果按交付表的状态", tab_overview: "总览", tab_batches: "批次对比", bt_sub: "每行一个交付批次（重跑和拆分已合并），可以直接对比",
     cg_delivered: "交付状态", b_delivered: "已交付", b_not_delivered: "未交付", tot_distinct: "合计按不重复案件", cg_ai: "AI 分流", cg_review: "人工审核", cg_cost: "成本耗时", m_n: "数量", m_pct: "比例", all_sites: "全部地区",
     all_types: "全部类型", csv: "导出 CSV", total: "合计", b_date: "日期", b_batch: "批次", b_cases: "案件",
     b_result: "已出结果", r_date: "复核日期", r_n: "已复核", r_ok: "对", r_bad: "错", r_unsure: "拿不准",
@@ -53,7 +53,7 @@ const I18N = {
     k_spent: "Spent", k_spent_f: "AI calls, booked per batch",
     daily: "Cases finished per day", daily_sub: "last 14 days", mix: "Results", mix_sub: "all work packages",
     packages: "Work packages", f_all: "All", f_active: "In progress", f_done: "Complete",
-    s_running: "Running", s_stopped: "Stopped, needs a restart", s_paused: "Paused", s_waiting: "Not started", s_done: "Complete", s_results_in: "Results in, wrapping up",
+    s_running: "Running", s_stopped: "Stopped, needs a restart", s_paused: "Paused", s_waiting: "Not started", s_done: "Complete", s_results_in: "Results in, wrapping up", s_delivered: "Delivered",
     p_disk_full: "Disk full", p_out_of_memory: "Stopped: out of memory", p_program_error: "Stopped by an error", p_budget: "Waiting for budget approval",
     p_waiting: "Waiting for an earlier part", p_other: "Paused",
     of_results: "with a result", cases: "{n} cases", got: "{n} with a result", today: "+{n} in 24 h", eta: "about {t} to go",
@@ -62,7 +62,7 @@ const I18N = {
     parts: "Batches ({n})", h_part: "Batch", h_cases: "Cases", h_state: "State", h_done: "With result", h_when: "When", h_spent: "Spent",
     t_production: "production", t_rework: "rework", delivered: "Delivered v{v} · {d}", accepted_ship: "Spot check passed", accepted_ship_with_note: "Spot check passed (with a note)",
     accepted_rework: "Spot check failed: rework", empty: "No production batches yet", until: "to {d}", none_yet: "No results yet",
-    xlsx: "Download Excel", tab_overview: "Overview", tab_batches: "Batch comparison", bt_sub: "one row per production or rework batch; batches of one project share columns",
+    xlsx: "Download Excel", pk_sub: "one row per work package; results as delivered", tab_overview: "Overview", tab_batches: "Batch comparison", bt_sub: "one row per delivered batch (re-runs and splits folded in), side by side",
     cg_delivered: "Delivered status", b_delivered: "Delivered", b_not_delivered: "Not delivered", tot_distinct: "totals count each case once", cg_ai: "AI routing", cg_review: "Human review", cg_cost: "Cost and time", m_n: "Counts", m_pct: "Shares", all_sites: "All sites",
     all_types: "All types", csv: "Export CSV", total: "Total", b_date: "Date", b_batch: "Batch", b_cases: "Cases",
     b_result: "With result", r_date: "Review date", r_n: "Reviewed", r_ok: "Correct", r_bad: "Error", r_unsure: "Unsure",
@@ -121,7 +121,7 @@ const noCjk = (s, fallback) => {                 // English: a name with Chinese
 };
 const scopeName = (s) => s.split("-").map((p) => p.replace(/wp(\d+)/g, " WP$1").trim().replace(/^\w/, (c) => c.toUpperCase())).join(" ").replace(/\s+/g, " ");
 
-const STATE_CLS = { running: "green", stopped: "red", paused: "amber", waiting: "", done: "blue", results_in: "teal" };
+const STATE_CLS = { running: "green", stopped: "red", paused: "amber", waiting: "", done: "blue", results_in: "teal", delivered: "green" };
 const badge = (text, cls = "", dot = false) => `<span class="badge ${cls}">${dot ? `<span class="dot ${dot}"></span>` : ""}${esc(text)}</span>`;
 const stateBadge = (s, pause) => badge(s === "paused" && pause ? `${t("s_paused")} · ${t("p_" + pause)}` : t("s_" + s), STATE_CLS[s] || "",
   s === "running" ? "green pulse" : false);
@@ -449,6 +449,48 @@ function batchesView() {
   }).join("");
 }
 
+// ---------- work packages: one compact row each ----------
+const DCOL = { good: "var(--green)", bad: "var(--red)" };
+function dgroup(project) { return (D.batches || []).find((g) => g.project === project) || { delivered_order: [], delivered_good: [], delivered_bad: [] }; }
+function dcolor(g, k, i) {
+  if (g.delivered_good.includes(k)) return DCOL.good;
+  if (g.delivered_bad.includes(k)) return DCOL.bad;
+  return ["var(--amber)", "var(--faint)", "var(--violet)", "var(--blue)"][i % 4];
+}
+function resultBar(p) {
+  const g = dgroup(p.project), d = p.delivered || {};
+  const keys = g.delivered_order.filter((k) => d[k]);
+  const tot = keys.reduce((a, k) => a + d[k], 0);
+  if (!tot) return `<span class="faint">${t("none_yet")}</span>`;
+  return `<div class="stack">${keys.map((k, i) => `<i style="width:${(100 * d[k]) / tot}%;background:${dcolor(g, k, i)}" title="${esc(lab(p.project, k))}: ${num(d[k])} (${pct(d[k], tot)}%)"></i>`).join("")}</div>`;
+}
+function packagesTable() {
+  if (!D.packages.length) return "";
+  const g0 = dgroup(D.packages[0].project);
+  const legend = g0.delivered_order.map((k, i) => `<span><i class="sw" style="background:${dcolor(g0, k, i)}"></i>${esc(lab(D.packages[0].project, k))}</span>`).join("");
+  const share = (p, k) => { const d = p.delivered || {}; const tot = Object.values(d).reduce((a, b) => a + b, 0); return tot ? `${pct(d[k] || 0, tot)}%` : "—"; };
+  const good = g0.delivered_good[0], bad = g0.delivered_bad[0];
+  const rows = D.packages.map((p) => {
+    const run = p.status === "running" && p.eta ? `<small>${esc(t("eta", { t: etaText(p.eta) }))}</small>` : "";
+    return `<div class="wrow">
+      <div class="nm"><b>${esc(scopeName(p.scope))}</b>${stateBadge(p.status, p.pause)}${run}</div>
+      <div class="num"><span class="k">${t("h_cases")}</span>${num(p.n_cases)}</div>
+      <div class="bar-cell">${resultBar(p)}</div>
+      ${good ? `<div class="num ok"><span class="k">${esc(lab(p.project, good))}</span>${share(p, good)}</div>` : ""}
+      ${bad ? `<div class="num bad"><span class="k">${esc(lab(p.project, bad))}</span>${share(p, bad)}</div>` : ""}
+      <div class="num strong"><span class="k">${t("h_cost")}</span>${usd(p.spent)}</div>
+      <div class="num"><span class="k">${t("h_per")}</span>${per1k(p.per_case)}</div>
+      <div class="num"><span class="k">${t("h_run")}</span>${p.unknown_parts && !p.run_h ? `<span class="faint">—</span>` : dur(p.run_h)}</div>
+      <div class="num"><span class="k">${t("h_span")}</span>${dur(p.calendar_h)}</div></div>`;
+  }).join("");
+  return `<div class="pcard"><h2>${t("packages")}<small>${t("pk_sub")}</small></h2>
+    <div class="wrow head"><div>${t("h_wp")}</div><div class="num">${t("h_cases")}</div><div>${t("results")}</div>
+      ${good ? `<div class="num">${esc(lab(D.packages[0].project, good))}</div>` : ""}${bad ? `<div class="num">${esc(lab(D.packages[0].project, bad))}</div>` : ""}
+      <div class="num">${t("h_cost")}</div><div class="num">${t("h_per")}</div><div class="num">${t("h_run")}</div><div class="num">${t("h_span")}</div></div>
+    ${rows}
+    <div class="legend">${legend}</div></div>`;
+}
+
 function render() {
   document.documentElement.lang = LANG;
   document.title = t("title");
@@ -475,11 +517,8 @@ function render() {
     ${head}
     ${kpis()}
     <section class="prow even">${dailySpend()}${daily()}</section>
-    ${compare()}
+    ${packagesTable()}
     ${devCard()}
-    ${mix()}
-    <section class="pfilters"><h2>${t("packages")}</h2>${["all", "active", "done"].map(fchip).join("")}</section>
-    ${shown.length ? shown.map((p) => packageHtml(p, multi)).join("") : `<div class="pempty">${t("empty")}</div>`}
     <div class="pfoot">${t("foot")}</div>`;
   for (const d of page.querySelectorAll("details[data-k]")) if (open.has(d.dataset.k)) d.open = true;
 }

@@ -371,7 +371,19 @@ def view(con) -> dict:
         time_cost["per_result"] = round(spent_pkg / len(result), 4) if result else None
         open_issues = con.execute(f"SELECT COUNT(*) FROM issue WHERE batch_id IN ({q}) AND status IN ('open','in_progress','fixed')",
                                   ids).fetchone()[0] if con.execute("SELECT 1 FROM sqlite_master WHERE name='issue'").fetchone() else 0
+        dmap = _delivered(cfg)                           # what the cases were delivered as, in the project's groups
+        dgroups = (spec.get("delivered") or {}).get("groups") or {}
+        to_g = {st: n for n, sts in dgroups.items() for st in sts}
+        dv: dict[str, int] = {}
+        for c in cases:
+            v = dmap.get(c)
+            if v:
+                k = to_g.get(v, "Other") if dgroups else v
+                dv[k] = dv.get(k, 0) + 1
+        if status != "running" and cases and sum(dv.values()) == len(cases):
+            status, pause = "delivered", None            # every case is in a delivery workbook
         out.append({"project": project, "scope": scope, "status": status, "pause": pause, "n_cases": len(cases),
+                    "delivered": dv, "_cases": cases,
                     "finished": len(finished), "with_result": len(result),
                     "good": sum(e["n"] for e in results if e["good"]), "results": results,
                     "why": sorted(({"word": k, "n": n} for k, n in why.items()), key=lambda x: -x["n"]),
@@ -379,7 +391,21 @@ def view(con) -> dict:
                     "last_activity": last_at, "eta": etas[0] if len(etas) == 1 else (max(etas, key=_eta_minutes) if etas else None),
                     "today": sum(1 for c, at in first_final.items() if at > day_ago and c in cases),
                     "spent": round(spent_pkg, 2), "open_issues": open_issues, **time_cost})
-    order = {"running": 0, "stopped": 1, "paused": 2, "waiting": 3, "results_in": 4, "done": 5}
+    # a work package whose cases all belong to others (a supplementary run over two packages) is not a package of its
+    # own: its spend and running time go to the package sharing most of its cases
+    for p in sorted(out, key=lambda p: len(p["_cases"])):
+        others = [o for o in out if o is not p and o["project"] == p["project"] and o["_cases"] & p["_cases"]]
+        if len(others) >= 1 and p["_cases"] <= set().union(*(o["_cases"] for o in others)) and \
+                all(len(o["_cases"]) > len(p["_cases"]) for o in others):
+            host = max(others, key=lambda o: len(o["_cases"] & p["_cases"]))
+            host["spent"] = round(host["spent"] + p["spent"], 2)
+            host["run_h"] = round(host["run_h"] + p["run_h"], 1)
+            host["per_case"] = round(host["spent"] / host["n_cases"], 4) if host["n_cases"] else None
+            host["parts"] = host["parts"] + p["parts"]
+            out.remove(p)
+    for p in out:
+        p.pop("_cases", None)
+    order = {"running": 0, "stopped": 1, "paused": 2, "waiting": 3, "results_in": 4, "done": 5, "delivered": 6}
     out.sort(key=lambda p: (order[p["status"]], -(dt.datetime.fromisoformat(p["last_activity"] or p["started"]).timestamp())))
     days = [(now.date() - dt.timedelta(days=i)).isoformat() for i in range(13, -1, -1)]
     tot = {k: sum(p[k] for p in out) for k in ("n_cases", "finished", "with_result", "good", "today", "spent")}
