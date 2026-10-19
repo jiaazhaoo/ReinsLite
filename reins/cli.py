@@ -244,6 +244,11 @@ def build_parser() -> argparse.ArgumentParser:
     w = sub.add_parser("watchdog").add_subparsers(dest="sub", required=True)
     w.add_parser("once"); x = w.add_parser("run"); x.add_argument("--interval", type=int, default=60)
     x = sub.add_parser("board").add_subparsers(dest="sub", required=True).add_parser("serve"); x.add_argument("--port", type=int)
+    rp = sub.add_parser("report").add_subparsers(dest="sub", required=True)
+    for n in ("xlsx", "publish"):
+        x = rp.add_parser(n); x.add_argument("--lang", choices=["en", "zh"]); x.add_argument("--hide", default=None, help="site,spend")
+        if n == "xlsx":
+            x.add_argument("--out", type=Path)
 
     r = sub.add_parser("rules").add_subparsers(dest="sub", required=True)
     x = r.add_parser("list"); x.add_argument("path", nargs="?")
@@ -383,6 +388,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "gateway":
             from . import gateway
             gateway.serve(args.port); return 0
+        if args.cmd == "report":
+            from . import report
+            hide = None if args.hide is None else {h for h in args.hide.split(",") if h}
+            if args.sub == "xlsx":
+                lang = args.lang or report.settings()["lang"]
+                r = report.build(args.out or report.default_out(lang), lang, hide if hide is not None else set(report.settings()["hide"]))
+            else:
+                r = report.publish(args.lang, hide)
+            print(f"{r['path']}: {', '.join(r['sheets'])}; {r['packages']} work packages, {r['batches']} batches"
+                  + (f"; copied to {r['remote']}" if r.get("remote") else ""))
+            return 0
         if args.cmd == "board":
             from . import board
             board.serve(args.port); return 0

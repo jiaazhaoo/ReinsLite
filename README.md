@@ -51,6 +51,8 @@ Running batches show a stage stepper, five numbers and whatever needs a person (
 
 Managers get a page of their own, `/production`: production and rework batches only, one block per work package with how many cases have a result, what the results are (from the file a project names in `[results]`), why the others could not be processed, the cost and the expected finish. No commands, versions or sessions; Chinese / English switch.
 
+The same numbers as a workbook for people who live in Excel: `reins report xlsx` (Summary, Work packages, Batches, Development, Daily; `--lang en|zh`, `--hide site,spend`), and `reins report publish` copies it with rclone to the `[report] remote` in config.toml (a OneDrive / SharePoint file keeps its share link). `reins-report.timer` refreshes it every 30 minutes.
+
 <p align="center"><img src="docs/images/runs-en.png" alt="Runs" width="100%"></p>
 
 <table>

@@ -5,10 +5,10 @@ set -euo pipefail
 here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 dest="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$dest"
-for f in "$here"/systemd/reins-*.service; do
+for f in "$here"/systemd/reins-*.service "$here"/systemd/reins-*.timer; do
   sed "s#@REINS_DIR@#$here#g" "$f" > "$dest/$(basename "$f")"
   echo "installed $(basename "$f")"
 done
 systemctl --user daemon-reload
-systemctl --user enable --now reins-gateway reins-watchdog reins-board
+systemctl --user enable --now reins-gateway reins-watchdog reins-board reins-report.timer
 echo "board: http://127.0.0.1:8791   (keep services running after logout: loginctl enable-linger $USER)"

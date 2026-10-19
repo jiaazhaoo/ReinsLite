@@ -339,7 +339,7 @@ function btColumns(g) {
     { k: "spent", h: t("h_cost"), v: (r) => r.spent, fmt: "usd" },
     { k: "per_case", h: t("h_per"), v: (r) => (r.per_case == null ? null : r.per_case * 1000), fmt: "usd" },
     { k: "run_h", h: t("h_run"), v: (r) => r.run_h, fmt: "h" },
-    { k: "note", h: t("b_note"), v: (r) => (r.pause ? t("p_" + r.pause) : t("s_" + (r.status === "closed" ? "done" : r.status === "open" ? "waiting" : r.status))), fmt: "text" },
+    { k: "note", h: t("b_note"), v: (r) => (r.pause ? t("p_" + r.pause) : t("s_" + (r.state || (r.status === "closed" ? "done" : r.status === "open" ? "waiting" : r.status)))), fmt: "text" },
   ];
   return { ai, review, cost }[BT.group];
 }
