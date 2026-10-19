@@ -205,3 +205,5 @@ details.parts.flat { border-top: 1px solid var(--border); margin: 16px -20px -18
 @media (max-width: 860px) { .btable td:nth-child(-n+3) { white-space: normal; } }
 .seg button, .live, .pbrand b { white-space: nowrap; }
 @media (max-width: 480px) { .pbar .live { display: none; } .pbrand b { font-size: 14px; } }
+.phead a.dl { color: var(--accent-text); font-weight: 600; }
+.phead a.dl:hover { text-decoration: underline; }

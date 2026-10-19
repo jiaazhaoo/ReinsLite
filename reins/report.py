@@ -381,3 +381,146 @@ def publish(lang: str | None = None, hide: set[str] | None = None) -> dict:
     if p.returncode:
         raise ReinsError(f"rclone copyto {s['remote']} failed: {p.stderr.strip()[-400:]}")
     return {**r, "remote": s["remote"]}
+
+
+# ---------- the production page on Cloudflare Workers (deploy/cloudflare) ----------
+#
+#   reins report deploy        create the KV store, set the access codes, deploy the Worker (once, or after a page change)
+#   reins report push          send the newest data and workbook (reins-report-push.timer, every 5 minutes)
+#   reins report link [--new]  the viewer link; --new adds another access code (one per person, so one can be revoked)
+#   reins report revoke CODE   drop an access code
+#
+# $REINS_HOME/config.toml [report.cloudflare]: name = "reins-production" (the Worker), lang = "en", hide = [],
+# wrangler = "npx --yes wrangler@4". State (KV id, URL, codes) lives in $REINS_HOME/reports/cloudflare/state.json (0600).
+
+import json as _json
+import os as _os
+import secrets as _secrets
+import shlex as _shlex
+import shutil as _shutil
+
+TEMPLATE = Path(__file__).resolve().parents[1] / "deploy" / "cloudflare"
+UI = Path(__file__).with_name("board_ui")
+
+
+def _cf() -> dict:
+    return {"name": "reins-production", "lang": "en", "hide": [], "wrangler": "npx --yes wrangler@4",
+            **(settings().get("cloudflare") or {})}
+
+
+def _dir() -> Path:
+    d = home() / "reports" / "cloudflare"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _state() -> dict:
+    f = _dir() / "state.json"
+    return _json.loads(f.read_text()) if f.is_file() else {}
+
+
+def _save(st: dict) -> None:
+    f = _dir() / "state.json"
+    f.write_text(_json.dumps(st, indent=2))
+    _os.chmod(f, 0o600)
+
+
+def _wrangler(*args, stdin: str | None = None, cwd: Path | None = None) -> str:
+    cmd = _shlex.split(_cf()["wrangler"]) + list(args)
+    p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=600, cwd=cwd or _dir())
+    if p.returncode:
+        raise ReinsError(f"wrangler {' '.join(args[:3])} failed: {(p.stderr or p.stdout).strip()[-600:]}")
+    return p.stdout + p.stderr
+
+
+def _hide_sites(text: str, names: list[str]) -> str:
+    """Every site word (also inside ids and names) -> Client A, B, ... in order of first appearance."""
+    for i, n in enumerate(sorted({x for x in names if len(x) > 2}, key=lambda x: names.index(x))):
+        text = re.sub(re.escape(n), f"Client {chr(65 + i)}", text, flags=re.I)
+    return text
+
+
+def deploy() -> dict:
+    cf, st = _cf(), _state()
+    d = _dir()
+    if not st.get("kv_id"):
+        out = _wrangler("kv", "namespace", "create", f"{cf['name']}-data")
+        m = re.search(r'id\s*=\s*"([0-9a-f]{32})"|"id":\s*"([0-9a-f]{32})"', out)
+        if not m:
+            raise ReinsError(f"no KV namespace id in wrangler's answer: {out[-300:]}")
+        st["kv_id"] = m.group(1) or m.group(2)
+    pub = d / "public"
+    if pub.exists():
+        _shutil.rmtree(pub)
+    pub.mkdir()
+    for f in ("production.js", "production.css", "app.css"):
+        _shutil.copy(UI / f, pub / f)
+    html = (UI / "production.html").read_text(encoding="utf-8")
+    html = html.replace('<html lang="zh">', f'<html lang="{cf["lang"]}" data-lang="{cf["lang"]}" data-xlsx="production.xlsx">')
+    html = html.replace("<head>", '<head>\n<meta name="robots" content="noindex">', 1)
+    (pub / "production.html").write_text(html, encoding="utf-8")
+    _shutil.copy(TEMPLATE / "worker.js", d / "worker.js")
+    (d / "wrangler.toml").write_text(
+        f'name = "{cf["name"]}"\nmain = "worker.js"\ncompatibility_date = "2026-10-01"\nworkers_dev = true\n\n'
+        f'[assets]\ndirectory = "./public"\nbinding = "ASSETS"\nrun_worker_first = true\n\n'
+        f'[[kv_namespaces]]\nbinding = "REPORT"\nid = "{st["kv_id"]}"\n')
+    out = _wrangler("deploy")
+    m = re.search(r"https://[\w.-]+\.workers\.dev", out)
+    if m:
+        st["url"] = m.group(0)
+    if not st.get("codes"):
+        st["codes"] = [_secrets.token_urlsafe(24)]
+    _save(st)
+    _wrangler("secret", "put", "VIEW_TOKENS", stdin=",".join(st["codes"]))
+    r = push()
+    return {**r, "url": st.get("url"), "kv_id": st["kv_id"]}
+
+
+def push() -> dict:
+    """The newest data (the board's /api/production) and the workbook, into the Worker's KV store."""
+    from . import production
+    cf, st = _cf(), _state()
+    if not st.get("kv_id"):
+        raise ReinsError("not deployed yet: reins report deploy")
+    hide = set(cf["hide"])
+    with closing(connect()) as con:
+        v = production.view(con)
+        text = _json.dumps(v, ensure_ascii=False, default=str)
+        if "site" in hide:
+            names = []
+            for p in v["packages"]:
+                n = p["scope"].split("-")[0]
+                if n not in names:
+                    names.append(n)
+            text = _hide_sites(text, names)
+        d = _dir()
+        (d / "production.json").write_text(text, encoding="utf-8")
+        build(d / "production.xlsx", cf["lang"], hide, con=con)
+    _wrangler("kv", "key", "put", "production", "--path", str(d / "production.json"), "--namespace-id", st["kv_id"], "--remote")
+    _wrangler("kv", "key", "put", "xlsx", "--path", str(d / "production.xlsx"), "--namespace-id", st["kv_id"], "--remote")
+    st["pushed"] = v["at"]
+    _save(st)
+    return {"path": str(d / "production.xlsx"), "sheets": [], "packages": len(v["packages"]), "batches": 0,
+            "remote": st.get("url") or "cloudflare"}
+
+
+def link(new: bool = False) -> list[str]:
+    st = _state()
+    if not st.get("url"):
+        raise ReinsError("not deployed yet: reins report deploy")
+    if new:
+        st["codes"] = st.get("codes", []) + [_secrets.token_urlsafe(24)]
+        _save(st)
+        _wrangler("secret", "put", "VIEW_TOKENS", stdin=",".join(st["codes"]))
+    return [f"{st['url']}/?k={c}" for c in st["codes"]]
+
+
+def revoke(code: str) -> int:
+    st = _state()
+    left = [c for c in st.get("codes", []) if c != code]
+    if len(left) == len(st.get("codes", [])):
+        raise ReinsError("no such access code")
+    st["codes"] = left
+    _save(st)
+    _wrangler("secret", "put", "VIEW_TOKENS", stdin=",".join(left) or "-")
+    return len(left)

@@ -18,7 +18,7 @@ const I18N = {
     parts: "包含 {n} 个批次", h_part: "批次", h_cases: "案件", h_state: "状态", h_done: "已出结果", h_when: "时间", h_spent: "花费",
     t_production: "生产", t_rework: "返工", delivered: "已交付 v{v} · {d}", accepted_ship: "抽检通过", accepted_ship_with_note: "抽检通过（附说明）",
     accepted_rework: "抽检不通过，返工", empty: "还没有生产批次", until: "至 {d}", none_yet: "还没有结果",
-    tab_overview: "总览", tab_batches: "批次对比", bt_sub: "每行一个生产或返工批次；同一项目的批次列相同，可以直接对比",
+    xlsx: "下载 Excel", tab_overview: "总览", tab_batches: "批次对比", bt_sub: "每行一个生产或返工批次；同一项目的批次列相同，可以直接对比",
     cg_ai: "AI 分流", cg_review: "人工审核", cg_cost: "成本耗时", m_n: "数量", m_pct: "比例", all_sites: "全部地区",
     all_types: "全部类型", csv: "导出 CSV", total: "合计", b_date: "日期", b_batch: "批次", b_cases: "案件",
     b_result: "已出结果", r_date: "复核日期", r_n: "已复核", r_ok: "对", r_bad: "错", r_unsure: "拿不准",
@@ -62,7 +62,7 @@ const I18N = {
     parts: "Batches ({n})", h_part: "Batch", h_cases: "Cases", h_state: "State", h_done: "With result", h_when: "When", h_spent: "Spent",
     t_production: "production", t_rework: "rework", delivered: "Delivered v{v} · {d}", accepted_ship: "Spot check passed", accepted_ship_with_note: "Spot check passed (with a note)",
     accepted_rework: "Spot check failed: rework", empty: "No production batches yet", until: "to {d}", none_yet: "No results yet",
-    tab_overview: "Overview", tab_batches: "Batch comparison", bt_sub: "one row per production or rework batch; batches of one project share columns",
+    xlsx: "Download Excel", tab_overview: "Overview", tab_batches: "Batch comparison", bt_sub: "one row per production or rework batch; batches of one project share columns",
     cg_ai: "AI routing", cg_review: "Human review", cg_cost: "Cost and time", m_n: "Counts", m_pct: "Shares", all_sites: "All sites",
     all_types: "All types", csv: "Export CSV", total: "Total", b_date: "Date", b_batch: "Batch", b_cases: "Cases",
     b_result: "With result", r_date: "Review date", r_n: "Reviewed", r_ok: "Correct", r_bad: "Error", r_unsure: "Unsure",
@@ -93,7 +93,7 @@ const I18N = {
 };
 
 const store = { get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
-let LANG = store.get("reins.lang", "zh");
+let LANG = store.get("reins.lang", document.documentElement.dataset.lang || "zh");   // a published copy sets data-lang
 let FILTER = store.get("reins.prod.filter", "all");
 let D = null, OK = true;
 const BT = { group: store.get("reins.bt.group", "ai"), mode: store.get("reins.bt.mode", "n"), site: "", type: "", sort: store.get("reins.bt.sort", "date"), dir: +store.get("reins.bt.dir", "1") };
@@ -439,7 +439,9 @@ function render() {
   const fchip = (k) => `<button class="fchip ${FILTER === k ? "on" : ""}" data-f="${k}">${t("f_" + k)} <span class="faint">${
     D.packages.filter((p) => k === "all" || (k === "done" ? p.status === "done" : p.status !== "done")).length}</span></button>`;
   const tabs = `<nav class="ptabs">${["overview", "batches"].map((k) => `<a href="#/${k}" class="${tab() === k ? "on" : ""}">${t("tab_" + k)}</a>`).join("")}</nav>`;
-  const head = `<section class="phead"><h1>${t("title")}</h1><p>${t("sub", { p: D.totals.packages, r: D.totals.running, at: dayTime(D.at) })}</p></section>${tabs}`;
+  const xlsx = document.documentElement.dataset.xlsx;                    // a published copy offers the workbook
+  const head = `<section class="phead"><h1>${t("title")}</h1><p>${t("sub", { p: D.totals.packages, r: D.totals.running, at: dayTime(D.at) })}${
+    xlsx ? ` · <a class="dl" href="${esc(xlsx)}">${t("xlsx")}</a>` : ""}</p></section>${tabs}`;
   if (tab() === "batches") { page.innerHTML = head + batchesView() + `<div class="pfoot">${t("foot")}</div>`; return; }
   page.innerHTML = `
     ${head}

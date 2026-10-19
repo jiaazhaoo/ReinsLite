@@ -53,6 +53,8 @@ Managers get a page of their own, `/production`: production and rework batches o
 
 The same numbers as a workbook for people who live in Excel: `reins report xlsx` (Summary, Work packages, Batches, Development, Daily; `--lang en|zh`, `--hide site,spend`), and `reins report publish` copies it with rclone to the `[report] remote` in config.toml (a OneDrive / SharePoint file keeps its share link). `reins-report.timer` refreshes it every 30 minutes.
 
+For people outside the office: `reins report deploy` puts the same page on Cloudflare Workers (a free `*.workers.dev` address; Worker in `deploy/cloudflare`), behind access codes (`reins report link [--new]`, `reins report revoke CODE`); `reins-report-push.timer` sends the newest data and the workbook every 5 minutes, so nothing on this machine is reachable from outside.
+
 <p align="center"><img src="docs/images/runs-en.png" alt="Runs" width="100%"></p>
 
 <table>

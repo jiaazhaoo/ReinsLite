@@ -1,0 +1,10 @@
+# systemd --user timer: push the production data every 5 minutes
+[Unit]
+Description=push the reins production page data
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
