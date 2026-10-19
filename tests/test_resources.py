@@ -201,8 +201,9 @@ class Kill(Base):
         with self.assertRaises(ReinsError) as e:
             runner.ctl(self.con, "resume", a)
         self.assertIn("--after-kill", str(e.exception))
-        runner.ctl(self.con, "resume", a, after_kill=True)
-        self.assertEqual(batches.get(self.con, a)["status"], "running")
+        msg = runner.ctl(self.con, "resume", a, after_kill=True)
+        self.assertIn("stays paused", msg)                              # nothing alive to continue: reins run starts it again
+        self.assertEqual(batches.get(self.con, a)["status"], "paused")
 
     def test_kill_line_pauses_before_the_next_step(self):
         log = self.tmp / "kill.log"; log.write_text("")

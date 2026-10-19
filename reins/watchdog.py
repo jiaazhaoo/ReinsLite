@@ -7,6 +7,8 @@ Checks, per running batch: a stage whose outputs stopped growing; cases past the
 group that vanished; the paid gateway down while a paid stage runs. Per machine: disk, memory, GPU.
 Actions are only the safe ones: notify, pause (SIGSTOP + batch paused). It never edits code, rules or data.
 Resource claims (reins/resources.py) whose process is gone are released here too, in case their supervisor died.
+Upkeep (reins/upkeep.py) runs on the same pass: a daily registry backup, running batches whose process is gone become
+paused (first, so they raise no stall notices), leases nobody can need, an early disk warning.
 """
 from __future__ import annotations
 
@@ -167,9 +169,10 @@ def once(con=None) -> list[str]:
     cfg = config()
     from . import resources
     n = resources.cleanup(con)                                  # claims of processes that are gone
-    from . import sentinel
-    return ([f"released {n} resource claim(s) of ended processes"] if n else []) + check_batches(con, cfg) + \
-        check_machine(con, cfg) + poll_balances_due(con, cfg) + release_stale_reservations(con, cfg) + sentinel.watch_running(con)
+    from . import sentinel, upkeep
+    return ([f"released {n} resource claim(s) of ended processes"] if n else []) + upkeep.reconcile(con) + check_batches(con, cfg) + \
+        check_machine(con, cfg) + poll_balances_due(con, cfg) + release_stale_reservations(con, cfg) + sentinel.watch_running(con) + \
+        upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con)
 
 
 def release_stale_reservations(con, cfg) -> list[str]:

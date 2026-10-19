@@ -289,10 +289,11 @@ def ctl(con, verb: str, batch: str, why: str = "", system: bool = False, after_k
         if after_kill:
             with tx(con):
                 batches._event(con, batch, "resume_after_kill", why or "resumed after a kill")
+        if not procs:                                # nothing to continue: marking it running would only make it look busy
+            return "no live process to resume: the batch stays paused; start the stage again with reins run"
         if b["status"] == "paused":
             batches.set_status(con, batch, "running", why or "resumed", system=True)
-        return f"resumed {len(procs)} process group(s)" if procs else \
-            "no live process: batch marked running; start the stage again with reins run"
+        return f"resumed {len(procs)} process group(s)"
     if verb == "stop":
         with tx(con):                                # a supervisor still waiting for resources gives up
             con.execute("UPDATE resource_claim SET state='released', released=?, note='stopped while waiting'"

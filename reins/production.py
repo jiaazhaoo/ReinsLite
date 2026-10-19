@@ -87,6 +87,8 @@ def _reason_word(reason: str, rules: list[dict]) -> str:
 def _pause_word(reason: str | None) -> str:
     """reins' own pause reasons, in a manager's words (the words are keys the page translates)."""
     r = (reason or "").lower()
+    if r.startswith("process gone"):
+        return "process_gone"
     if "disk" in r:
         return "disk_full"
     if "memory" in r or "killed" in r:
