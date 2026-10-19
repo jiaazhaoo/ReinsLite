@@ -96,7 +96,7 @@ const store = { get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (
 let LANG = store.get("reins.lang", document.documentElement.dataset.lang || "zh");   // a published copy sets data-lang
 let FILTER = store.get("reins.prod.filter", "all");
 let D = null, OK = true;
-const BT = { group: store.get("reins.bt.group", "ai"), mode: store.get("reins.bt.mode", "n"), site: "", type: "", sort: store.get("reins.bt.sort", "date"), dir: +store.get("reins.bt.dir", "1") };
+const BT = { group: store.get("reins.bt.group", "ai") === "cost" ? "cost" : "ai", mode: store.get("reins.bt.mode", "n"), site: "", type: "", sort: store.get("reins.bt.sort", "date"), dir: +store.get("reins.bt.dir", "1") };
 const tab = () => (location.hash.replace(/^#\/?/, "") === "batches" ? "batches" : "overview");
 const t = (k, vars) => { let s = I18N[LANG][k] ?? I18N.zh[k] ?? k; if (vars) for (const [a, b] of Object.entries(vars)) s = s.replace(`{${a}}`, b); return s; };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -112,6 +112,12 @@ const STAGE_COLORS = ["var(--accent)", "var(--blue)", "var(--teal)", "var(--viol
 const etaText = (s) => (s ? s.replace(" h", LANG === "zh" ? " 小时" : " h").replace(" min", LANG === "zh" ? " 分钟" : " min") : "");
 const lab = (proj, key) => { const l = (D.labels[proj] || {})[key]; return (l && (l[LANG] || l.zh || l.en)) || key; };
 const reason = (proj, w) => { if (w === "other") return t("other"); const r = (D.reasons[proj] || [])[+w.slice(1)]; return (r && (r[LANG] || r.zh || r.en)) || w; };
+const CJK = /[\u3000-\u9fff\uff00-\uffef]+/g, HAS_CJK = /[\u3000-\u9fff\uff00-\uffef]/;   // test with HAS_CJK: a /g regex keeps state
+const noCjk = (s, fallback) => {                 // English: a name with Chinese in it loses those words (or falls back)
+  if (LANG !== "en" || !s || !HAS_CJK.test(s)) return s;
+  const t2 = s.replace(CJK, " ").replace(/\s*[·\-–]\s*$/, "").replace(/\s+/g, " ").trim();
+  return t2 || fallback || s;
+};
 const scopeName = (s) => s.split("-").map((p) => p.replace(/wp(\d+)/g, " WP$1").trim().replace(/^\w/, (c) => c.toUpperCase())).join(" ").replace(/\s+/g, " ");
 
 const STATE_CLS = { running: "green", stopped: "red", paused: "amber", waiting: "", done: "blue", results_in: "teal" };
@@ -211,7 +217,7 @@ function devCard() {
   };
   const stat = (l, v, f) => `<div class="ct"><div class="l">${esc(l)}</div><div class="v">${v}</div>${f ? `<div class="f">${esc(f)}</div>` : ""}</div>`;
   const CS = { candidate: "amber", released: "green", retired: "", abandoned: "" };
-  const rows = V.changes.slice(0, 15).map((c) => `<div class="drow-i"><div class="nm"><b>${esc(modName(c))}</b> <span class="muted">${esc(c.about)}</span></div>
+  const rows = V.changes.slice(0, 15).map((c) => `<div class="drow-i"><div class="nm"><b>${esc(modName(c))}</b> ${LANG === "en" && HAS_CJK.test(c.about) ? "" : `<span class="muted">${esc(c.about)}</span>`}</div>
       <div>${badge(t("cs_" + c.status), CS[c.status] || "")}</div>
       <div class="num"><span class="k">${t("h_took")}</span>${c.status === "candidate" ? "" : ""}${dur(c.hours)}</div>
       <div class="num"><span class="k">${t("h_cost")}</span>${c.spent ? usd(c.spent) : "—"}</div></div>`).join("");
@@ -281,7 +287,7 @@ function partsHtml(p) {
   const rows = p.parts.slice().reverse().map((r) => {
     const extra = [r.delivered ? t("delivered", { v: r.delivered.version, d: day(r.delivered.at) }) : "",
       r.accepted ? t("accepted_" + r.accepted.decision) : ""].filter(Boolean).map((x) => badge(x, "teal")).join(" ");
-    return `<div class="prow-i"><div class="nm">${esc(r.name)} <span class="faint">· ${t("t_" + r.type)}</span> ${extra}</div>
+    return `<div class="prow-i"><div class="nm">${esc(noCjk(r.name))} <span class="faint">· ${t("t_" + r.type)}</span> ${extra}</div>
       <div class="num"><span class="k">${t("h_cases")}</span>${num(r.n)}</div>
       <div>${stateBadge(r.state, r.pause)}</div>
       <div class="num"><span class="k">${t("h_done")}</span>${num(r.finished)} <span class="faint">${pct(r.finished, r.n)}%</span></div>
@@ -390,22 +396,30 @@ function batchesView() {
     BT_VIEW[gi] = { g, rows };
     const th = (k, h, cls = "") => `<th class="${cls} ${BT.sort === k ? "sorted" : ""}" data-sort="${esc(k)}">${esc(h)}${BT.sort === k ? (BT.dir > 0 ? " ↑" : " ↓") : ""}</th>`;
     const tot = btTotals(g, rows);
+    // each column's bar is the value against the column's largest (shares against 100%)
+    const colMax = {};
+    for (const c of cols) colMax[c.k] = c.fmt === "pct" ? 100 : Math.max(0, ...rows.map((r) => (typeof c.v(r) === "number" ? c.v(r) : 0)));
     const tr = (r) => {
       const over = r.results_in && BT.group === "ai";
-      const cells = over ? `<td colspan="${cols.length}" class="note-cell">${esc(t("results_in_other", { b: r.results_in }))}</td>`
+      const cells = over ? `<td colspan="${cols.length}" class="note-cell">${esc(t("results_in_other", { b: noCjk(r.results_in) }))}</td>`
         : (BT.group === "review" && !r.review && !r.total) ? `<td colspan="${cols.length}" class="note-cell faint">${t("no_review")}</td>`
-        : cols.map((c) => `<td class="num ${c.cls || ""} ${c.good ? "good" : ""}" data-l="${esc(c.h)}">${fmtCell(c.v(r), c.fmt)}${c.extra && c.extra(r) ? `<small>${esc(c.extra(r))}</small>` : ""}</td>`).join("");
+        : cols.map((c) => {
+            const v = c.v(r), barred = typeof v === "number" && c.fmt !== "date" && c.fmt !== "text";
+            const w = barred && colMax[c.k] ? Math.max(0, Math.min(100, (100 * v) / colMax[c.k])) : 0;
+            const cell = barred ? `<span class="bar"><i style="width:${w.toFixed(1)}%"></i><span>${fmtCell(v, c.fmt)}</span></span>` : fmtCell(v, c.fmt);
+            return `<td class="${c.fmt === "text" ? "txt" : "num"} ${c.cls || ""} ${c.good ? "good" : ""}" data-l="${esc(c.h)}">${cell}${c.extra && c.extra(r) ? `<small>${esc(c.extra(r))}</small>` : ""}</td>`;
+          }).join("");
       return `<tr class="${r.total ? "total" : ""}">
         <td class="dt" data-l="${t("b_date")}">${r.total ? "" : day(r.date)}</td>
         ${g.scope_names.map((k) => `<td data-l="${esc(partName(g.project, k))}">${esc(partVal(r.scope[k]))}</td>`).join("")}
-        <td class="bn" data-l="${t("b_batch")}">${r.total ? `<b>${esc(r.name)}</b> <span class="faint">${t("rows_n", { n: rows.length })}</span>` : `${esc(r.name)} <span class="faint">· ${t("t_" + r.type)}</span>`}</td>
+        <td class="bn" data-l="${t("b_batch")}">${r.total ? `<b>${esc(r.name)}</b> <span class="faint">${t("rows_n", { n: rows.length })}</span>` : `${esc(noCjk(r.name, r.batch_id))} <span class="faint">· ${t("t_" + r.type)}</span>`}</td>
         <td class="num" data-l="${t("b_cases")}">${num(r.n)}</td>${cells}</tr>`;
     };
     const chip = (k, v, label, cur) => `<button class="fchip ${cur === v ? "on" : ""}" data-bt="${k}" data-v="${esc(v)}">${esc(label)}</button>`;
     return `<div class="pcard bt">
       <h2>${esc(g.project)}<small>${t("bt_sub")}</small></h2>
       <div class="bt-bar">
-        <div class="seg">${["ai", "review", "cost"].map((k) => `<button class="${BT.group === k ? "on" : ""}" data-bt="group" data-v="${k}">${t("cg_" + k)}</button>`).join("")}</div>
+        <div class="seg">${["ai", "cost"].map((k) => `<button class="${BT.group === k ? "on" : ""}" data-bt="group" data-v="${k}">${t("cg_" + k)}</button>`).join("")}</div>
         ${BT.group !== "cost" ? `<div class="seg">${["n", "pct"].map((k) => `<button class="${BT.mode === k ? "on" : ""}" data-bt="mode" data-v="${k}">${t("m_" + k)}</button>`).join("")}</div>` : ""}
         <div class="grow"></div>
         <button class="fchip" data-csv="${gi}">${t("csv")}</button>
@@ -414,7 +428,7 @@ function batchesView() {
         <span class="sep"></span>${chip("type", "", t("all_types"), BT.type)}${types.map((x) => chip("type", x, t("t_" + x), BT.type)).join("")}</div>
       <table class="btable"><thead><tr>
         ${th("date", t("b_date"))}${g.scope_names.map((k) => th("s:" + k, partName(g.project, k))).join("")}${th("name", t("b_batch"), "bn")}${th("n", t("b_cases"), "num")}
-        ${cols.map((c) => th(c.k, c.h, "num" + (c.sub ? " subh" : "") + (c.good ? " good" : ""))).join("")}
+        ${cols.map((c) => th(c.k, c.h, (c.fmt === "text" ? "txt" : "num") + (c.sub ? " subh" : "") + (c.good ? " good" : ""))).join("")}
       </tr></thead><tbody>${rows.map(tr).join("")}${tr(tot)}</tbody></table>
       <div class="faint small-note">${t("sort_hint")}</div>
     </div>`;
