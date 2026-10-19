@@ -721,8 +721,8 @@ def _merge_by_delivery(cfg: dict, parts: list[dict], meta: dict, scope_names: li
                 dc[d] = dc.get(d, 0) + 1
         spent = round(sum(p["spent"] for p in members), 2)
         iv = [x for p in members for x in meta[p["batch_id"]]["iv"]]
-        scopes = [tuple(p["scope"].get(k, "") for k in scope_names) for p in members]
-        sc = max(set(scopes), key=scopes.count) if scopes else tuple("" for _ in scope_names)
+        big = max(members, key=lambda p: len(meta[p["batch_id"]]["cases"] & cases), default=None)   # the run holding most cases
+        sc = tuple(big["scope"].get(k, "") for k in scope_names) if big else tuple("" for _ in scope_names)
         r = {"scope": dict(zip(scope_names, sc)), "n": len(cases), "runs": len(members),
              "type": "rework" if any(p["type"] == "rework" for p in members) else "production",
              "spent": spent, "per_case": round(spent / len(cases), 4) if cases else None,

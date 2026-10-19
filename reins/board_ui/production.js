@@ -351,13 +351,15 @@ function btColumns(g) {
     { k: "run_h", h: t("h_run"), v: (r) => r.run_h, fmt: "h" },
     { k: "note", h: t("b_note"), v: (r) => (r.pause ? t("p_" + r.pause) : t("s_" + (r.state || (r.status === "closed" ? "done" : r.status === "open" ? "waiting" : r.status)))), fmt: "text" },
   ];
+  const partly = g.rows.some((r) => r.delivered && r.delivered_n < r.n);        // otherwise "delivered" just repeats the cases
   const delivered = [{ k: "dn", h: t("b_delivered"), v: (r) => (r.delivered ? r.delivered_n : null), share: (r) => (r.delivered ? sh(r.delivered_n, r.n) : null), fmt: "n" }]
     .concat(g.delivered_order.map((st) => ({ k: "st:" + st, h: lab(g.project, st), full: lab(g.project, st),
       good: g.delivered_good.includes(st), cls: g.delivered_bad.includes(st) ? "bad" : "",
       v: (r) => (r.delivered ? cnt(r.delivered[st] || 0, r.delivered_n) : null),
       share: (r) => (r.delivered ? sh(r.delivered[st] || 0, r.delivered_n) : null), fmt: BT.mode })))
     .concat([{ k: "nd", h: t("b_not_delivered"), v: (r) => (r.delivered ? cnt(r.n - r.delivered_n, r.n) : null),
-      share: (r) => (r.delivered ? sh(r.n - r.delivered_n, r.n) : null), fmt: BT.mode }]);
+      share: (r) => (r.delivered ? sh(r.n - r.delivered_n, r.n) : null), fmt: BT.mode }])
+    .filter((c) => partly || (c.k !== "dn" && c.k !== "nd"));
   return { ai, review, cost, delivered }[BT.group] || ai;
 }
 function fmtCell(v, fmt) {
