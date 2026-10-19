@@ -276,6 +276,12 @@ def build_parser() -> argparse.ArgumentParser:
     x = bn.add_parser("verify"); x.add_argument("name"); x.add_argument("version", nargs="?", type=int)
     x = bn.add_parser("holdout"); x.add_argument("name"); x.add_argument("--why", required=True); x.add_argument("--tuned", action="store_true")
     bn.add_parser("list")
+    x = bn.add_parser("changed"); x.add_argument("name"); x.add_argument("--stage", required=True)
+    x.add_argument("--dir", required=True, type=Path); x.add_argument("--version", type=int)
+    x.add_argument("--frozen", help="frozen outputs' path inside the benchmark (default stages/<stage>)")
+    x.add_argument("--ignore", action="append", default=[]); x.add_argument("--json", type=Path)
+    x = bn.add_parser("add-cases"); x.add_argument("name"); x.add_argument("--cases", type=Path); x.add_argument("--issue", type=int)
+    x.add_argument("--split", required=True, choices=("dev", "holdout")); x.add_argument("--why", required=True)
     th = sub.add_parser("threshold").add_subparsers(dest="sub", required=True)
     x = th.add_parser("set"); x.add_argument("module"); x.add_argument("name"); x.add_argument("value")
     x.add_argument("--n", type=int, required=True); x.add_argument("--split", default="dev"); x.add_argument("--benchmark")
@@ -318,10 +324,12 @@ def build_parser() -> argparse.ArgumentParser:
     le.add_parser("list"); x = le.add_parser("release"); x.add_argument("resource"); x.add_argument("--force", action="store_true")
     x = sub.add_parser("gate").add_subparsers(dest="sub", required=True).add_parser("record")
     x.add_argument("version"); x.add_argument("--benchmark", required=True); x.add_argument("--tiers", required=True)
-    x.add_argument("--stages", required=True); x.add_argument("--missed-error", type=int, required=True)
-    x.add_argument("--review-load", type=int, required=True); x.add_argument("--base-missed-error", type=int, required=True)
-    x.add_argument("--base-review-load", type=int, required=True); x.add_argument("--golden-regressions", type=int, default=0)
+    x.add_argument("--stages", required=True); x.add_argument("--missed-error", type=int, default=0)
+    x.add_argument("--review-load", type=int, default=0); x.add_argument("--base-missed-error", type=int, default=0)
+    x.add_argument("--base-review-load", type=int, default=0); x.add_argument("--golden-regressions", type=int, default=0)
     x.add_argument("--diff"); x.add_argument("--skipped")
+    x.add_argument("--metrics", type=Path, help="JSON {name: {value, base, better, hard}} (a module gate)")
+    x.add_argument("--module")
     n = sub.add_parser("notify").add_subparsers(dest="sub", required=True)
     n.add_parser("list"); x = n.add_parser("ack"); x.add_argument("ids", nargs="+", type=int)
     x = sub.add_parser("lint"); x.add_argument("paths", nargs="+", type=Path)
@@ -542,7 +550,8 @@ def main(argv: list[str] | None = None) -> int:
             r = gate.record(con, args.version, benchmark=args.benchmark, tiers=args.tiers, stages_covered=args.stages,
                             missed_error=args.missed_error, review_load=args.review_load,
                             base_missed_error=args.base_missed_error, base_review_load=args.base_review_load,
-                            golden_regressions=args.golden_regressions, diff_path=args.diff, skipped=args.skipped)
+                            golden_regressions=args.golden_regressions, diff_path=args.diff, skipped=args.skipped,
+                            metrics=json.loads(args.metrics.read_text()) if args.metrics else None, module=args.module)
             print(f"gate {r['status']}"); return 0 if r["status"] == "green" else 1
         if args.cmd == "sentinel":
             from . import sentinel
@@ -929,6 +938,26 @@ def _measure(con, args, cfg, cwd) -> int:
             return 0 if r["ok"] else 1
         elif args.sub == "holdout":
             bench.holdout(con, args.name, args.why, args.tuned); print("recorded" + (" (holdout now compromised)" if args.tuned else ""))
+        elif args.sub == "changed":
+            r = bench.changed(con, args.name, args.stage, args.dir, args.version, args.frozen, args.ignore)
+            if args.json:
+                args.json.write_text(json.dumps(r, indent=1))
+            print(f"{r['benchmark']} {r['stage']}: changed {len(r['changed'])}, new {len(r['new'])}, same {len(r['same'])},"
+                  f" missing {len(r['missing'])}")
+            for c in r["changed"] + r["new"]:
+                print(c)
+        elif args.sub == "add-cases":
+            if bool(args.cases) == bool(args.issue):
+                raise ReinsError("give --cases FILE or --issue N")
+            if args.issue:
+                from . import issues
+                row = issues.get(con, args.issue)
+                ids, src = json.loads(row["cases"]), f"issue #{args.issue}"
+            else:
+                from . import names as _n
+                ids, src = _n.read_case_set(args.cases), str(args.cases)
+            r = bench.add_cases(con, args.name, ids, args.split, args.why, src)
+            print(f"+{r['added']} {args.split} cases ({r['already']} already in)")
         else:
             for b in bench.list_(con):
                 print(f"{b['name']:<32} v{b['version']:<3} {b['status']:<7} cases={b['n_cases']} dev={b['n_dev']} holdout={b['n_holdout']}"

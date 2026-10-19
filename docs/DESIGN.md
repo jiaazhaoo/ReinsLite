@@ -213,6 +213,9 @@ bench-demo-359/v6/
 7. **前提条件**：需要的资源状态写在 MANIFEST（如 GPU 空闲），不满足就拒绝打分。
 8. **新鲜度**：冻结输出的模块版本 ≠ 当前 released 版本时，打分结果带警告（v1 的 georef 是 10-02 前的旧代码）。
 9. **回流**：C6 的审核结论 → 候选标签 → 用户在审核页确认 → 进下一版本。
+10. **分模块**（2026-10-19）：每个模块有自己的 benchmark（`benchmark.module`），用该模块自己的标准答案打分（裁图对裁图真值，配准对配准真值），不拿最终分流替所有模块打分。
+11. **会长大**：开着的版本可以 `reins bench add-cases`（`--cases FILE` 或 `--issue N`）往 dev 或 holdout 加 case，每次写 CHANGELOG 和事件；生产上发现的错例进 dev，没调过参的新 case 进 holdout。冻结的版本永远不变，要加就 `bump`。
+12. **增量**：`reins bench changed NAME --stage S --dir OUT` 按 case 比较新输出和冻结输出（文件路径 + 内容的哈希，`--ignore` 去掉日志等易变文件），只有变了的 case 需要重跑下游；其余 case 沿用冻结的下游输出（输入相同，输出相同）。
 
 **为什么**
 - 20 个调参 case 上 74%，19 个盲测 case 上 53%。
@@ -221,6 +224,7 @@ bench-demo-359/v6/
 - gemini 对同一个 case 回答"错/对/对"，只看一次就淘汰了 luna-pro，后来推翻。
 - HMLR 对"太小"宽松，address lane 在 eval 上 143/143 `Pass`，用户抽检发现错。
 - GPU 被占时 3 个配准失败，被误当成版本退化。
+- 裁图改动要按最终分流重跑 359 个 case 约 1.5 小时才能合并，裁图本身好没好反而看不清（2026-10-19）。
 
 ---
 
@@ -236,6 +240,12 @@ bench-demo-359/v6/
 3. golden 上原本正确的项变错 → 红（以前总数看起来没事，逐 case 比才发现挪坏了 3 个）。
 4. 每次门禁写一行 `gate_log.jsonl`：模块版本、benchmark 版本、各层结果、和基线的逐 case 差异文件、跳过的层和理由。
 5. 基线只能经 `reins gate approve` 移动，带理由。
+6. **分模块门禁**（2026-10-19）：`reins.toml` 里模块声明自己的门禁 `[modules.<m>.gate] cmd = ..., benchmark = ...`。
+   `reins dev finish` 跑候选版本所属模块、以及这次改动碰到文件的其他模块的门禁，每个都要绿；
+   有模块门禁时不再强制项目级 `[dev].gate` 和上游全量层——全量端到端属于发版，不属于每次改动。没有任何模块声明门禁的项目照旧。
+7. **模块指标**：模块门禁写 `metrics`：`{名字: {value, base, better: higher|lower, hard: true|false, split}}`。
+   `hard` 的指标不许比 base 差（红），`soft` 的只记录（如每页框数是成本不是退步）。golden 退步照旧是红。
+8. **下游增量**：模块门禁负责它的下游，只重跑 `reins bench changed` 说变了的 case，写 `cases_rerun` / `cases_reused`，记进 gate_log。
 
 ---
 

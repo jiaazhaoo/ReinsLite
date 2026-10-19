@@ -9,6 +9,12 @@
     reins bench verify NAME [vN]                                                          hashes still match?
     reins bench holdout NAME --why '...' [--tuned]                                        record holdout access / tuning
     reins bench list
+    reins bench changed NAME --stage STAGE --dir OUT [--frozen REL] [--ignore GLOB]...    cases whose outputs differ
+    reins bench add-cases NAME (--cases FILE | --issue N) --split dev|holdout --why '...' grow an open version
+
+Incremental downstream (2026-10-19): a module gate re-runs the stages after the changed module only for the cases whose
+outputs of that module changed; every other case keeps its frozen downstream outputs (same inputs, same outputs).
+`changed` compares per-case tree hashes of the new outputs with the frozen ones and says which cases those are.
 
 Layout: <bench_root>/bench-<name>/v<N>/{MANIFEST.json, cases.csv, inputs/, stages/<stage>/, labels.jsonl, CHANGELOG.md}
 
@@ -349,6 +355,91 @@ def bump(con, name: str, changelog: str) -> dict:
         _event(con, row["name"], new_v, "bumped", f"from v{row['version']}: {n} files, {len(links)} symlinks; {changelog}")
     return {"name": row["name"], "version": new_v, "path": str(dst), "files": n, "symlinks": len(links),
             "dangling_symlinks": dangling, "reprotected": reprotected}
+
+
+def _case_dirs(root: Path, ids: list[str]) -> dict[str, Path]:
+    """Case id -> its directory under a stage output root: the directory named like the case, or ending in _<case>
+    (a project's display prefix, e.g. ABC_123)."""
+    if not root.is_dir():
+        return {}
+    want = set(ids)
+    out = {}
+    for d in root.iterdir():
+        if not d.is_dir():
+            continue
+        cid = d.name if d.name in want else d.name.rsplit("_", 1)[-1]
+        if cid in want and cid not in out:
+            out[cid] = d
+    return out
+
+
+def _tree_sha(d: Path, ignore: list[str]) -> str:
+    import fnmatch
+    h = hashlib.sha256()
+    for f in sorted(d.rglob("*")):
+        rel = str(f.relative_to(d))
+        if not f.is_file() or any(fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(f.name, g) for g in ignore):
+            continue
+        h.update(rel.encode() + b"\0" + names.sha256_file(f).encode() + b"\n")
+    return h.hexdigest()
+
+
+def changed(con, name: str, stage: str, out_dir: Path, version: int | None = None, frozen_rel: str | None = None,
+            ignore: list[str] | None = None) -> dict:
+    """Which cases' outputs of one stage differ between a new run (out_dir/<case>/...) and the benchmark's frozen
+    outputs (stages/<stage>/<case>/..., or frozen_rel for a layout adopted from a project). Per-case tree hashes of the
+    files (paths + content); ignore drops volatile files (logs, timings). -> {changed, same, new, missing}: only the
+    changed and new cases need their downstream re-run."""
+    row = _row(con, name, version)
+    if row["status"] != "frozen":
+        raise ReinsError(f"{row['name']} v{row['version']} is open: compare against a frozen version")
+    ids = cases(con, name, row["version"])
+    frozen_root = Path(row["path"]) / (frozen_rel or f"stages/{stage}")
+    old, new = _case_dirs(frozen_root, ids), _case_dirs(Path(out_dir), ids)
+    ig = list(ignore or [])
+    res = {"benchmark": f"{row['name']}-v{row['version']}", "stage": stage, "changed": [], "same": [], "new": [],
+           "missing": []}
+    for c in ids:
+        a, b = old.get(c), new.get(c)
+        if a is None and b is None:
+            continue
+        if b is None:
+            res["missing"].append(c)
+        elif a is None:
+            res["new"].append(c)
+        elif _tree_sha(a, ig) == _tree_sha(b, ig):
+            res["same"].append(c)
+        else:
+            res["changed"].append(c)
+    return res
+
+
+def add_cases(con, name: str, ids: list[str], split: str, why: str, source: str = "") -> dict:
+    """Grow an open version: cases join the dev split (regressions found in production, a council not covered yet) or
+    the holdout split (fresh, never-tuned-on cases). Recorded in CHANGELOG and the event log; frozen versions never change."""
+    if split not in ("dev", "holdout"):
+        raise ReinsError("split is dev or holdout")
+    if len(why.strip()) < 6:
+        raise ReinsError("add-cases needs --why (why these cases, where from)")
+    row = _row(con, name)
+    _open(row)
+    path = Path(row["path"])
+    have = set(cases(con, name, row["version"]))
+    add = [c for c in dict.fromkeys(ids) if c not in have]
+    if not add:
+        return {"added": 0, "already": len(ids)}
+    with (path / "cases.csv").open("a", newline="") as f:
+        w = csv.writer(f)
+        for c in add:
+            w.writerow([c, split])
+    with (path / "CHANGELOG.md").open("a") as f:
+        f.write(f"- {now()[:10]} +{len(add)} {split} cases" + (f" ({source})" if source else "") + f": {why}\n")
+    nd, nh = (len(add), 0) if split == "dev" else (0, len(add))
+    with tx(con):
+        con.execute("UPDATE benchmark SET n_cases=n_cases+?, n_dev=n_dev+?, n_holdout=n_holdout+? WHERE name=? AND version=?",
+                    (len(add), nd, nh, row["name"], row["version"]))
+        _event(con, row["name"], row["version"], "cases_added", f"+{len(add)} {split}{' from ' + source if source else ''}: {why}")
+    return {"added": len(add), "already": len(ids) - len(add), "split": split}
 
 
 def holdout(con, name: str, why: str, tuned: bool = False) -> None:
