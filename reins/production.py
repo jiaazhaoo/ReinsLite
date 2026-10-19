@@ -472,12 +472,12 @@ def development(con, prod_ids: set, prod_imported: dict, days: list[str]) -> dic
 _DELIV: dict[str, tuple] = {}
 
 
-def _delivered(cfg: dict) -> dict[str, str]:
-    """case_id -> delivered status, from the project's delivery workbooks ([results.delivered]); the newest file
-    (by modification time) that has a case wins. Cached until a file changes."""
+def _delivery_files(cfg: dict) -> list[dict]:
+    """The project's delivery workbooks ([results.delivered]), oldest first: {path, mtime, name, cases: {case: status}}.
+    Cached until a file changes."""
     spec = (cfg.get("results") or {}).get("delivered") or {}
     if not spec.get("files"):
-        return {}
+        return []
     files = sorted({f for g in spec["files"] for f in glob.glob(g, recursive=True) if os.path.isfile(f)}, key=os.path.getmtime)
     sig = tuple((f, os.path.getmtime(f)) for f in files)
     key = cfg.get("project", "")
@@ -486,15 +486,16 @@ def _delivered(cfg: dict) -> dict[str, str]:
     from openpyxl import load_workbook
     pat = re.compile((cfg.get("results") or {}).get("key_pattern") or r"(.+)")
     idpat = re.compile(cfg.get("case_id_pattern") or r".+")
-    out: dict[str, str] = {}
+    name_pat = re.compile(spec.get("name") or r"^(.*?)(?:_\d+)?_\d{8}")
+    out = []
     for f in files:
         try:
             wb = load_workbook(f, read_only=True, data_only=True)
         except Exception:                                                       # noqa: BLE001  one bad file is skipped
             continue
-        if spec.get("sheet", "") not in wb.sheetnames and spec.get("sheet"):
+        if spec.get("sheet") and spec["sheet"] not in wb.sheetnames:
             continue
-        rows = wb[spec["sheet"]].iter_rows(values_only=True) if spec.get("sheet") else wb.worksheets[0].iter_rows(values_only=True)
+        rows = (wb[spec["sheet"]] if spec.get("sheet") else wb.worksheets[0]).iter_rows(values_only=True)
         head = [str(h or "").strip() for h in next(rows, [])]
         if spec.get("value", "Status") not in head:
             continue
@@ -512,15 +513,47 @@ def _delivered(cfg: dict) -> dict[str, str]:
                 if vals and sum(1 for v in vals if v and idpat.fullmatch(v)) >= 0.9 * len(vals):
                     ki = i
                     break
+        wb.close()
         if ki is None:
             continue
+        cases = {}
         for r in data:
             c, v = norm(r[ki]), r[vi] if vi < len(r) else None
             if c and v:
-                out[c] = str(v).strip()
-        wb.close()
+                cases[c] = str(v).strip()
+        stem = Path(f).stem
+        m = name_pat.search(stem)
+        out.append({"path": f, "mtime": os.path.getmtime(f), "name": (m.group(1) if m else stem).replace("_", " ").strip(),
+                    "cases": cases})
     _DELIV[key] = (sig, out)
     return out
+
+
+def _delivered(cfg: dict) -> dict[str, str]:
+    """case_id -> delivered status; the newest workbook that has a case wins."""
+    out: dict[str, str] = {}
+    for f in _delivery_files(cfg):
+        out.update(f["cases"])
+    return out
+
+
+def _deliveries(cfg: dict) -> list[dict]:
+    """One entry per delivered batch: versions of one workbook (the same cases) collapse to the newest, and a workbook
+    that only puts other deliveries together (all its cases are in others, spread over two or more) is left out."""
+    by_set: dict[frozenset, dict] = {}
+    for f in _delivery_files(cfg):                       # oldest first: a later version replaces an earlier one
+        by_set[frozenset(f["cases"])] = f
+    groups = list(by_set.values())
+    keep = []
+    for g in groups:
+        others = [o for o in groups if o is not g]
+        cs = set(g["cases"])
+        touched = [o for o in others if cs & set(o["cases"])]
+        covered = set().union(*(set(o["cases"]) for o in touched)) if touched else set()
+        if len(touched) >= 2 and cs <= covered and all(len(o["cases"]) < len(cs) for o in touched):
+            continue                                     # a combined workbook
+        keep.append(g)
+    return keep
 
 
 def batch_table(con, rows, ledger: dict, imported: dict) -> list[dict]:
@@ -546,6 +579,7 @@ def batch_table(con, rows, ledger: dict, imported: dict) -> list[dict]:
         delivered = _delivered(cfg)
         dcount: dict[str, int] = {}
         case_sets: dict[str, set] = {}
+        meta: dict[str, dict] = {}
         for b in sorted(bs, key=lambda b: b["created"]):
             bid = b["batch_id"]
             cases = {r[0] for r in con.execute("SELECT case_id FROM batch_case WHERE batch_id=?", (bid,))}
@@ -604,8 +638,32 @@ def batch_table(con, rows, ledger: dict, imported: dict) -> list[dict]:
                         "run_h": round(_union_h(iv), 1) if iv else None,
                         "note": b["status_reason"] if b["status"] == "paused" else None,
                         "pause": _pause_word(b["status_reason"]) if b["status"] == "paused" else None})
+            meta[bid] = {"cases": cases, "res": res, "iv": iv, "created": b["created"]}
             table.append(row)
+        table = _merge_by_delivery(cfg, table, meta, scope_names, good_vals) if dspec.get("files") else table
+        for r in table:
+            case_sets[r["batch_id"]] = r.pop("_cases", None) or meta.get(r["batch_id"], {}).get("cases", set())
+        groups = dspec.get("groups") or {}
+        if groups:                                       # the project's own summary fields ([results.delivered.groups])
+            to_group = {st: name for name, sts in groups.items() for st in sts}
+            grp = lambda v: to_group.get(v, "Other")      # noqa: E731
+            for r in table:
+                if r.get("delivered") is not None:
+                    d = {}
+                    for k, n in r["delivered"].items():
+                        d[grp(k)] = d.get(grp(k), 0) + n
+                    r["delivered"] = d
+                if r.get("_status"):
+                    r["_status"] = {c: grp(v) for c, v in r["_status"].items()}
+            delivered = {c: grp(v) for c, v in delivered.items()}
+            dspec = {**dspec, "order": list(groups) + ["Other"],
+                     "good": [n for n, sts in groups.items() if sts and set(sts) <= set(dspec.get("good") or [])],
+                     "bad": [n for n, sts in groups.items() if sts and set(sts) <= set(dspec.get("bad") or [])]}
         order = list(spec.get("good") or []) + [v for v in sorted(values, key=lambda v: -values[v]) if v not in good_vals]
+        dcount = {}
+        for r in table:
+            for k, n in (r.get("delivered") or {}).items():
+                dcount[k] = dcount.get(k, 0) + n
         dorder = [v for v in (dspec.get("order") or []) if v in dcount] + sorted(v for v in dcount if v not in (dspec.get("order") or []))
         # totals over distinct cases (batches overlap: a re-run holds the cases of the run it repeats), per filter
         dtot = {}
@@ -619,16 +677,96 @@ def batch_table(con, rows, ledger: dict, imported: dict) -> list[dict]:
                         if (not site or r["scope"].get(scope_names[0], "") == site) and (not ty or r["type"] == ty):
                             cs |= case_sets.get(r["batch_id"], set())
                     st: dict[str, int] = {}
+                    status_of = {}
+                    for r in table:                      # a case's status: the row it is delivered in
+                        for c, v in (r.get("_status") or {}).items():
+                            status_of[c] = v
                     for c in cs:
-                        v = delivered.get(c)
+                        v = status_of.get(c) or delivered.get(c)
                         if v:
                             st[v] = st.get(v, 0) + 1
                     dtot[f"{site}|{ty}"] = {"n": len(cs), "delivered_n": sum(st.values()), "delivered": st}
+        for r in table:
+            r.pop("_status", None)
         out.append({"project": project, "scope_names": scope_names, "good": sorted(good_vals),
                     "delivered_order": dorder, "delivered_good": list(dspec.get("good") or []),
                     "delivered_bad": list(dspec.get("bad") or []), "delivered_totals": dtot,
                     "values": [v for v in order if v in values], "details": sorted(details),
                     "rows": table})
+    return out
+
+
+def _merge_by_delivery(cfg: dict, parts: list[dict], meta: dict, scope_names: list[str], good_vals: set) -> list[dict]:
+    """Rows = delivered batches. Each reins batch joins the delivery holding most of its cases (at least half): re-runs,
+    splits and finishing runs become one row with their spend and running time added up and, per case, the newest
+    run's result. Batches not delivered yet make one row per work package."""
+    deliveries = _deliveries(cfg)
+    home: dict[str, int] = {}
+    for p in parts:
+        cs = meta[p["batch_id"]]["cases"]
+        best = max(range(len(deliveries)), key=lambda i: len(cs & set(deliveries[i]["cases"])), default=None)
+        if best is not None and cs and len(cs & set(deliveries[best]["cases"])) >= 0.5 * len(cs):
+            home[p["batch_id"]] = best
+
+    def combine(members: list[dict], cases: set) -> dict:
+        res: dict[str, tuple] = {}
+        for p in sorted(members, key=lambda p: meta[p["batch_id"]]["created"], reverse=True):
+            for c, v in meta[p["batch_id"]]["res"].items():
+                if c in cases and c not in res:
+                    res[c] = v
+        vc, dc = {}, {}
+        for v, d in res.values():
+            vc[v] = vc.get(v, 0) + 1
+            if d and v not in good_vals:
+                dc[d] = dc.get(d, 0) + 1
+        spent = round(sum(p["spent"] for p in members), 2)
+        iv = [x for p in members for x in meta[p["batch_id"]]["iv"]]
+        scopes = [tuple(p["scope"].get(k, "") for k in scope_names) for p in members]
+        sc = max(set(scopes), key=scopes.count) if scopes else tuple("" for _ in scope_names)
+        r = {"scope": dict(zip(scope_names, sc)), "n": len(cases), "runs": len(members),
+             "type": "rework" if any(p["type"] == "rework" for p in members) else "production",
+             "spent": spent, "per_case": round(spent / len(cases), 4) if cases else None,
+             "run_h": round(_union_h(iv), 1) if iv else None, "_cases": cases}
+        if res:
+            r.update({"with_result": len(res), "values": vc, "details": dc})
+        return r
+
+    out = []
+    for i, d in enumerate(deliveries):
+        members = [p for p in parts if home.get(p["batch_id"]) == i]
+        cases = set(d["cases"])
+        r = combine(members, cases)
+        st = {}
+        for v in d["cases"].values():
+            st[v] = st.get(v, 0) + 1
+        r.update({"batch_id": f"delivery:{Path(d['path']).name}", "name": d["name"], "status": "done", "state": "delivered",
+                  "date": dt.datetime.fromtimestamp(d["mtime"]).date().isoformat(), "closed": "",
+                  "started": min((meta[p["batch_id"]]["created"] for p in members), default="")[:10],
+                  "delivered": st, "delivered_n": sum(st.values()), "_status": dict(d["cases"]), "note": None, "pause": None})
+        if not members:
+            r["scope"] = {k: "" for k in scope_names}
+        out.append(r)
+    rest: dict[tuple, list] = {}
+    for p in parts:
+        if p["batch_id"] not in home:
+            rest.setdefault(tuple(p["scope"].get(k, "") for k in scope_names), []).append(p)
+    delivered = _delivered(cfg)
+    order = ("running", "stopped", "paused", "waiting", "done")
+    for sc, members in rest.items():
+        cases = set().union(*(meta[p["batch_id"]]["cases"] for p in members))
+        r = combine(members, cases)
+        st = {}
+        for c in cases:
+            if delivered.get(c):
+                st[delivered[c]] = st.get(delivered[c], 0) + 1
+        states = {p["state"] for p in members}
+        r.update({"batch_id": "work:" + "-".join(sc), "name": " ".join(_split_scope("-".join(sc), 1)).replace("-", " "),
+                  "status": "running" if "running" in states else "open", "state": next((x for x in order if x in states), "done"),
+                  "date": max(meta[p["batch_id"]]["created"] for p in members)[:10], "closed": "",
+                  "started": min(meta[p["batch_id"]]["created"] for p in members)[:10],
+                  "delivered": st, "delivered_n": sum(st.values()), "note": None,
+                  "pause": next((p["pause"] for p in members if p.get("pause")), None)})
+        out.append(r)
     return out
 
 
