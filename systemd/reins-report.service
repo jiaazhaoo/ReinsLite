@@ -4,5 +4,6 @@
 Description=reins production report (xlsx), refreshed and published
 
 [Service]
+Environment=PATH=@PATH@
 Type=oneshot
 ExecStart=/bin/sh -c '@REINS_DIR@/bin/reins report publish || @REINS_DIR@/bin/reins report xlsx'

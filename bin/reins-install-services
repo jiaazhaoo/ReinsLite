@@ -6,7 +6,8 @@ here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 dest="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$dest"
 for f in "$here"/systemd/reins-*.service "$here"/systemd/reins-*.timer; do
-  sed "s#@REINS_DIR@#$here#g" "$f" > "$dest/$(basename "$f")"
+  # the services run with the python3 found now (e.g. a conda env with openpyxl), not the system one
+  sed -e "s#@REINS_DIR@#$here#g" -e "s#@PATH@#$(dirname "$(command -v python3)"):/usr/local/bin:/usr/bin:/bin#g" "$f" > "$dest/$(basename "$f")"
   echo "installed $(basename "$f")"
 done
 systemctl --user daemon-reload

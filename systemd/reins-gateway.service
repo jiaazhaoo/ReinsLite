@@ -3,6 +3,7 @@ Description=reins paid-call gateway (C9): the only holder of the provider keys
 After=network.target
 
 [Service]
+Environment=PATH=@PATH@
 ExecStart=@REINS_DIR@/bin/reins gateway serve
 Restart=always
 # backstop only: every request closes its registry connection (2026-10-14: 1024 fds ran out)

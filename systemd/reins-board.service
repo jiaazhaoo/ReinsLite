@@ -3,6 +3,7 @@ Description=reins board (C14): running and developing
 After=network.target
 
 [Service]
+Environment=PATH=@PATH@
 ExecStart=@REINS_DIR@/bin/reins board serve
 Restart=always
 # backstop only: every request closes its registry connection (2026-10-14: 1024 fds ran out)
