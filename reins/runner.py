@@ -219,6 +219,8 @@ def _supervise(con, spec: dict) -> int:
                 if led["status"] == "done":
                     notify.send(con, f"stage_done:{batch}:{stage}", "info", f"{batch}: stage {stage} done",
                                 f"done={led['done']} skipped={led['skipped']} failed={led['failed']}", cooldown_min=0)
+                    from . import training
+                    training.finished(con, batch)          # a training run registers the weights it wrote
             except ReinsError as e:
                 notify.send(con, f"stage_incomplete:{batch}:{stage}", "action",
                             f"{batch}: {stage} exited 0 but the case ledger is incomplete", str(e), cooldown_min=0)

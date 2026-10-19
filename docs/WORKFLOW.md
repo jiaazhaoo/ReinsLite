@@ -210,6 +210,24 @@ poll_s = 1.0
 **`reins run` 是分离启动**：命令立刻返回，输出写明 `detached: live process #N …`；批次在最后一个阶段结束时就标 done，那时进程可能还在收尾。
 脚本要等它真的结束：`reins wait B`（退出码 0 = done，1 = 没完成 / 暂停 / 失败，2 = 超时 `--timeout`）。
 
+## 账本自己的维护（2026-10-19）
+
+后台检查程序（watchdog）每一轮顺带做这些事，不用人记着：
+
+- **备份**：每天一份 `reins.db`，用 SQLite 在线备份，做完校验；放在 config.toml `[backup] dir`（本机是另一块盘
+  `/env/reins-backups`），保留 14 天。`reins backup --now` 立刻做一份。
+- **状态对齐**：标着"运行中"的批次，进程已经不在、半小时没有进展（reins 从没启动过的批次是 24 小时）→ 改成暂停，
+  原因写明（机器重启 / 进程丢了 / 报错退出 / 正常结束但没收尾）。`reins ctl resume` 在没有进程可继续时，批次保持暂停。
+- **锁**：已结束批次、已合并或放弃的候选、已删除的工作目录上的锁自动释放。
+- **磁盘**：85% 预警，90% 暂停。
+
+改 `$REINS_HOME/config.toml`（花费上限、阈值、备份位置）用 `reins config set KEY VALUE --why '...'`：只改那一个值、
+注释保留、旧文件留在 `config-history/`、记成一条决策；`reins config history` 列出所有改动。不再手改、手留 `.bak`。
+
+训练也进账本：`reins train start NAME --about '...' --weights PATH -- 训练命令`。它是一个 `training` 类型的批次
+（没有案件，只有一个 `train` 阶段），由 reins 启动，所以有进程记录、资源准入、运行时长和花费；正常结束时
+PATH 处的权重自动登记成 `weights-<name>-vN`，带上训练记录。`reins train list` 列出所有训练。
+
 ## 改 ReinsLite 本身（2026-10-18）
 
 ReinsLite 也由它自己管理（仓库里的 `reins.toml`：core、guard、board、docs 四个模块）。和任何受管项目一样：

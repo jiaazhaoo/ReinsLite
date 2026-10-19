@@ -165,8 +165,16 @@ def build_parser() -> argparse.ArgumentParser:
     x = d.add_parser("show", help="a module or module version: what it does, its state, and the sessions it came from")
     x.add_argument("name")
 
-    c = sub.add_parser("config", help="check the nearest reins.toml: every name it uses is declared").add_subparsers(dest="sub", required=True)
+    c = sub.add_parser("config", help="check the nearest reins.toml; change $REINS_HOME/config.toml with a record").add_subparsers(dest="sub", required=True)
     c.add_parser("check")
+    x = c.add_parser("set", help="change one value of config.toml (kept and recorded as a decision)")
+    x.add_argument("key"); x.add_argument("value"); x.add_argument("--why", required=True); x.add_argument("--by", default="user")
+    x = c.add_parser("show"); x.add_argument("key", nargs="?")
+    c.add_parser("history")
+    t = sub.add_parser("train", help="training runs in the ledger (reins/training.py)").add_subparsers(dest="sub", required=True)
+    x = t.add_parser("start"); x.add_argument("name"); x.add_argument("--about", required=True); x.add_argument("--weights")
+    x.add_argument("--work-dir"); x.add_argument("--cwd"); x.add_argument("--project"); x.add_argument("command", nargs=argparse.REMAINDER)
+    t.add_parser("list")
     b = sub.add_parser("batch").add_subparsers(dest="sub", required=True)
     x = b.add_parser("open")
     _scope_args(x)
@@ -390,6 +398,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{len(hits)} glossary violations (glossary v{glossary.version()}"
                   f"{' + ' + str(pf) + ' v' + str(glossary.version(pf)) if pf and pf.is_file() else ''})")
             return 1 if hits else 0
+        if args.cmd == "config" and args.sub in ("set", "show", "history"):
+            from . import settings_edit
+            from contextlib import closing as _closing
+            if args.sub == "show":
+                from .store import config as _config
+                v = settings_edit.get(args.key) if args.key else _config()
+                print(json.dumps(v, ensure_ascii=False, indent=1)); return 0
+            with _closing(connect()) as c:
+                if args.sub == "set":
+                    r = settings_edit.set_(c, args.key, args.value, args.why, args.by)
+                    print(f"{r['key']}: {r['old']!r} -> {r['new']!r}  (decision #{r['decision']}; previous file {r['kept']})")
+                    print("  running services read config.toml on each pass; the gateway and board pick it up without a restart")
+                else:
+                    for d in settings_edit.history(c):
+                        print(f"#{d['id']:<4} {d['at'][:16]}  {d['text'][8:]}   why: {d['evidence']}")
+            return 0
         if args.cmd == "config":
             from . import projects
             probs = projects.check_config(cfg)
@@ -462,6 +486,20 @@ def main(argv: list[str] | None = None) -> int:
             return _dev(con, args, cfg, cwd)
         if args.cmd == "batch":
             return _batch(con, args, cfg)
+        if args.cmd == "train":
+            from . import training
+            if args.sub == "list":
+                for r in training.list_(con):
+                    print(f"{r['batch_id']:<44} {r['status']:<8} {r['running_h']:>6} h  {r['weights'] or '-'}  {r['about'][:60]}")
+                return 0
+            cmd = args.command[1:] if args.command and args.command[0] == "--" else args.command
+            if not cmd:
+                raise ReinsError("reins train start NAME --about '...' -- COMMAND")
+            bid = training.open_(con, args.project or _project(args, cfg), args.name, args.about, args.weights, args.work_dir)
+            res = runner.start(con, bid, training.STAGE, cmd, Path(args.cwd or cwd), None, 0)
+            print(f"{bid}: training started (supervisor pid {res['supervisor_pid']}); log {res['log']}"
+                  + (f"; weights {args.weights} are registered when it ends well" if args.weights else ""))
+            return 0
         if args.cmd == "run":
             cmd = args.command[1:] if args.command and args.command[0] == "--" else args.command
             if bool(args.self_staged) == bool(args.stage and args.stage != "--"):

@@ -168,15 +168,16 @@ def release_leases(con) -> list[str]:
 def disk_warning(con) -> list[str]:
     c = config()
     warn = float(c.get("disk_warn_pct", 85))
-    out = []
-    for path in {"/data", str(home())}:
-        if Path(path).exists():
+    out, seen = [], set()
+    for path in ("/data", str(home())):
+        if Path(path).exists() and Path(path).stat().st_dev not in seen:      # one disk, one notice
+            seen.add(Path(path).stat().st_dev)
             u = shutil.disk_usage(path)
             pct = 100 * u.used / u.total
-            if warn <= pct < c["disk_pause_pct"]:
-                notify.send(con, f"disk_warn:{path}", "warn", f"disk {path} at {pct:.0f}%",
-                            f"{u.free / 1e9:.0f} GB free; batches pause at {c['disk_pause_pct']}%", cooldown_min=24 * 60)
-                out.append(f"disk {path} {pct:.0f}% (warn)")
+            if warn <= pct < c["disk_pause_pct"] and notify.send(
+                    con, f"disk_warn:{path}", "warn", f"disk {path} at {pct:.0f}%",
+                    f"{u.free / 1e9:.0f} GB free; batches pause at {c['disk_pause_pct']}%", cooldown_min=24 * 60):
+                out.append(f"disk {path} {pct:.0f}% (warn)")                  # logged when told, not every minute
     return out
 
 
