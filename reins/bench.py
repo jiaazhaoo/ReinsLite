@@ -100,9 +100,14 @@ def _write_manifest(path: Path, m: dict) -> None:
 
 
 def init(con, name: str, project: str, case_file: Path, about: str, holdout_fraction: float = 0.2, seed: int = 7,
-         case_pattern: str = names.DEFAULT_CASE_PATTERN) -> dict:
+         case_pattern: str = names.DEFAULT_CASE_PATTERN, unit: str = "case") -> dict:
+    """unit: what one row scores. 'case' (default) = the project's case, held to its case id pattern; anything else
+    (page, crop, ...) is a module benchmark's own unit: ids must only be non-empty and unique."""
     name = full_name(name)
     ids = names.read_case_set(case_file)
+    if unit != "case":
+        names.check_token("unit", unit)
+        case_pattern = names.DEFAULT_CASE_PATTERN
     probs = names.case_problems(ids, case_pattern)
     if probs:
         raise ReinsError(f"case set not usable: {probs[:5]}")
@@ -125,7 +130,7 @@ def init(con, name: str, project: str, case_file: Path, about: str, holdout_frac
     (path / "CHANGELOG.md").write_text(f"# {name}\n\n## v1 ({now()[:10]})\n{about}\nsplit seed {seed}, holdout {n_hold}/{len(ids)}\n")
     _write_manifest(path, {"name": name, "version": 1, "project": project, "about": about, "created": now(),
                            "split": {"seed": seed, "holdout_fraction": holdout_fraction, "n_dev": len(ids) - n_hold,
-                                     "n_holdout": n_hold}, "stages": {}, "labelset": 0, "files": {}})
+                                     "n_holdout": n_hold}, "unit": unit, "stages": {}, "labelset": 0, "files": {}})
     with tx(con):
         con.execute("INSERT INTO benchmark (name, version, project, path, status, n_cases, n_dev, n_holdout, created)"
                     " VALUES (?,1,?,?, 'open', ?,?,?,?)", (name, project, str(path), len(ids), len(ids) - n_hold, n_hold, now()))

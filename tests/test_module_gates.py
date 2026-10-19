@@ -167,5 +167,19 @@ class Benchmarks(Base):
             bench.add_cases(self.con, "crops", ["301"], "dev", "x")  # a reason is required
 
 
+class Units(Base):
+    def test_a_module_benchmark_has_its_own_unit(self):
+        pages = self.tmp / "pages.txt"
+        pages.write_text("truth-0001\nmulti-exeter__77-100__03\n")
+        with self.assertRaises(ReinsError):                         # held to the project's case id pattern
+            bench.init(self.con, "boxes", "proj", pages, "pages", holdout_fraction=0, case_pattern=r"^[0-9]+$")
+        r = bench.init(self.con, "boxes", "proj", pages, "pages", holdout_fraction=0, case_pattern=r"^[0-9]+$", unit="page")
+        self.assertEqual(json.loads((Path(r["path"]) / "MANIFEST.json").read_text())["unit"], "page")
+        dup = self.tmp / "dup.txt"
+        dup.write_text("a\na\n")
+        with self.assertRaises(ReinsError):                         # still unique
+            bench.init(self.con, "dup", "proj", dup, "dup", holdout_fraction=0, unit="page")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -264,6 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
     x = bn.add_parser("init"); x.add_argument("name"); x.add_argument("--cases", required=True, type=Path)
     x.add_argument("--about", required=True); x.add_argument("--holdout-fraction", type=float, default=0.2)
     x.add_argument("--seed", type=int, default=7); x.add_argument("--project")
+    x.add_argument("--unit", default="case", help="what one row is: case (the project's case id) or a module's own unit (page, crop)")
     x = bn.add_parser("adopt"); x.add_argument("name"); x.add_argument("version", type=int); x.add_argument("--path", required=True, type=Path)
     x.add_argument("--cases", required=True, type=Path); x.add_argument("--about", default=""); x.add_argument("--project")
     x.add_argument("--holdout-fraction", type=float, default=0.0); x.add_argument("--seed", type=int, default=7)
@@ -909,7 +910,7 @@ def _measure(con, args, cfg, cwd) -> int:
     if args.cmd == "bench":
         if args.sub == "init":
             r = bench.init(con, args.name, _project(args, cfg), args.cases, args.about, args.holdout_fraction, args.seed,
-                           cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN))
+                           cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN), unit=args.unit)
             print(f"{r['name']} v1 at {r['path']}  dev={r['n_dev']} holdout={r['n_holdout']}")
         elif args.sub == "adopt":
             r = bench.adopt(con, args.name, args.version, _project(args, cfg), args.path, args.cases, args.holdout_fraction, args.seed, args.about)
