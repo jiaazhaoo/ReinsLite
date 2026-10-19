@@ -46,6 +46,8 @@ ReinsLite 是一层很小的本地控制层。它不靠提醒智能体"小心一
 
 给管理层的独立页面 `/production`：只看生产和返工批次，每个工作包一块，写清多少案件已出结果、结果分布（项目在 `[results]` 里指定结果文件）、其余案件为什么没法处理、花了多少、预计何时完成。不出现命令、版本号和会话；可切换中文 / 英文。
 
+同样的数字也能导成 xlsx，给习惯用 Excel 的人：`reins report xlsx`（汇总、工作包、批次对比、开发、每日五张表；`--lang en|zh`，`--hide site,spend` 可隐藏地区或花费），`reins report publish` 用 rclone 把它传到 config.toml 里 `[report] remote` 指定的位置（OneDrive / SharePoint 上的文件分享链接不变）。`reins-report.timer` 每 30 分钟刷新一次。
+
 <p align="center"><img src="docs/images/runs-zh.png" alt="运行" width="100%"></p>
 
 <table>

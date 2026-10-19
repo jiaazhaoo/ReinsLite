@@ -1,0 +1,8 @@
+# systemd --user unit, run by reins-report.timer: rebuild the production workbook and copy it to [report] remote
+# ($REINS_HOME/config.toml). Without a remote it only writes $REINS_HOME/reports/production-<lang>.xlsx.
+[Unit]
+Description=reins production report (xlsx), refreshed and published
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '@REINS_DIR@/bin/reins report publish || @REINS_DIR@/bin/reins report xlsx'

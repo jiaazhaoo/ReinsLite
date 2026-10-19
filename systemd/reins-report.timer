@@ -1,0 +1,11 @@
+# systemd --user timer: refresh the production workbook every 30 minutes
+[Unit]
+Description=refresh the reins production report
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -529,6 +529,7 @@ def batch_table(con, rows, ledger: dict, imported: dict) -> list[dict]:
                                  "good_wrong": sum(1 for c in good_reviewed if final[c] == "wrong")}
             spent = sum(u for _, _, u in ledger.get(bid, [])) + sum(u for _, _, u in imported.get(bid, []))
             iv = _run_intervals(con, bid, now_iso)
+            row["state"] = _part_state(con, b)[0]                         # running / stopped (process gone) / paused / ...
             row.update({"spent": round(spent, 2), "per_case": round(spent / len(cases), 4) if cases else None,
                         "run_h": round(_union_h(iv), 1) if iv else None,
                         "note": b["status_reason"] if b["status"] == "paused" else None,

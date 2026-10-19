@@ -116,6 +116,27 @@ class Production(unittest.TestCase):
         self.assertEqual((rv["n"], rv["wrong"], rv["correct"], rv["double"], rv["agree"]), (2, 1, 1, 1, 1))
         self.assertEqual((rv["good_reviewed"], rv["good_wrong"]), (1, 1))      # the auto-passed case was judged wrong
 
+    def test_report_workbook_hides_what_it_promises(self):
+        from openpyxl import load_workbook
+        from reins import report
+        b = self.batch("leeds-wp7", "production", "done", ["1", "2"], [("1", "auto", ""), ("2", "human", "c1")])
+        with tx(self.con):
+            self.con.execute("UPDATE batch SET aliases=? WHERE batch_id=?", ('["Leeds 第一批"]', b))
+            self.con.execute("INSERT INTO spend (at, batch_id, stage, provider, model, amount, priced) VALUES "
+                             "('2026-10-10T12:00:00', ?, 'check', 'x', 'm', 1.0, 'provider')", (b,))
+        out = self.tmp / "r-en.xlsx"
+        r = report.build(out, "en", {"site", "spend"}, con=self.con)
+        self.assertEqual(r["sheets"], ["Summary", "Work packages", "Batches", "Development", "Daily"])
+        text = [str(c.value) for ws in load_workbook(out).worksheets for row in ws.iter_rows() for c in row if c.value is not None]
+        self.assertFalse([x for x in text if report.CJK.search(x)])             # English: no CJK, the alias fell back
+        self.assertFalse([x for x in text if "leeds" in x.lower()])             # the site is "Client A", also in the batch id
+        self.assertTrue(any("Client A" in x for x in text))
+        self.assertFalse([x for x in text if "Spend" in x or "$" in x])         # no money
+        zh = report.build(self.tmp / "r-zh.xlsx", "zh", set(), con=self.con)
+        ws = load_workbook(zh["path"])["批次对比"]
+        self.assertIn("Leeds 第一批", [c.value for c in ws[2]])
+        self.assertIn("花费（美元）", [c.value for c in ws[1]])
+
     def test_all_results_but_a_paused_batch_is_not_complete(self):
         self.batch("d-wp4", "production", "paused", ["1", "2"], [("1", "auto", ""), ("2", "human", "c1")])
         p = production.view(self.con)["packages"][0]
