@@ -133,11 +133,16 @@ def reconcile(con) -> list[str]:
                 if p["state"] in ("running", "paused"):
                     con.execute("UPDATE process SET state='lost', ended=COALESCE(ended, ?) WHERE id=?", (now(), p["id"]))
         batches.set_status(con, bid, "paused", why, system=True)
-        notify.send(con, f"gone:{bid}", "action", f"{bid}: {why}",
-                    ("check its results, then end its stages or reins batch abandon" if "exit 0" in why else
-                     "the batch is paused: start it again with reins run, or reins batch abandon if it will not be finished"),
-                    cooldown_min=0)
         out.append(f"{bid}: {why} -> paused")
+    if 0 < len(out) <= 3:                                # one notice each; a backlog (after a reboot) is one notice
+        for line in out:
+            bid, why = line.split(": ", 1)
+            notify.send(con, f"gone:{bid}", "action", f"{bid}: {why.removesuffix(' -> paused')}",
+                        ("check its results, then end its stages or reins batch abandon" if "exit 0" in why else
+                         "start it again with reins run, or reins batch abandon if it will not be finished"), cooldown_min=0)
+    elif out:
+        notify.send(con, f"gone:{now()[:16]}", "action", f"{len(out)} batches paused: their process is gone",
+                    "the board lists them under 'needs you' with the command for each", cooldown_min=0)
     return out
 
 
