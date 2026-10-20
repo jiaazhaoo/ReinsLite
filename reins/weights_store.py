@@ -12,6 +12,7 @@ store's own index and manifests and refuses a file whose bytes differ.
     # kind = "dir", path = "/mnt/backup/weights"   -- a mounted disk; same layout
 
     reins weights push [--repo R]                          upload what is not up yet (watchdog: every 6 h)
+    reins weights push --name weights-x-v1 ...             also registered weights the project does not declare
     reins weights pull --to DIR [--name weights-x-v2 ...]  fetch the store's active versions (or the named ones), verify
 
 Layout in the store:  <prefix>/index.json                    {base: active version name}
@@ -155,12 +156,14 @@ def _write_index(con, cfg: dict, store: Store) -> None:
         store.put(f, store.key("index.json"), "index: active versions")
 
 
-def push(con, cfg: dict, notify_fail: bool = True) -> dict:
+def push(con, cfg: dict, notify_fail: bool = True, names: list[str] | None = None) -> dict:
+    """The project's declared trained weights, or `names`: any registered weights (an experiment not in the pipeline
+    yet is still only on this machine). Named ones are fetched with pull --name; index.json lists declared ones only."""
     store = store_of(cfg)
     if not store:
         return {"store": None, "skipped": "no [weights_store] in reins.toml"}
     done, failed = [], []
-    for name in wanted(con, cfg, store):
+    for name in names or wanted(con, cfg, store):
         if uploaded(con, name, store):
             continue
         try:

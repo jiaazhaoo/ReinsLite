@@ -382,7 +382,7 @@ def build_parser() -> argparse.ArgumentParser:
     x = wg.add_parser("list")
     x = wg.add_parser("check", help="declared weights exist and are registered versions"); x.add_argument("--repo")
     x = wg.add_parser("push", help="upload the project's trained weights to its [weights_store] (watchdog: every 6 h)")
-    x.add_argument("--repo")
+    x.add_argument("--repo"); x.add_argument("--name", action="append", help="a registered weights version to upload even if undeclared")
     x = wg.add_parser("pull", help="fetch the store's active weights (or --name ...) into --to DIR, sha256-checked")
     x.add_argument("--to", required=True, type=Path); x.add_argument("--name", action="append"); x.add_argument("--repo")
     wf = sub.add_parser("workflow").add_subparsers(dest="sub", required=True)
@@ -678,7 +678,7 @@ def main(argv: list[str] | None = None) -> int:
                     for r in weights_store.pull(pcfg, args.to, args.name):
                         print(f"  {r['name']:<34} {r['files']} files {r['bytes'] / 1e6:>7.0f} MB -> {r['dir']}")
                     return 0
-                r = weights_store.push(con, pcfg)
+                r = weights_store.push(con, pcfg, names=args.name)
                 if not r["store"]:
                     print(r["skipped"]); return 1
                 for u in r["uploaded"]:
