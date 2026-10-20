@@ -381,6 +381,10 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--run-dir", help="training run directory (results, args)"); x.add_argument("--dataset"); x.add_argument("--note")
     x = wg.add_parser("list")
     x = wg.add_parser("check", help="declared weights exist and are registered versions"); x.add_argument("--repo")
+    x = wg.add_parser("push", help="upload the project's trained weights to its [weights_store] (watchdog: every 6 h)")
+    x.add_argument("--repo")
+    x = wg.add_parser("pull", help="fetch the store's active weights (or --name ...) into --to DIR, sha256-checked")
+    x.add_argument("--to", required=True, type=Path); x.add_argument("--name", action="append"); x.add_argument("--repo")
     wf = sub.add_parser("workflow").add_subparsers(dest="sub", required=True)
     x = wf.add_parser("freeze"); x.add_argument("name"); x.add_argument("--repo")
     x = wf.add_parser("show"); x.add_argument("name")
@@ -666,6 +670,24 @@ def main(argv: list[str] | None = None) -> int:
                     spec["training"] = tr
                 r = artifacts.register_weights(con, args.name, spec, args.about)
                 print(f"{r['name']}  ({'new' if r['new'] else 'already registered'}; {r['bytes'] / 1e6:.0f} MB)")
+            elif args.sub in ("push", "pull"):
+                from . import weights_store
+                repo = Path(args.repo or cfg.get("dev", {}).get("repo") or (project_root(cwd) or cwd))
+                pcfg = dev.project_cfg(repo)
+                if args.sub == "pull":
+                    for r in weights_store.pull(pcfg, args.to, args.name):
+                        print(f"  {r['name']:<34} {r['files']} files {r['bytes'] / 1e6:>7.0f} MB -> {r['dir']}")
+                    return 0
+                r = weights_store.push(con, pcfg)
+                if not r["store"]:
+                    print(r["skipped"]); return 1
+                for u in r["uploaded"]:
+                    print(f"  uploaded {u['name']:<34} {u['files']} files {u['bytes'] / 1e6:>7.0f} MB")
+                for f in r["failed"]:
+                    print(f"  FAILED   {f}")
+                print(f"{r['store']}: {len(r['uploaded'])} uploaded, {len(r['failed'])} failed"
+                      + ("" if r["uploaded"] or r["failed"] else " (everything already up)"))
+                return 1 if r["failed"] else 0
             elif args.sub == "check":
                 repo = Path(args.repo or cfg.get("dev", {}).get("repo") or (project_root(cwd) or cwd))
                 res = artifacts.check_weights(con, dev.project_cfg(repo))

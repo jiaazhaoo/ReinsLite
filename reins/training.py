@@ -50,6 +50,7 @@ def finished(con, batch: str) -> str | None:
         con.execute("INSERT INTO batch_event (at, batch_id, event, detail) VALUES (?,?, 'weights_registered', ?)",
                     (now(), batch, f"{r['name']} ({'new' if r['new'] else 'same files as before'})"))
     notify.send(con, f"trained:{batch}", "info", f"{batch}: trained, weights {r['name']}", str(path), cooldown_min=0)
+    _upload_new(con, b["project"], r["name"])
     return r["name"]
 
 
@@ -61,3 +62,17 @@ def list_(con) -> list[dict]:
         out.append({"batch_id": b["batch_id"], "status": b["status"], "about": b["purpose"], "created": b["created"],
                     "running_h": round(batches.elapsed_h(con, b["batch_id"]) or 0, 1), "weights": w[0] if w else None})
     return out
+
+
+def _upload_new(con, project: str, name: str) -> None:
+    """New weights go to the project's store at once, so a trained model is never only on this machine."""
+    from . import projects, weights_store
+    cfg = next((c for _, c in projects.all_() if c.get("project") == project), None)
+    store = weights_store.store_of(cfg) if cfg else None
+    if not store:
+        return
+    try:
+        weights_store.upload(con, name, store)
+    except Exception as e:                                                      # noqa: BLE001 -- the watchdog retries
+        notify.send(con, f"weights_push:{project}", "action", f"{name}: not uploaded to {store.label}",
+                    f"{e}\nthe watchdog retries; or: reins weights push", cooldown_min=0)
