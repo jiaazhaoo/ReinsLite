@@ -4,12 +4,14 @@
     reins dev finish VERSION [--skip-tier T --why '...']
     reins dev abandon VERSION --why '...'
     reins dev release [--note '...']
+    reins dev sync [--repo R]                       push main + release tags to [dev] push (finish/release do it too)
     reins dev list
 
 Project settings come from the repo's reins.toml:
     project = "my-pipeline"
     [dev]
     repo = "/path/to/my-pipeline"                  # main worktree
+    push = "origin"                                # optional: finish / release / the watchdog publish main + tags
     gate = "python3 bench/gate.py"                 # run in the candidate's worktree; exit 0 = passed. If it writes
                                                    # JSON to $REINS_GATE_OUT, that is recorded as the gate_log row
                                                    # and must be green (see reins/gate.py for the fields)
@@ -268,10 +270,9 @@ def finish(con, version: str, skip_tier: str | None = None, why: str | None = No
                        capture_output=True, text=True)
     if r.returncode:
         raise ReinsError(f"merge into main failed: {r.stderr[-400:]}")
-    remote = (cfg.get("dev") or {}).get("push")                   # [dev] push = "origin": publish the merge
-    if remote:
-        p = subprocess.run(["git", "-C", str(repo), "push", "-q", remote, "main"], capture_output=True, text=True)
-        evidence += f"; pushed to {remote}" if p.returncode == 0 else f"; push to {remote} FAILED: {p.stderr.strip()[-200:]}"
+    pushed = sync(con, repo, cfg)                                  # [dev] push = "origin": publish the merge
+    if pushed.get("remote"):
+        evidence += f"; pushed to {pushed['remote']}" if pushed["ok"] else f"; push to {pushed['remote']} FAILED: {pushed['error']}"
     from . import artifacts
     head = git(wt, "rev-parse", "--short", "HEAD")
     arts = artifacts.scan(con, wt, cfg, head)                       # prompt / model versions as this candidate has them
@@ -356,7 +357,52 @@ def release(con, repo: Path, note: str = "") -> dict:
         con.execute("INSERT INTO release (name, project, commit_sha, worktree, note, versions, created, session)"
                     " VALUES (?,?,?,?,?,?,?,?)", (name, project, git(repo, "rev-parse", name), str(wt), note,
                                                   json.dumps(versions), now(), session()))
-    return {"name": name, "worktree": str(wt), "versions": versions}
+    pushed = sync(con, repo, cfg)
+    return {"name": name, "worktree": str(wt), "versions": versions, "pushed": pushed}
+
+
+def sync(con, repo: Path, cfg: dict | None = None) -> dict:
+    """Publish main and the release tags to [dev] push (e.g. "origin"). Never forces: a remote main this repo does not
+    contain is a failure for a person to look at. Any failure is an action notice, so the remote cannot fall behind
+    silently (e2e-plan-extract had no push set and sat 121 merges and 5 releases behind, 2026-10-07 to 10-20)."""
+    cfg = cfg or project_cfg(repo)
+    remote = (cfg.get("dev") or {}).get("push")
+    if not remote:
+        return {"remote": None, "ok": True, "skipped": "no [dev] push in reins.toml"}
+    prefix = (cfg.get("dev") or {}).get("release_prefix") or f"rel-{cfg['project']}"
+    tags = git(repo, "tag", "-l", f"{prefix}-*").split()
+    r = subprocess.run(["git", "-C", str(repo), "push", "-q", "--follow-tags", remote, "main",
+                        *[f"refs/tags/{t}" for t in tags]], capture_output=True, text=True, timeout=600)
+    out = {"remote": remote, "ok": r.returncode == 0, "tags": len(tags), "main": git(repo, "rev-parse", "--short", "main")}
+    if r.returncode:
+        out["error"] = r.stderr.strip()[-300:]
+        from . import notify
+        notify.send(con, f"push:{cfg['project']}", "action", f"{cfg['project']}: push to {remote} failed",
+                    f"main {out['main']} is not on {remote}: {out['error']}\nfix it, then: reins dev sync --repo {repo}",
+                    cooldown_min=360)
+    return out
+
+
+def sync_all(con, every_h: float = 6) -> list[str]:
+    """Watchdog pass: every project with [dev] push is pushed at most every `every_h` hours (catches merges made
+    while the network was down, and tags made by hand)."""
+    from . import projects
+    from .store import home
+    mark = home() / "last_push_sync"
+    import time
+    if mark.exists() and time.time() - mark.stat().st_mtime < every_h * 3600:
+        return []
+    mark.touch()
+    out = []
+    for repo, cfg in projects.all_():
+        if not (cfg.get("dev") or {}).get("push") or "project" not in cfg:
+            continue
+        try:
+            r = sync(con, repo, cfg)
+        except (ReinsError, subprocess.SubprocessError) as e:
+            r = {"ok": False, "error": str(e)}
+        out.append(f"push {cfg['project']}: {'ok' if r['ok'] else 'FAILED ' + r.get('error', '')[:80]}")
+    return out
 
 
 def adopt_release(con, repo: Path, tag: str, note: str = "") -> dict:

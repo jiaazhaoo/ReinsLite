@@ -353,6 +353,39 @@ class Dev(Base):
         pushed = subprocess.run(["git", "--git-dir", str(remote), "rev-parse", "main"], capture_output=True, text=True).stdout
         self.assertEqual(head, pushed)
 
+    def test_release_pushes_tags_sync_catches_up_and_a_failed_push_is_a_notice(self):
+        remote = self.tmp / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        g = lambda *a: subprocess.run(["git", "-C", str(self.repo), *a], check=True, capture_output=True)
+        rr = lambda *a: subprocess.run(["git", "--git-dir", str(remote), *a], capture_output=True, text=True).stdout.strip()
+        g("remote", "add", "origin", str(remote)); g("push", "-q", "origin", "main")
+        self.assertIsNone(dev.sync(self.con, self.repo)["remote"])               # no [dev] push: nothing is pushed
+        g("commit", "-q", "--allow-empty", "-m", "merged while push was off")       # the remote falls behind
+        self.assertNotEqual(rr("rev-parse", "main"), subprocess.run(["git", "-C", str(self.repo), "rev-parse", "main"],
+                                                                    capture_output=True, text=True).stdout.strip())
+        (self.repo / "reins.toml").write_text((self.repo / "reins.toml").read_text().replace('[dev]\n', '[dev]\npush = "origin"\n'))
+        g("commit", "-qam", "push on")
+        rel = dev.release(self.con, self.repo, "first")
+        self.assertTrue(rel["pushed"]["ok"])
+        self.assertEqual(rr("tag", "-l"), rel["name"])                           # the release tag is on the remote
+        local = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "main"], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(rr("rev-parse", "main"), local)                          # and main caught up
+        g("tag", "-a", "rel-e2e-plan-extract-20000101-1", "-m", "made by hand")
+        self.assertTrue(dev.sync(self.con, self.repo)["ok"])
+        self.assertIn("rel-e2e-plan-extract-20000101-1", rr("tag", "-l").split())
+        # the remote moved on without us: never forced, an action notice instead
+        other = self.tmp / "clone"
+        subprocess.run(["git", "clone", "-q", "-b", "main", str(remote), str(other)], check=True)
+        subprocess.run(["git", "-C", str(other), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty",
+                        "-m", "someone else"], check=True)
+        subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "main"], check=True)
+        g("commit", "-q", "--allow-empty", "-m", "ours")
+        r = dev.sync(self.con, self.repo)
+        self.assertFalse(r["ok"])
+        n = self.con.execute("SELECT title FROM notification WHERE key='push:e2e-plan-extract'").fetchall()
+        self.assertEqual(len(n), 1)
+        self.assertIn("push to origin failed", n[0][0])
+
     def test_overlap_counts_only_the_same_project(self):
         other = self.tmp / "other"; other.mkdir()
         run = lambda *a: subprocess.run(["git", "-C", str(other), *a], check=True, capture_output=True)
