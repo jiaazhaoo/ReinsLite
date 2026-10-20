@@ -88,6 +88,10 @@ reins dev start → 改代码 → pilot 批次（问题 case）→ eval 批次�
 **同步到 GitHub（2026-10-20）**：项目 `reins.toml` 的 `[dev]` 写 `push = "origin"` 后，`reins dev finish` 推 main，`reins dev release` 推 main 和 release tag，
 watchdog 每 6 小时补推一次（网断时的合并、手打的 tag）。从不强推：远端有本地没有的提交 = 推送失败，发 action 通知，修好后 `reins dev sync`。
 
+**权重放到机器以外（2026-10-20）**：项目 `reins.toml` 写 `[weights_store]`（`kind = "hf"` 私有模型仓库，或 `kind = "dir"` 挂载盘），
+`origin = "trained"` 的权重每个登记版本上传一份（`<prefix>/weights-名-vN/` + 带 sha256 的 manifest，`index.json` 记当前 active 版本）；
+`reins train` 登记后立即上传，watchdog 每 6 小时补传，失败发 action 通知。新机器不需要登记库：`reins weights pull --to DIR`，sha 不符拒装。
+
 ## 分模块的 benchmark 和门禁（2026-10-19）
 
 改哪一步就考哪一步：每个模块用自己的 benchmark 和自己的标准答案打分，下游只重跑输出变了的 case；端到端全量只在发版前跑。

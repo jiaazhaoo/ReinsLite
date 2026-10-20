@@ -177,10 +177,14 @@ def once(con=None) -> list[str]:
 
 def _sync(con) -> list[str]:
     from . import dev
-    try:
-        return dev.sync_all(con)
-    except Exception as e:                                                      # noqa: BLE001 -- never stop the watchdog
-        return [f"push sync skipped: {e}"]
+    from . import weights_store
+    out = []
+    for f in (dev.sync_all, weights_store.push_all):
+        try:
+            out += f(con)
+        except Exception as e:                                                  # noqa: BLE001 -- never stop the watchdog
+            out.append(f"{f.__module__}.{f.__name__} skipped: {e}")
+    return out
 
 
 def release_stale_reservations(con, cfg) -> list[str]:
