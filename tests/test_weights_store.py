@@ -68,6 +68,16 @@ class WeightsStore(unittest.TestCase):
         n = self.con.execute("SELECT title FROM notification WHERE key='weights_push:p'").fetchall()
         self.assertEqual(len(n), 1)
 
+    def test_named_push_uploads_undeclared_weights(self):
+        exp = self.tmp / "exp.pt"; exp.write_bytes(b"E" * 900)
+        artifacts.register_weights(self.con, "plot_seg", {"file": str(exp)}, "experiment")
+        self.assertEqual([u["name"] for u in weights_store.push(self.con, self.cfg)["uploaded"]], ["weights-det-v1"])
+        r = weights_store.push(self.con, self.cfg, names=["weights-plot_seg-v1"])
+        self.assertEqual([u["name"] for u in r["uploaded"]], ["weights-plot_seg-v1"])
+        got = weights_store.pull(self.cfg, self.tmp / "nb", ["weights-plot_seg-v1"])
+        self.assertEqual((self.tmp / "nb" / "plot_seg" / "exp.pt").read_bytes(), b"E" * 900)
+        self.assertEqual(json.loads((self.tmp / "store" / "p" / "index.json").read_text())["active"], {"det": "weights-det-v1"})
+
     def test_no_store_is_reported_not_guessed(self):
         cfg = {k: v for k, v in self.cfg.items() if k != "weights_store"}
         self.assertIsNone(weights_store.push(self.con, cfg)["store"])
