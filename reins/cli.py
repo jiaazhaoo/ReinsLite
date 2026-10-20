@@ -160,6 +160,8 @@ def build_parser() -> argparse.ArgumentParser:
     x = d.add_parser("finish"); x.add_argument("version"); x.add_argument("--skip-tier"); x.add_argument("--why")
     x = d.add_parser("abandon"); x.add_argument("version"); x.add_argument("--why", required=True)
     x = d.add_parser("release"); x.add_argument("--note", default=""); x.add_argument("--repo")
+    x = d.add_parser("sync", help="push main and the release tags to [dev] push (finish and release do it too)")
+    x.add_argument("--repo")
     x = d.add_parser("adopt-release"); x.add_argument("tag"); x.add_argument("--note", default=""); x.add_argument("--repo")
     x = d.add_parser("list"); x.add_argument("--project")
     x = d.add_parser("show", help="a module or module version: what it does, its state, and the sessions it came from")
@@ -804,6 +806,14 @@ def _dev(con, args, cfg, cwd) -> int:
     elif args.sub == "release":
         r = dev.release(con, repo, args.note)
         print(f"{r['name']} -> {r['worktree']} (read-only)\n  contains: {', '.join(r['versions']) or 'no released module versions'}")
+        if r["pushed"].get("remote"):
+            print(f"  pushed to {r['pushed']['remote']}: " + ("ok" if r["pushed"]["ok"] else f"FAILED {r['pushed']['error']}"))
+    elif args.sub == "sync":
+        r = dev.sync(con, repo)
+        if not r.get("remote"):
+            print(r["skipped"]); return 1
+        print(f"main {r['main']} + {r['tags']} release tags -> {r['remote']}: " + ("ok" if r["ok"] else f"FAILED {r['error']}"))
+        return 0 if r["ok"] else 1
     elif args.sub == "show":
         if names.MODULE_VERSION.match(args.name):
             v = modules.get(con, args.name)

@@ -172,7 +172,15 @@ def once(con=None) -> list[str]:
     from . import sentinel, upkeep
     return ([f"released {n} resource claim(s) of ended processes"] if n else []) + upkeep.reconcile(con) + check_batches(con, cfg) + \
         check_machine(con, cfg) + poll_balances_due(con, cfg) + release_stale_reservations(con, cfg) + sentinel.watch_running(con) + \
-        upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con)
+        upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _sync(con)
+
+
+def _sync(con) -> list[str]:
+    from . import dev
+    try:
+        return dev.sync_all(con)
+    except Exception as e:                                                      # noqa: BLE001 -- never stop the watchdog
+        return [f"push sync skipped: {e}"]
 
 
 def release_stale_reservations(con, cfg) -> list[str]:

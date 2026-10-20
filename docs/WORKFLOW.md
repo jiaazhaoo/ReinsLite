@@ -85,6 +85,9 @@ reins dev start → 改代码 → pilot 批次（问题 case）→ eval 批次�
 ```
 上一步没完成，下一步开不了：production 批次只接受 released 版本 + release 名；paid 阶段在 `spend_cap` 为 $0 时拒绝启动。
 
+**同步到 GitHub（2026-10-20）**：项目 `reins.toml` 的 `[dev]` 写 `push = "origin"` 后，`reins dev finish` 推 main，`reins dev release` 推 main 和 release tag，
+watchdog 每 6 小时补推一次（网断时的合并、手打的 tag）。从不强推：远端有本地没有的提交 = 推送失败，发 action 通知，修好后 `reins dev sync`。
+
 ## 分模块的 benchmark 和门禁（2026-10-19）
 
 改哪一步就考哪一步：每个模块用自己的 benchmark 和自己的标准答案打分，下游只重跑输出变了的 case；端到端全量只在发版前跑。
