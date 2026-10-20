@@ -89,7 +89,8 @@ reins dev start → 改代码 → pilot 批次（问题 case）→ eval 批次�
 watchdog 每 6 小时补推一次（网断时的合并、手打的 tag）。从不强推：远端有本地没有的提交 = 推送失败，发 action 通知，修好后 `reins dev sync`。
 
 **权重放到机器以外（2026-10-20）**：项目 `reins.toml` 写 `[weights_store]`（`kind = "hf"` 私有模型仓库，或 `kind = "dir"` 挂载盘），
-`origin = "trained"` 的权重每个登记版本上传一份（`<prefix>/weights-名-vN/` + 带 sha256 的 manifest，`index.json` 记当前 active 版本）；
+`origin = "trained"` 的权重每个登记版本上传一份：同一用途的模型一个文件夹（名字在 `[weights_store.folders]` 起，要看得出模型干什么），
+文件夹里每版一个 `vN/`（文件 + 带 sha256 的 manifest），文件夹 README 列出各版本、当前版本和指标；`index.json` 给机器读；
 `reins train` 登记后立即上传，watchdog 每 6 小时补传，失败发 action 通知。新机器不需要登记库：`reins weights pull --to DIR`，sha 不符拒装。
 
 ## 分模块的 benchmark 和门禁（2026-10-19）
