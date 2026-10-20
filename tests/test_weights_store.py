@@ -25,7 +25,8 @@ class WeightsStore(unittest.TestCase):
         (m / "det.pt").write_bytes(b"D" * 3000)
         (m / "qwen" / "model.safetensors").write_bytes(b"Q" * 4000)
         self.det = m / "det.pt"
-        self.cfg = {"project": "p", "weights_store": {"kind": "dir", "path": str(self.tmp / "store"), "prefix": "p"},
+        self.cfg = {"project": "p", "weights_store": {"kind": "dir", "path": str(self.tmp / "store"), "prefix": "p",
+                                      "folders": {"det": "plot-detector", "plot_seg": "plot-boundary-segmentation"}},
                     "weights": {"det": {"file": str(self.det), "origin": "trained"},
                                 "qwen": {"dir": str(m / "qwen"), "origin": "pretrained"}}}
         for base, spec in self.cfg["weights"].items():
@@ -41,21 +42,24 @@ class WeightsStore(unittest.TestCase):
         r = weights_store.push(self.con, self.cfg)
         self.assertEqual([u["name"] for u in r["uploaded"]], ["weights-det-v1"])       # pretrained stays public
         store = self.tmp / "store" / "p"
-        self.assertEqual((store / "weights-det-v1" / "det.pt").read_bytes(), b"D" * 3000)
-        man = json.loads((store / "weights-det-v1" / "manifest.json").read_text())
+        self.assertEqual((store / "plot-detector" / "v1" / "det.pt").read_bytes(), b"D" * 3000)   # folder = what it does
+        man = json.loads((store / "plot-detector" / "v1" / "manifest.json").read_text())
         self.assertEqual(man["files"]["det.pt"]["size"], 3000)
-        self.assertEqual(json.loads((store / "index.json").read_text())["active"], {"det": "weights-det-v1"})
+        idx = json.loads((store / "index.json").read_text())["models"]
+        self.assertEqual(idx["plot-detector"], {"base": "det", "current": "v1", "versions": ["v1"], "in_pipeline": True})
+        self.assertIn("| [v1](v1/) (current) | active |", (store / "plot-detector" / "README.md").read_text())
+        self.assertIn("[plot-detector](plot-detector/)", (store / "README.md").read_text())
         self.assertEqual(weights_store.push(self.con, self.cfg)["uploaded"], [])         # already up: nothing again
         # a new machine: only the store
         got = weights_store.pull(self.cfg, self.tmp / "newbox")
         self.assertEqual([g["name"] for g in got], ["weights-det-v1"])
-        self.assertEqual((self.tmp / "newbox" / "det" / "det.pt").read_bytes(), b"D" * 3000)
+        self.assertEqual((self.tmp / "newbox" / "plot-detector" / "det.pt").read_bytes(), b"D" * 3000)
         # a damaged copy in the store is refused, not installed
-        (store / "weights-det-v1" / "det.pt").write_bytes(b"X" * 3000)
+        (store / "plot-detector" / "v1" / "det.pt").write_bytes(b"X" * 3000)
         with self.assertRaises(ReinsError) as e:
             weights_store.pull(self.cfg, self.tmp / "box2")
         self.assertIn("sha256", str(e.exception))
-        self.assertFalse((self.tmp / "box2" / "det" / "det.pt").exists())
+        self.assertFalse((self.tmp / "box2" / "plot-detector" / "det.pt").exists())
 
     def test_a_retrained_file_is_a_new_version_and_a_changed_unregistered_file_is_a_notice(self):
         weights_store.push(self.con, self.cfg)
@@ -75,8 +79,32 @@ class WeightsStore(unittest.TestCase):
         r = weights_store.push(self.con, self.cfg, names=["weights-plot_seg-v1"])
         self.assertEqual([u["name"] for u in r["uploaded"]], ["weights-plot_seg-v1"])
         got = weights_store.pull(self.cfg, self.tmp / "nb", ["weights-plot_seg-v1"])
-        self.assertEqual((self.tmp / "nb" / "plot_seg" / "exp.pt").read_bytes(), b"E" * 900)
-        self.assertEqual(json.loads((self.tmp / "store" / "p" / "index.json").read_text())["active"], {"det": "weights-det-v1"})
+        self.assertEqual((self.tmp / "nb" / "plot-boundary-segmentation" / "exp.pt").read_bytes(), b"E" * 900)
+        idx = json.loads((self.tmp / "store" / "p" / "index.json").read_text())["models"]
+        self.assertFalse(idx["plot-boundary-segmentation"]["in_pipeline"])         # listed, but not pulled by default
+        self.assertEqual([g["name"] for g in weights_store.pull(self.cfg, self.tmp / "nb2")], ["weights-det-v1"])
+
+    def test_a_new_folder_name_moves_the_files_and_drops_the_old_layout(self):
+        old = dict(self.cfg, weights_store=dict(self.cfg["weights_store"], folders={}))
+        weights_store.push(self.con, old)
+        store = self.tmp / "store" / "p"
+        self.assertTrue((store / "det" / "v1" / "det.pt").is_file())
+        (store / "weights-det-v1").mkdir(); (store / "weights-det-v1" / "det.pt").write_bytes(b"D")   # the 10-20 layout
+        r = weights_store.push(self.con, self.cfg)
+        self.assertEqual([u["folder"] for u in r["uploaded"]], ["plot-detector"])
+        self.assertTrue((store / "plot-detector" / "v1" / "det.pt").is_file())
+        self.assertFalse((store / "weights-det-v1" / "det.pt").exists())
+        self.assertEqual(weights_store.push(self.con, self.cfg)["uploaded"], [])
+
+    def test_a_retired_experiment_leaves_the_store_listing(self):
+        exp = self.tmp / "exp.pt"; exp.write_bytes(b"E" * 900)
+        artifacts.register_weights(self.con, "plot_seg", {"file": str(exp)}, "experiment")
+        weights_store.push(self.con, self.cfg, names=["weights-plot_seg-v1"])
+        with tx(self.con):
+            self.con.execute("UPDATE artifact SET status='retired' WHERE name='weights-plot_seg-v1'")
+        weights_store.push(self.con, self.cfg)
+        idx = json.loads((self.tmp / "store" / "p" / "index.json").read_text())["models"]
+        self.assertNotIn("plot-boundary-segmentation", idx)
 
     def test_no_store_is_reported_not_guessed(self):
         cfg = {k: v for k, v in self.cfg.items() if k != "weights_store"}
