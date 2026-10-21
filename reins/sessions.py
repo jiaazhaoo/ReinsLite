@@ -627,8 +627,22 @@ def briefing(con, sid: str) -> str:
     from . import issues
     open_issues = [i for i in issues.list_(con) if i["status"] == "open"]
     for i in open_issues[:5]:
-        lines.append(f"[reins] Open issue #{i['id']} on {i['batch_id']}: {i['symptom'][:80]} ({len(i['cases'])} cases). "
-                     f"To fix it: reins dev start MODULE SUFFIX --about '...' --issue {i['id']}")
+        on = i["batch_id"] or (f"module {i['module']}" if i.get("module") else f"service {i.get('service')}")
+        lines.append(f"[reins] Open issue #{i['id']} on {on}: {i['symptom'][:80]}"
+                     + (f" ({len(i['cases'])} cases)" if i["cases"] else "")
+                     + f". To fix it: reins dev start MODULE SUFFIX --about '...' --issue {i['id']}")
+    from . import knowledge
+    try:
+        svcs = knowledge.services(con)
+        if svcs:
+            lines.append("[reins] Running services (what they serve, from which code: reins brief NAME before touching one): "
+                         + "; ".join(f"{s['name']} :{s['port']} [{s['status']}]" for s in svcs[:12]))
+        un = knowledge.discover(con)["unregistered"]
+        if un:
+            lines.append(f"[reins] {len(un)} listening service(s) nobody registered (ports {', '.join(str(u['port']) for u in un[:10])}): "
+                         f"if you started or changed one, reins service adopt PORT --name N --about '...'")
+    except Exception:                                                           # noqa: BLE001  the briefing never fails
+        pass
     lines.append("[reins] Say what you are for once you know: reins session bind --role develop|run|experiment|analysis "
                  "--purpose '...' [--module M | --batch B]. Start runs with reins run; merge with reins dev finish.")
     return "\n".join(lines)

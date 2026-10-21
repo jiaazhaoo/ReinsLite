@@ -113,7 +113,7 @@ def start(con, repo: Path, module: str, suffix: str, about: str, from_batch: str
         row = issues.get(con, issue)
         if row["status"] not in ("open", "in_progress"):
             raise ReinsError(f"issue #{issue} is {row['status']}")
-        from_batch, cases = row["batch_id"], json.loads(row["cases"])
+        from_batch, cases = (row["batch_id"] or None), json.loads(row["cases"])     # a module / service issue has no batch
     files = files or cfg.get("modules", {}).get(module, {}).get("files", [])
     if from_batch:
         from . import batches

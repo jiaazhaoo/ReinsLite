@@ -236,6 +236,24 @@ poll_s = 1.0
 （没有案件，只有一个 `train` 阶段），由 reins 启动，所以有进程记录、资源准入、运行时长和花费；正常结束时
 PATH 处的权重自动登记成 `weights-<name>-vN`，带上训练记录。`reins train list` 列出所有训练。
 
+## 共享知识：服务、事实、简报（2026-10-21）
+
+一个会话学到的东西，要放在下一个会话会看的地方，而不是只留在它的对话记录里。（起因：8773 早已能同时挂三个
+council，一个会话只读了服务器参数就说不行；另一个会话正在修吸附底图，第三个会话又提出要修。）
+
+- **服务**：对外开放的服务（审核平台、标注页面）登记成 service：端口、跑的哪份代码（发布版 / 候选 / 主目录 /
+  仓库外脚本）、数据目录、数据是哪个脚本搭的、systemd 单元、谁登记的。后台检查每分钟对一遍：重启、下线自动记下；
+  有人开了端口没登记，每周提醒一次。`reins service list`、`reins service adopt PORT --name N --about '...'
+  --data DIR --built-by SCRIPT`。改了一个在线服务（换名单、追加数据、改配置）：`reins service event NAME '改了什么'`。
+- **事实**：`reins note add 模块或服务 '一句能照着做的话'`，例如"一个端口能挂多个 council：先建合并视图，前缀留空"。
+  过时了用 `reins note retire ID --why`。
+- **问题单可以挂在模块或服务上**：`reins issue open --service qa-review-study3 --symptom '...'`。修它的人照常
+  `reins dev start ... --issue N`，别人在简报里就看到"已有人在修"。
+- **简报**：`reins brief review` 一屏看全：线上版本和最近的改动、谁正在改（候选版本和未登记的编辑）、哪些服务跑
+  这个模块、未解决的问题、事实、相关决策。会话第一次改某个模块的文件、或在对话里提到某个服务的名字或端口时，
+  钩子自动把这份简报给它；会话开始时列出所有登记的服务和没登记的端口。
+- **会话用途**：会话没有 `reins session bind` 时，用它收到的第一句话当用途，别的会话能看到它在做什么。
+
 ## 改 ReinsLite 本身（2026-10-18）
 
 ReinsLite 也由它自己管理（仓库里的 `reins.toml`：core、guard、board、docs 四个模块）。和任何受管项目一样：

@@ -361,8 +361,21 @@ def build_parser() -> argparse.ArgumentParser:
     x = se.add_parser("inherit", help="take over the batches and worktrees of the session this one was forked from")
     x.add_argument("--from", dest="src", help="session id (default: the parent of this session)"); x.add_argument("--why", default="")
     iss = sub.add_parser("issue").add_subparsers(dest="sub", required=True)
-    x = iss.add_parser("open"); x.add_argument("--batch", required=True); x.add_argument("--cases", required=True)
+    x = iss.add_parser("open"); x.add_argument("--batch"); x.add_argument("--cases", default="")
+    x.add_argument("--module"); x.add_argument("--service")
     x.add_argument("--symptom", required=True); x.add_argument("--stage")
+    sv = sub.add_parser("service", help="running services: what they serve, from which code (C17)").add_subparsers(dest="sub", required=True)
+    x = sv.add_parser("list"); x.add_argument("--all", action="store_true")
+    x = sv.add_parser("adopt"); x.add_argument("port", type=int); x.add_argument("--name", required=True)
+    x.add_argument("--about", required=True); x.add_argument("--data", action="append"); x.add_argument("--built-by")
+    x.add_argument("--module")
+    x = sv.add_parser("event"); x.add_argument("name"); x.add_argument("detail")
+    x = sv.add_parser("retire"); x.add_argument("name"); x.add_argument("--why", required=True)
+    nt = sub.add_parser("note", help="durable facts about a module, a service or the project (C17)").add_subparsers(dest="sub", required=True)
+    x = nt.add_parser("add"); x.add_argument("subject"); x.add_argument("text"); x.add_argument("--why", default="")
+    x = nt.add_parser("list"); x.add_argument("subject", nargs="?"); x.add_argument("--all", action="store_true")
+    x = nt.add_parser("retire"); x.add_argument("id", type=int); x.add_argument("--why", required=True)
+    x = sub.add_parser("brief", help="one screen on a module or a service before touching it"); x.add_argument("subject")
     x = iss.add_parser("from-review"); x.add_argument("batch"); x.add_argument("--stage", default="check")
     x = iss.add_parser("list"); x.add_argument("--all", action="store_true"); x.add_argument("--batch")
     x = iss.add_parser("show"); x.add_argument("id", type=int)
@@ -735,11 +748,41 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 artifacts.set_status(con, args.name, args.status, args.why); print("ok")
             return 0
+        if args.cmd in ("service", "note", "brief"):
+            from . import knowledge
+            if args.cmd == "brief":
+                print(knowledge.brief(con, args.subject)); return 0
+            if args.cmd == "note":
+                if args.sub == "add":
+                    print(f"note #{knowledge.note_add(con, args.subject, args.text, args.why)} on {args.subject}")
+                elif args.sub == "retire":
+                    knowledge.note_retire(con, args.id, args.why); print(f"note #{args.id} retired")
+                else:
+                    for n in knowledge.notes(con, args.subject, args.all):
+                        print(f"#{n['id']:<4} {n['at'][:10]} {n['subject']:<20} {n['text']}" + ("" if n["status"] == "active" else f"  [retired: {n['retired_why']}]"))
+                return 0
+            if args.sub == "adopt":
+                r = knowledge.adopt(con, args.port, args.name, args.about, args.data, args.built_by, args.module)
+                print(f"service {r['name']} :{r['port']} registered; module {r['module'] or '-'}; code {r['code_ref']}; data {', '.join(r['data']) or '-'}")
+            elif args.sub == "event":
+                knowledge.service_event(con, args.name, args.detail); print(f"{args.name}: recorded")
+            elif args.sub == "retire":
+                knowledge.retire(con, args.name, args.why); print(f"{args.name}: retired")
+            else:
+                d = knowledge.discover(con)
+                for s_ in knowledge.services(con, args.all):
+                    print(f"{s_['name']:<26} :{s_['port']:<5} {s_['status']:<7} {s_['module'] or '-':<12} {s_['about'][:70]}")
+                    print(f"{'':<34}code {s_['code_ref']}")
+                for u in d["unregistered"]:
+                    print(f"{'(unregistered)':<26} :{u['port']:<5} {'live':<7} {u['module'] or '-':<12} {u['cmd'][:70]}")
+                    print(f"{'':<34}code {u['code_ref']}; unit {u['unit'] or '-'}")
+            return 0
         if args.cmd == "issue":
             S = {"open": "待修", "in_progress": "修复中", "fixed": "已修复，待确认", "verified": "已确认", "closed": "已关闭"}
             if args.sub == "open":
-                i = issues.open_(con, args.batch, [c for c in args.cases.split(",") if c], args.symptom, args.stage)
-                print(f"issue #{i} opened on {args.batch}")
+                i = issues.open_(con, args.batch, [c for c in args.cases.split(",") if c], args.symptom, args.stage,
+                                 module=args.module, service=args.service)
+                print(f"issue #{i} opened on {args.batch or args.module or args.service}")
             elif args.sub == "from-review":
                 ids = issues.from_review(con, args.batch, args.stage)
                 print(f"{len(ids)} issue(s) opened: {ids}" if ids else "no uncovered wrong verdicts")

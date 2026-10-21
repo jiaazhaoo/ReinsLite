@@ -6,6 +6,7 @@ and the session that opened it is told which version to resume with -> that sess
 -> closed. Every step is on the issue; the board shows open issues on the run card and the cause on the dev card.
 
     reins issue open --batch B --cases ID,ID --symptom '...' [--stage S]
+    reins issue open --module M | --service S --symptom '...'      a problem that belongs to no batch (C17)
     reins issue from-review B [--stage check]           one issue per error_type from reviewers' 'wrong' verdicts
     reins issue list [--all]
     reins issue show N
@@ -68,12 +69,33 @@ def get(con, iid: int):
     return row
 
 
-def open_(con, batch: str, cases: list[str], symptom: str, stage: str | None = None, error_type: str | None = None,
-          from_session: str | None = None) -> int:
+def open_(con, batch: str | None, cases: list[str], symptom: str, stage: str | None = None, error_type: str | None = None,
+          from_session: str | None = None, module: str | None = None, service: str | None = None) -> int:
+    """On a batch (named cases, verified on them), or on a module or a running service: a problem that belongs to no
+    batch (a review server missing a basemap) still needs one place where the next session finds it (C17)."""
     ensure(con)
-    batches.get(con, batch)
+    from . import knowledge
+    knowledge.ensure(con)
     if not symptom.strip() or len(symptom.strip()) < 8:
         raise ReinsError("symptom: one line saying what is wrong, as seen on the cases")
+    if not batch:
+        if bool(module) == bool(service):
+            raise ReinsError("an issue is on a batch (--batch), a module (--module) or a service (--service)")
+        if module and not con.execute("SELECT 1 FROM module WHERE name=?", (module,)).fetchone():
+            raise ReinsError(f"no module {module!r}")
+        if service:
+            knowledge.get(con, service)
+        with tx(con):
+            cur = con.execute("INSERT INTO issue (at, batch_id, stage, cases, symptom, status, from_session, error_type, module, service)"
+                              " VALUES (?, '', ?, ?, ?, 'open', ?, ?, ?, ?)",
+                              (now(), stage, json.dumps(sorted(set(cases))), symptom.strip(), from_session or session(),
+                               error_type, module, service))
+            iid = cur.lastrowid
+            _ev(con, iid, "opened", f"on {'module ' + module if module else 'service ' + service}: {symptom.strip()}")
+            if service:
+                knowledge._event(con, service, "issue_opened", f"#{iid}: {symptom.strip()[:120]}")
+        return iid
+    batches.get(con, batch)
     members = {r[0] for r in con.execute("SELECT case_id FROM batch_case WHERE batch_id=?", (batch,))}
     bad = [c for c in cases if c not in members]
     if bad:
@@ -133,6 +155,17 @@ def fixed(con, version: str) -> list[int]:
         with tx(con):
             con.execute("UPDATE issue SET status='fixed' WHERE id=?", (row["id"],))
             _ev(con, row["id"], "fixed", f"{version} released")
+        if not row["batch_id"]:                          # on a module or a service: tell the opener, nothing to resume
+            from . import inbox
+            on = row["module"] or row["service"]
+            notify.send(con, f"issue_fixed:{row['id']}", "action", f"issue #{row['id']} fixed by {version}: {row['symptom'][:80]}",
+                        f"on {on}; a service running the old code needs a restart from the new release; then reins issue verify {row['id']}",
+                        cooldown_min=0)
+            if row["from_session"]:
+                inbox.send(con, row["from_session"], f"issue #{row['id']} fixed by {version}",
+                           f"on {on}; restart services that run it from the new release, then: reins issue verify {row['id']}")
+            out.append(row["id"])
+            continue
         b = batches.get(con, row["batch_id"])
         notify.send(con, f"issue_fixed:{row['id']}", "action",
                     f"issue #{row['id']} fixed by {version}: {row['symptom'][:80]}",
