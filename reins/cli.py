@@ -37,6 +37,7 @@ Project settings come from the nearest reins.toml (project, case_id_pattern, [de
 from __future__ import annotations
 
 import argparse
+import re
 import json
 import sys
 import tomllib
@@ -376,6 +377,8 @@ def build_parser() -> argparse.ArgumentParser:
     x = nt.add_parser("list"); x.add_argument("subject", nargs="?"); x.add_argument("--all", action="store_true")
     x = nt.add_parser("retire"); x.add_argument("id", type=int); x.add_argument("--why", required=True)
     x = sub.add_parser("brief", help="one screen on a module or a service before touching it"); x.add_argument("subject")
+    x = sub.add_parser("changes", help="the live feed of changes to modules and services")
+    x.add_argument("subject", nargs="?"); x.add_argument("--since", default="24h", help="e.g. 2h, 3d")
     x = iss.add_parser("from-review"); x.add_argument("batch"); x.add_argument("--stage", default="check")
     x = iss.add_parser("list"); x.add_argument("--all", action="store_true"); x.add_argument("--batch")
     x = iss.add_parser("show"); x.add_argument("id", type=int)
@@ -747,6 +750,20 @@ def main(argv: list[str] | None = None) -> int:
                 print(artifacts.diff(con, args.a, args.b) or "(identical)")
             else:
                 artifacts.set_status(con, args.name, args.status, args.why); print("ok")
+            return 0
+        if args.cmd == "changes":
+            from . import knowledge
+            import datetime as _dt
+            m = re.fullmatch(r"(\d+)([hd])", args.since)
+            if not m:
+                raise ReinsError("--since: like 2h or 3d")
+            since = (_dt.datetime.now() - _dt.timedelta(hours=int(m.group(1)) * (24 if m.group(2) == "d" else 1))).isoformat(timespec="seconds")
+            knowledge.ensure(con)
+            q, a = "SELECT * FROM change WHERE at>?", [since]
+            if args.subject:
+                q += " AND subject=?"; a.append(args.subject)
+            for r in con.execute(q + " ORDER BY id", a):
+                print(f"{r['at'][5:16]}  {r['subject']:<26} {r['kind']:<16} {(r['detail'] or '')[:100]}  ({str(r['session'] or '')[:8]})")
             return 0
         if args.cmd in ("service", "note", "brief"):
             from . import knowledge

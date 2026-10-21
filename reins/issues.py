@@ -59,6 +59,12 @@ def ensure(con) -> None:
 def _ev(con, iid: int, event: str, detail: str = "") -> None:
     con.execute("INSERT INTO issue_event (at, issue_id, event, detail, session) VALUES (?,?,?,?,?)",
                 (now(), iid, event, detail, session()))
+    cols = {r[1] for r in con.execute("PRAGMA table_info(issue)")}
+    if "module" in cols:                                                 # a problem on a module or a service: the live feed
+        row = con.execute("SELECT module, service, symptom FROM issue WHERE id=?", (iid,)).fetchone()
+        if row and (row["module"] or row["service"]):
+            from . import knowledge
+            knowledge.changed(con, row["module"] or row["service"], f"problem_{event}", f"#{iid} {row['symptom'][:120]}: {detail[:120]}")
 
 
 def get(con, iid: int):
@@ -92,8 +98,6 @@ def open_(con, batch: str | None, cases: list[str], symptom: str, stage: str | N
                                error_type, module, service))
             iid = cur.lastrowid
             _ev(con, iid, "opened", f"on {'module ' + module if module else 'service ' + service}: {symptom.strip()}")
-            if service:
-                knowledge._event(con, service, "issue_opened", f"#{iid}: {symptom.strip()[:120]}")
         return iid
     batches.get(con, batch)
     members = {r[0] for r in con.execute("SELECT case_id FROM batch_case WHERE batch_id=?", (batch,))}

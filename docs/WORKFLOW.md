@@ -253,6 +253,11 @@ council，一个会话只读了服务器参数就说不行；另一个会话正�
   这个模块、未解决的问题、事实、相关决策。会话第一次改某个模块的文件、或在对话里提到某个服务的名字或端口时，
   钩子自动把这份简报给它；会话开始时列出所有登记的服务和没登记的端口。
 - **会话用途**：会话没有 `reins session bind` 时，用它收到的第一句话当用途，别的会话能看到它在做什么。
+- **实时**：每个变化发生时就记成一条变更（事实增删、问题开/接/修/关、服务登记/被改动/重启/下线、模块开始开发/合并/放弃），
+  `reins changes [主题] --since 2h` 可查。会话关注它看过简报、改过文件、动过服务、正在开发的主题（含该模块的服务）；
+  别的会话的变化在它**下一次操作结束或下一次提问时**送到。会话执行的命令如果动了登记过的服务（重启它的单元、写它的
+  数据目录、在那里跑脚本、改它的数据库），钩子当场记一笔，不用会话自觉。改过模块或服务却一条事实都没留的会话，
+  在这一轮结束前被问一次。钩子配置用 `bin/reins-install-hooks` 安装或更新（会先备份 settings.json）。
 
 ## 改 ReinsLite 本身（2026-10-18）
 
@@ -288,7 +293,7 @@ loginctl enable-linger $USER
   "SessionStart":     [{"hooks": [H]}],
   "UserPromptSubmit": [{"hooks": [H]}],
   "PreToolUse":       [{"matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit", "hooks": [H]}],
-  "PostToolUse":      [{"matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [H]}],
+  "PostToolUse":      [{"matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit", "hooks": [H]}],
   "Stop":             [{"hooks": [H]}],
   "SessionEnd":       [{"hooks": [H]}]
 }

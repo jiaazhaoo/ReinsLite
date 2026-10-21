@@ -61,6 +61,37 @@ def _briefs(con, sid: str, subjects: list[str]) -> list[str]:
     return out
 
 
+def _live(con, sid: str) -> list[str]:
+    """What other sessions changed meanwhile about what this one is working on (the live feed, C17)."""
+    try:
+        from reins import knowledge
+        text = knowledge.render_changes(knowledge.pending(con, sid))
+        return [text] if text else []
+    except Exception as e:                                                      # noqa: BLE001
+        log(f"live: {e!r}")
+        return []
+
+
+def _ask_for_facts(con, sid: str) -> str:
+    try:
+        from reins import knowledge
+        from reins.store import now, tx
+        subj = knowledge.unrecorded(con, sid)
+        if not subj:
+            return ""
+        with tx(con):
+            for x in subj:
+                con.execute("INSERT INTO session_event (at, session_id, kind, detail) VALUES (?,?, 'asked_note', ?)", (now(), sid, x))
+        return ("[reins] Before you stop: you changed " + ", ".join(subj) + " and left nothing for the next session. "
+                "Write what will still be true tomorrow and someone would otherwise have to rediscover (how it is built, "
+                "what it can and cannot do, what you changed on a live service), one line each: "
+                "reins note add SUBJECT '...'  or, for a change to a live service, reins service event NAME '...'. "
+                "If there is nothing lasting, say so in one line and stop. (Asked once per subject.)")
+    except Exception as e:                                                      # noqa: BLE001
+        log(f"ask: {e!r}")
+        return ""
+
+
 def _purpose_from_prompt(con, sid: str, prompt: str) -> None:
     """A session that never said what it is for is known by its first request, so the others can see it."""
     text = " ".join((prompt or "").split())
@@ -106,6 +137,11 @@ def main() -> int:
             from reins.store import now, tx
             with tx(con):
                 con.execute("UPDATE session SET last_seen=?, status='active' WHERE id=?", (now(), sid))
+            if ev == "Stop" and not data.get("stop_hook_active"):
+                ask = _ask_for_facts(con, sid)
+                if ask:                                  # changed a module or a service and left no fact: ask once
+                    print(json.dumps({"decision": "block", "reason": ask}))
+                    return 0
             if ev == "UserPromptSubmit":                      # deliver what other sessions sent to this one
                 from reins import inbox
                 prompt = data.get("prompt") or ""
@@ -115,6 +151,7 @@ def main() -> int:
                 if msgs:
                     parts.append(inbox.render(msgs))
                 parts += _briefs(con, sid, _subjects_in(con, prompt))
+                parts += _live(con, sid)
                 if parts:
                     print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
                                                              "additionalContext": "\n\n".join(parts)}}))
@@ -144,16 +181,35 @@ def main() -> int:
                 print(f"reins guard: {msg}", file=sys.stderr)
                 return 2
             return 0
+        if ev == "PostToolUse" and tool == "Bash":
+            parts = []
+            try:
+                from reins import knowledge
+                hit = knowledge.capture_command(con, sid, inp.get("command", ""), cwd)   # recorded as it ran
+                parts += _briefs(con, sid, hit)
+            except Exception as e:                                              # noqa: BLE001
+                log(f"capture: {e!r}")
+            parts += _live(con, sid)
+            if parts:
+                print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "\n\n".join(parts)}}))
+            return 0
         if ev == "PostToolUse" and tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
             path = inp.get("file_path") or inp.get("notebook_path") or ""
+            parts = []
             if path:
                 sessions.event(con, sid, "edit", cwd=cwd, path=os.path.abspath(path))
                 row = con.execute("SELECT module FROM session_event WHERE session_id=? AND kind='edit' ORDER BY id DESC LIMIT 1",
                                   (sid,)).fetchone()
-                parts = _briefs(con, sid, [row[0]] if row and row[0] else [])
-                if parts:                                    # the first edit of a module: what is known about it
-                    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse",
-                                                             "additionalContext": "\n\n".join(parts)}}))
+                try:
+                    from reins import knowledge
+                    hit = knowledge.capture_edit(con, sid, path)
+                except Exception as e:                                          # noqa: BLE001
+                    log(f"capture: {e!r}")
+                    hit = []
+                parts = _briefs(con, sid, ([row[0]] if row and row[0] else []) + hit)   # the first edit: what is known
+            parts += _live(con, sid)
+            if parts:
+                print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "\n\n".join(parts)}}))
             return 0
         return 0
     except Exception as e:                                                      # noqa: BLE001
