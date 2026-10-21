@@ -224,11 +224,16 @@ def approve_spend(con, batch: str, cap: float, who: str = "user") -> None:
         b = get(con, batch)
         _live(b)
         from . import spend as _spend
-        u = _spend.pool_usage(con)
-        others = u["open_caps"] - b["spend_cap"]
-        if others + cap > pool["daily_cap"] + 1e-9 and cap > b["spend_cap"]:
-            raise ReinsError(f"open batch caps ${others:.2f} + ${cap:.2f} exceed today's pool ${pool['daily_cap']:.2f}; "
-                             f"close or lower another batch first (reins batch list --live)")
+        c = _spend.commitment(con, exclude=batch)
+        mine = con.execute("SELECT COALESCE(SUM(amount),0) FROM spend WHERE batch_id=?", (batch,)).fetchone()[0]
+        need = c["today"] + c["held_total"] + max(0.0, cap - mine)
+        if need > pool["daily_cap"] + 1e-9 and cap > b["spend_cap"]:
+            top = "; ".join(f"{h['batch_id']} ({h['status']}, ${h['left']:.2f} of ${h['cap']:.2f} unspent: "
+                            f"reins batch approve {h['batch_id']} --cap {h['spent']:.2f})" for h in c["held"][:5])
+            raise ReinsError(f"today's pool ${pool['daily_cap']:.2f} would be over-committed: ${c['today']:.2f} spent or reserved "
+                             f"today + ${c['held_total']:.2f} other live batches may still spend + ${max(0.0, cap - mine):.2f} for "
+                             f"this one. Shrink a batch that will not use its cap to what it spent, or close it: {top}. "
+                             f"Raising the pool is a decision for the user, not the way past this check")
         con.execute("UPDATE batch SET spend_cap=? WHERE batch_id=?", (cap, batch))
         _event(con, batch, "spend_approved", f"${cap:.2f} by {who} (was ${b['spend_cap']:.2f})")
 

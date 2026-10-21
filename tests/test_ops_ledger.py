@@ -38,8 +38,13 @@ class Ops(unittest.TestCase):
         text = (self.tmp / "home" / "config.toml").read_text()
         self.assertIn("daily_cap = 30      # USD a day", text)                   # the comment stays
         settings_edit.set_(self.con, "pool.hourly_cap", "8", "new key in an existing section")
-        settings_edit.set_(self.con, "backup.dir", "/other/disk", "new section")
-        settings_edit.set_(self.con, "disk_warn_pct", "80", "top level")
+        settings_edit.set_(self.con, "backup.dir", "/other/disk", "new section", new_key=True)
+        settings_edit.set_(self.con, "disk_warn_pct", "80", "top level", new_key=True)
+        with self.assertRaises(ReinsError) as e:
+            settings_edit.set_(self.con, "pool", "270", "the whole section is not a number")
+        self.assertIn("pool.daily_cap", str(e.exception))
+        with self.assertRaises(ReinsError):
+            settings_edit.set_(self.con, "pool.dayly_cap", "270", "a typo is not a new setting")
         cfg = tomllib.loads((self.tmp / "home" / "config.toml").read_text())
         self.assertEqual((cfg["pool"]["hourly_cap"], cfg["backup"]["dir"], cfg["disk_warn_pct"], cfg["resources"]["max_fraction"]),
                          (8, "/other/disk", 80, 0.75))

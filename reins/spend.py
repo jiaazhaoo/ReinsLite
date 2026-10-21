@@ -99,7 +99,38 @@ def pool_usage(con) -> dict:
         "SELECT b.owner_session, COALESCE(SUM(s.amount),0) FROM spend s JOIN batch b USING (batch_id) WHERE s.at>=?"
         " GROUP BY b.owner_session", (today,))}
     return {"hour": spent_since(hour), "today": spent_since(today), "week": spent_since(week), "today_by_session": by_session,
-            "open_caps": con.execute("SELECT COALESCE(SUM(spend_cap),0) FROM batch WHERE status IN ('open','running','paused')").fetchone()[0]}
+            "open_caps": commitment(con)["held_total"]}            # what live batches may still spend (not their full caps)
+
+
+DORMANT_H = 24       # a batch paused this long holds no budget; resuming it is checked again at every paid call
+
+
+def commitment(con, exclude: str | None = None) -> dict:
+    """What today's pool is really committed to: money spent or reserved today, plus what live batches may still spend
+    (cap minus everything they already spent, over all days). A batch paused for a day or more holds nothing.
+
+    Until 2026-10-21 the approval check added the full caps of every unclosed batch, mostly money spent days before,
+    and compared that to the DAILY cap: it refused a $1.50 experiment on a day with $0 spent, and in ten days the
+    daily cap was raised 20 -> 40 -> 80 -> 150 -> 200 -> 260 to get past it, while no day ever spent more than $73."""
+    from . import batches
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+    spent_today = con.execute("SELECT COALESCE(SUM(amount),0) FROM spend WHERE at>=?", (today,)).fetchone()[0]
+    reserved = con.execute("SELECT COALESCE(SUM(amount),0) FROM spend_reserve WHERE state='open'").fetchone()[0]
+    held = []
+    for b in con.execute("SELECT batch_id, status, spend_cap FROM batch WHERE status IN ('open','running','paused') AND spend_cap>0"):
+        if b["batch_id"] == exclude:
+            continue
+        idle = batches.idle_hours(con, b["batch_id"])
+        if b["status"] == "paused" and idle is not None and idle >= DORMANT_H:
+            continue
+        spent = con.execute("SELECT COALESCE(SUM(amount),0) FROM spend WHERE batch_id=?", (b["batch_id"],)).fetchone()[0]
+        left = max(0.0, b["spend_cap"] - spent)
+        if left > 0.005:
+            held.append({"batch_id": b["batch_id"], "status": b["status"], "cap": b["spend_cap"], "spent": round(spent, 2),
+                         "left": round(left, 2)})
+    held.sort(key=lambda h: -h["left"])
+    return {"today": round(spent_today + reserved, 2), "held": held, "held_total": round(sum(h["left"] for h in held), 2)}
 
 
 def pool_check(con, batch: str, amount: float) -> None:
