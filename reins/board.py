@@ -490,7 +490,7 @@ def state(con) -> dict:
     running = running_cards(con)
     developing = in_progress(con)
     return {"at": dt.datetime.now().isoformat(timespec="seconds"), "pipelines": pipeline_map(con, running, developing),
-            "cost": spend.cost_view(con), "spend_all": spend.all_time(con), "pool": {**spend.pool_usage(con), "limits": config()["pool"]},
+            "cost": spend.cost_view(con), "spend_all": spend.all_time(con), "pool": {**spend.pool_usage(con), "limits": config()["pool"]}, "pools": spend.pools_view(con),
             "notifications": _latest_notes(con), "system": _system_notes(con), "resources": _resources(con),
             "in_progress": developing, "dev_history": dev_history(con), "unregistered_dev": unregistered_dev(con),
             "running": running, "unregistered_runs": sessions.unregistered_runs(con), "machine_jobs": machine_jobs(con),
