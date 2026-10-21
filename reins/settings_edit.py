@@ -43,15 +43,21 @@ def get(key: str):
 def set_(con, key: str, raw: str, why: str, by: str = "user", new_key: bool = False) -> dict:
     if not why.strip():
         raise ReinsError("a config change needs --why: one line saying why")
-    if not re.fullmatch(r"[A-Za-z_][\w-]*(\.[A-Za-z_][\w-]*)?", key):
-        raise ReinsError(f"key {key!r}: name or section.name")
-    section, name = key.split(".", 1) if "." in key else (None, key)
+    if not re.fullmatch(r"[A-Za-z_][\w-]*(\.[A-Za-z_][\w-]*){0,2}", key):
+        raise ReinsError(f"key {key!r}: name, section.name or section.sub.name")
+    section, name = key.rsplit(".", 1) if "." in key else (None, key)          # pool.production.daily_cap -> [pool.production]
     value, toml = _literal(raw)
     old = get(key)
     cur = config()
-    if section is None and isinstance(cur.get(name), dict):
-        raise ReinsError(f"{key} is a section; set one of its values: " + ", ".join(f"{key}.{k}" for k in cur[name]))
-    if old is None and not new_key:
+    node = cur
+    for part in (section.split(".") if section else []):
+        node = node.get(part) if isinstance(node, dict) else None
+    if isinstance(node, dict) and isinstance(node.get(name), dict) or section is None and isinstance(cur.get(name), dict):
+        cur = node if isinstance(node, dict) and isinstance(node.get(name), dict) else cur
+        raise ReinsError(f"{key} is a section; set one of its values: " + ", ".join(f"{key}.{k}" for k in cur[name] if not isinstance(cur[name][k], dict)))
+    in_pool = bool(section) and section.startswith("pool.") and name in ("hourly_cap", "daily_cap", "weekly_cap", "max_batch_cap",
+                                                                         "per_session_daily_cap", "types")
+    if old is None and not new_key and not in_pool:                 # a pool's limit may be set for the first time
         known = sorted(f"{k}.{kk}" for k, v in cur.items() if isinstance(v, dict) for kk in v) + sorted(k for k, v in cur.items() if not isinstance(v, dict))
         close = [k for k in known if name in k][:6]
         raise ReinsError(f"{key} is not a known setting" + (f" (did you mean {', '.join(close)}?)" if close else "")
@@ -85,7 +91,9 @@ def set_(con, key: str, raw: str, why: str, by: str = "user", new_key: bool = Fa
         parsed = tomllib.loads(new_text)
     except tomllib.TOMLDecodeError as e:
         raise ReinsError(f"the change would break {p}: {e}")
-    got = parsed.get(section, {}).get(name) if section else parsed.get(name)
+    got = parsed
+    for part in (section.split(".") if section else []) + [name]:
+        got = got.get(part) if isinstance(got, dict) else None
     if got != value:
         raise ReinsError(f"{key} would read {got!r}, not {value!r}; edit {p} by hand")
     hist = home() / "config-history"
@@ -99,7 +107,7 @@ def set_(con, key: str, raw: str, why: str, by: str = "user", new_key: bool = Fa
     tmp.replace(p)
     did = decisions.add(con, f"config: {key} {old!r} -> {value!r}", why.strip(), by)
     return {"key": key, "old": old, "new": value, "decision": did, "kept": str(kept) if kept else None,
-            "usage": usage(con) if section == "pool" else None}
+            "usage": usage(con) if section and section.split(".")[0] == "pool" else None}
 
 
 def usage(con) -> str:

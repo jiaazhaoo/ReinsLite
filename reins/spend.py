@@ -82,32 +82,84 @@ def estimate(con, batch: str, stage: str, model: str) -> float:
 
 
 # ------------------------------------------------------------------ the pool: all sessions together
-def pool_usage(con) -> dict:
-    """Spent + reserved across every batch: last hour, today, this week; today per owning session."""
+LIMITS = ("hourly_cap", "daily_cap", "weekly_cap", "max_batch_cap", "per_session_daily_cap")
+DEFAULT_POOLS = {"production": ["production", "rework"]}     # every other batch type is development
+
+
+def pools() -> dict[str, dict]:
+    """The budget pools: config.toml [pool.<name>] tables, each with `types` (batch types it pays for) and any of
+    LIMITS. One pool without `types` (or the pool named development) takes every type no other pool claims. With no
+    [pool.<name>] tables there are still two pools, production and development, limited only by the machine's [pool]."""
+    raw = {k: v for k, v in config()["pool"].items() if isinstance(v, dict)}
+    out = {}
+    for name, types in DEFAULT_POOLS.items():
+        out[name] = {"types": types}
+    out.setdefault("development", {"types": None})
+    for name, t in raw.items():
+        out[name] = {**out.get(name, {}), **t}
+        if "types" not in t and name not in DEFAULT_POOLS:
+            out[name]["types"] = None
+    return out
+
+
+def pool_of(type_: str) -> str:
+    ps = pools()
+    for name, p in ps.items():
+        if p.get("types") and type_ in p["types"]:
+            return name
+    return next((n for n, p in ps.items() if not p.get("types")), "development")
+
+
+def _types_of(pool: str | None) -> list[str] | None:
+    """The batch types a pool pays for (None: all of them, the machine)."""
+    if pool is None:
+        return None
+    from .names import BATCH_TYPES
+    return [t for t in BATCH_TYPES if pool_of(t) == pool]
+
+
+def pool_usage(con, pool: str | None = None) -> dict:
+    """Spent + reserved: last hour, today, this week; today per owning session. For one pool, or the machine (None)."""
     import datetime as _dt
     now_ = _dt.datetime.now()
     hour = (now_ - _dt.timedelta(hours=1)).isoformat(timespec="seconds")
     today = now_.date().isoformat()
     week = (now_.date() - _dt.timedelta(days=7)).isoformat()
+    types = _types_of(pool)
+    extra, args = ("", ()) if types is None else (f" AND b.type IN ({','.join('?' * len(types))})", tuple(types))
 
-    def spent_since(ts, extra="", args=()):
-        s = con.execute(f"SELECT COALESCE(SUM(amount),0) FROM spend s JOIN batch b USING (batch_id) WHERE s.at>=? {extra}", (ts, *args)).fetchone()[0]
-        r = con.execute(f"SELECT COALESCE(SUM(amount),0) FROM spend_reserve s JOIN batch b USING (batch_id) WHERE state='open' AND s.at>=? {extra}", (ts, *args)).fetchone()[0]
+    def spent_since(ts):
+        s = con.execute(f"SELECT COALESCE(SUM(amount),0) FROM spend s JOIN batch b USING (batch_id) WHERE s.at>=?{extra}", (ts, *args)).fetchone()[0]
+        r = con.execute(f"SELECT COALESCE(SUM(amount),0) FROM spend_reserve s JOIN batch b USING (batch_id) WHERE state='open' AND s.at>=?{extra}",
+                        (ts, *args)).fetchone()[0]
         return s + r
 
     by_session = {r[0]: r[1] for r in con.execute(
-        "SELECT b.owner_session, COALESCE(SUM(s.amount),0) FROM spend s JOIN batch b USING (batch_id) WHERE s.at>=?"
-        " GROUP BY b.owner_session", (today,))}
+        f"SELECT b.owner_session, COALESCE(SUM(s.amount),0) FROM spend s JOIN batch b USING (batch_id) WHERE s.at>=?{extra}"
+        " GROUP BY b.owner_session", (today, *args))}
     return {"hour": spent_since(hour), "today": spent_since(today), "week": spent_since(week), "today_by_session": by_session,
-            "open_caps": commitment(con)["held_total"]}            # what live batches may still spend (not their full caps)
+            "open_caps": commitment(con, pool=pool)["held_total"]}   # what live batches may still spend (not their full caps)
+
+
+def pools_view(con) -> list[dict]:
+    """Each pool and the machine: limits, today, this week, what live batches may still spend (the board's cost page)."""
+    out = []
+    machine = {k: v for k, v in config()["pool"].items() if k in LIMITS}
+    for name, p in [(None, {"types": None, **machine})] + list(pools().items()):
+        u = pool_usage(con, name)
+        out.append({"pool": name or "machine", "types": _types_of(name) if name else None,
+                    "limits": {k: p[k] for k in LIMITS if k in p}, "hour": round(u["hour"], 2), "today": round(u["today"], 2),
+                    "week": round(u["week"], 2), "held": round(u["open_caps"], 2)})
+    return out
 
 
 DORMANT_H = 24       # a batch paused this long holds no budget; resuming it is checked again at every paid call
 
 
-def commitment(con, exclude: str | None = None) -> dict:
-    """What today's pool is really committed to: money spent or reserved today, plus what live batches may still spend
-    (cap minus everything they already spent, over all days). A batch paused for a day or more holds nothing.
+def commitment(con, exclude: str | None = None, pool: str | None = None) -> dict:
+    """What a pool (or the machine) is really committed to today: money spent or reserved today, plus what live batches
+    may still spend (cap minus everything they already spent, over all days). A batch paused for a day or more holds
+    nothing.
 
     Until 2026-10-21 the approval check added the full caps of every unclosed batch, mostly money spent days before,
     and compared that to the DAILY cap: it refused a $1.50 experiment on a day with $0 spent, and in ten days the
@@ -115,10 +167,15 @@ def commitment(con, exclude: str | None = None) -> dict:
     from . import batches
     import datetime as _dt
     today = _dt.date.today().isoformat()
-    spent_today = con.execute("SELECT COALESCE(SUM(amount),0) FROM spend WHERE at>=?", (today,)).fetchone()[0]
-    reserved = con.execute("SELECT COALESCE(SUM(amount),0) FROM spend_reserve WHERE state='open'").fetchone()[0]
+    types = _types_of(pool)
+    extra, args = ("", ()) if types is None else (f" AND b.type IN ({','.join('?' * len(types))})", tuple(types))
+    spent_today = con.execute(f"SELECT COALESCE(SUM(amount),0) FROM spend s JOIN batch b USING (batch_id) WHERE s.at>=?{extra}",
+                              (today, *args)).fetchone()[0]
+    reserved = con.execute(f"SELECT COALESCE(SUM(amount),0) FROM spend_reserve s JOIN batch b USING (batch_id) WHERE state='open'{extra}",
+                           args).fetchone()[0]
     held = []
-    for b in con.execute("SELECT batch_id, status, spend_cap FROM batch WHERE status IN ('open','running','paused') AND spend_cap>0"):
+    for b in con.execute(f"SELECT batch_id, status, spend_cap FROM batch b WHERE status IN ('open','running','paused') AND spend_cap>0{extra}",
+                         args):
         if b["batch_id"] == exclude:
             continue
         idle = batches.idle_hours(con, b["batch_id"])
@@ -133,21 +190,29 @@ def commitment(con, exclude: str | None = None) -> dict:
     return {"today": round(spent_today + reserved, 2), "held": held, "held_total": round(sum(h["left"] for h in held), 2)}
 
 
+def limits_for(type_: str) -> list[tuple[str, dict]]:
+    """[(label, limits)] a batch of this type answers to: the machine's [pool], then its own pool's."""
+    machine = {k: v for k, v in config()["pool"].items() if k in LIMITS}
+    name = pool_of(type_)
+    own = {k: v for k, v in pools().get(name, {}).items() if k in LIMITS}
+    return [("machine", machine), (f"{name} pool", own)] if own else [("machine", machine)]
+
+
 def pool_check(con, batch: str, amount: float) -> None:
-    """Would this spend break the pool? Raises CapReached naming the limit."""
-    pool = config()["pool"]
-    u = pool_usage(con)
+    """Would this spend break the machine's pool or the batch's own (production / development)? Raises CapReached."""
     b = batches.get(con, batch)
-    if u["hour"] + amount > pool["hourly_cap"]:
-        raise CapReached(f"pool: ${u['hour']:.2f} spent in the last hour + ${amount:.3f} > hourly cap ${pool['hourly_cap']:.2f}")
-    if u["today"] + amount > pool["daily_cap"]:
-        raise CapReached(f"pool: ${u['today']:.2f} spent today + ${amount:.3f} > daily cap ${pool['daily_cap']:.2f}")
-    if u["week"] + amount > pool["weekly_cap"]:
-        raise CapReached(f"pool: ${u['week']:.2f} spent this week + ${amount:.3f} > weekly cap ${pool['weekly_cap']:.2f}")
-    sess = b["owner_session"]
-    if sess and u["today_by_session"].get(sess, 0) + amount > pool["per_session_daily_cap"]:
-        raise CapReached(f"pool: session {sess[:8]} spent ${u['today_by_session'][sess]:.2f} today + ${amount:.3f} > "
-                         f"per-session daily cap ${pool['per_session_daily_cap']:.2f}")
+    for label, lim in limits_for(b["type"]):
+        u = pool_usage(con, None if label == "machine" else pool_of(b["type"]))
+        if "hourly_cap" in lim and u["hour"] + amount > lim["hourly_cap"]:
+            raise CapReached(f"{label}: ${u['hour']:.2f} spent in the last hour + ${amount:.3f} > hourly cap ${lim['hourly_cap']:.2f}")
+        if "daily_cap" in lim and u["today"] + amount > lim["daily_cap"]:
+            raise CapReached(f"{label}: ${u['today']:.2f} spent today + ${amount:.3f} > daily cap ${lim['daily_cap']:.2f}")
+        if "weekly_cap" in lim and u["week"] + amount > lim["weekly_cap"]:
+            raise CapReached(f"{label}: ${u['week']:.2f} spent this week + ${amount:.3f} > weekly cap ${lim['weekly_cap']:.2f}")
+        sess = b["owner_session"]
+        if sess and "per_session_daily_cap" in lim and u["today_by_session"].get(sess, 0) + amount > lim["per_session_daily_cap"]:
+            raise CapReached(f"{label}: session {sess[:8]} spent ${u['today_by_session'][sess]:.2f} today + ${amount:.3f} > "
+                             f"per-session daily cap ${lim['per_session_daily_cap']:.2f}")
 
 
 def caps(con, batch: str, stage: str) -> tuple[float, float | None]:

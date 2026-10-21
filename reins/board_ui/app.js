@@ -20,8 +20,8 @@ const I18N = {
     releases: "发布记录", releases_sub: "已进生产的版本和它们做了什么", when: "时间", module: "模块", version: "版本",
     what: "这个版本做了什么", gate: "门禁", candidate: "候选版本", unregistered: "还没登记版本", files_changed: "改了 {n} 个文件",
     from_batch: "起因", fixes_issue: "修问题单", last_edit: "最后改动", stalled: "停滞 {h} h", no_gate: "还没过门禁",
-    cost_sub: "预算池、各服务商余额与花费", pool: "预算池", pool_sub: "所有会话合计，经网关", hour: "近 1 小时", today: "今日",
-    week: "本周", open_caps: "活跃批次还可花", batch_cap: "单批上限", session_cap: "单会话每日", providers: "服务商",
+    cost_sub: "预算池、各服务商余额与花费", pool: "整机总额度", pool_sub: "两个池合计不能超过的上限（所有会话，经网关）", hour: "近 1 小时", today: "今日",
+    week: "本周", open_caps: "活跃批次还可花", pools: "两个预算池", pools_sub: "生产（生产、返工批次）和开发（实验、评测、试跑、训练）各自的额度", pool_production: "生产", pool_development: "开发", no_own_cap: "未设本池上限", t_training: "训练", batch_cap: "单批上限", session_cap: "单会话每日", providers: "服务商",
     balance: "余额", calls: "今日调用", no_key: "未配置 key", no_balance_api: "无余额接口", query_failed: "查询失败",
     by_balance: "按余额变化计", per_call: "按调用数 × 牌价估算", ledger_only: "仅网关记账", by_batch: "本周按批次",
     tb_sub: "工作流用到的每一件东西，都有版本", search: "搜索工具…", shelf: "架子", tool: "工具", does: "做什么",
@@ -72,8 +72,8 @@ const I18N = {
     releases: "Releases", releases_sub: "Versions in production and what each did", when: "When", module: "Module", version: "Version",
     what: "What it does", gate: "Gate", candidate: "Candidate", unregistered: "not registered yet", files_changed: "{n} files changed",
     from_batch: "From", fixes_issue: "Fixes issue", last_edit: "Last edit", stalled: "stalled {h} h", no_gate: "not gated yet",
-    cost_sub: "Budget pool, provider balances and spend", pool: "Budget pool", pool_sub: "all sessions, through the gateway", hour: "Last hour", today: "Today",
-    week: "This week", open_caps: "Live batches may still spend", batch_cap: "Per batch", session_cap: "Per session per day", providers: "Providers",
+    cost_sub: "Budget pool, provider balances and spend", pool: "Machine total", pool_sub: "the limit both pools together stay under (all sessions, through the gateway)", hour: "Last hour", today: "Today",
+    week: "This week", open_caps: "Live batches may still spend", pools: "Budget pools", pools_sub: "production (production and rework batches) and development (experiments, evaluations, pilots, training), each with its own limits", pool_production: "Production", pool_development: "Development", no_own_cap: "no pool cap set", t_training: "training", batch_cap: "Per batch", session_cap: "Per session per day", providers: "Providers",
     balance: "Balance", calls: "Calls today", no_key: "no key", no_balance_api: "no balance API", query_failed: "query failed",
     by_balance: "from balance changes", per_call: "calls × list price", ledger_only: "gateway ledger only", by_batch: "This week by batch",
     tb_sub: "Everything the workflow uses, each with a version", search: "Search tools…", shelf: "Shelf", tool: "Tool", does: "Does",
@@ -398,6 +398,16 @@ const VIEWS = {
     const pool = `<div class="card pad">${row(t("hour"), P.hour, L.hourly_cap)}${row(t("today"), P.today, L.daily_cap)}${row(t("week"), P.week, L.weekly_cap)}
       <div class="muted" style="font-size:12.5px;padding-top:12px;border-top:1px solid var(--border);display:flex;gap:18px;flex-wrap:wrap">
       <span>${esc(t("open_caps"))} <b style="color:var(--text)">${usd(P.open_caps)}</b></span><span>${esc(t("batch_cap"))} ≤ ${usd(L.max_batch_cap)}</span><span>${esc(t("session_cap"))} ≤ ${usd(L.per_session_daily_cap)}</span></div></div>`;
+    const pcard = (q) => {                       // one budget pool: production, development (limits unset = only the machine's apply)
+      const lim = q.limits || {}, r = (label, v, cap) => cap != null ? row(label, v, cap)
+        : `<div class="pool-row"><span class="muted">${esc(label)}</span><div class="meter"></div><span class="num"><b>${usd(v)}</b> <span class="faint">${esc(t("no_own_cap"))}</span></span></div>`;
+      return `<div class="card pad"><div class="section-head" style="margin:0 0 8px"><h2 style="font-size:14px">${esc(t("pool_" + q.pool) || q.pool)}</h2>
+        <span class="sub">${esc((q.types || []).map((x) => t("t_" + x)).join(" · "))}</span></div>
+        ${r(t("today"), q.today, lim.daily_cap)}${r(t("week"), q.week, lim.weekly_cap)}
+        <div class="muted" style="font-size:12.5px;padding-top:10px;display:flex;gap:16px;flex-wrap:wrap">
+        <span>${esc(t("open_caps"))} <b style="color:var(--text)">${usd(q.held)}</b></span>${lim.max_batch_cap != null ? `<span>${esc(t("batch_cap"))} ≤ ${usd(lim.max_batch_cap)}</span>` : ""}</div></div>`;
+    };
+    const twoPools = `<div class="grid g2">${(S.pools || []).filter((q) => q.pool !== "machine").map(pcard).join("")}</div>`;
     const prov = `<div class="grid g3">${S.cost.map((c) => `<div class="card pad provider"><div class="name">${esc(c.provider)}
         ${!c.key_present ? badge(t("no_key"), "red") : !c.has_endpoint ? badge(t("no_balance_api")) : c.error ? badge(t("query_failed"), "red") : badge(t("live"), "green", "green")}</div>
         <div class="bal ${c.balance != null && c.balance < 10 ? "low" : ""}">${c.has_endpoint ? usd(c.balance) : "—"}</div>
@@ -412,6 +422,7 @@ const VIEWS = {
         .concat([`<b>${usd(Object.values(v).reduce((x, y) => x + y, 0))}</b>`])));
     return `<div class="page-head"><div><h1>${esc(t("cost"))}</h1><p>${esc(t("cost_sub"))}</p></div></div>
       ${allSpend(S.spend_all)}
+      <div class="section">${sectionHead(t("pools"), t("pools_sub"))}${twoPools}</div>
       <div class="section">${sectionHead(t("pool"), t("pool_sub"))}${pool}</div><div class="section">${sectionHead(t("providers"))}${prov}</div>
       <div class="section">${sectionHead(t("by_batch"))}${table}</div>`;
   },
