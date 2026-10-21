@@ -172,7 +172,7 @@ def once(con=None) -> list[str]:
     from . import sentinel, upkeep
     return ([f"released {n} resource claim(s) of ended processes"] if n else []) + upkeep.reconcile(con) + check_batches(con, cfg) + \
         check_machine(con, cfg) + poll_balances_due(con, cfg) + release_stale_reservations(con, cfg) + sentinel.watch_running(con) + \
-        upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _sync(con)
+        upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _services(con) + _sync(con)
 
 
 def _sync(con) -> list[str]:
@@ -185,6 +185,14 @@ def _sync(con) -> list[str]:
         except Exception as e:                                                  # noqa: BLE001 -- never stop the watchdog
             out.append(f"{f.__module__}.{f.__name__} skipped: {e}")
     return out
+
+
+def _services(con) -> list[str]:
+    from . import knowledge
+    try:
+        return knowledge.watch(con)
+    except Exception as e:                                                      # noqa: BLE001  never stops the watchdog
+        return [f"service watch: {e}"]
 
 
 def release_stale_reservations(con, cfg) -> list[str]:
