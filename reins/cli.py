@@ -172,6 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_parser("check")
     x = c.add_parser("set", help="change one value of config.toml (kept and recorded as a decision)")
     x.add_argument("key"); x.add_argument("value"); x.add_argument("--why", required=True); x.add_argument("--by", default="user")
+    x.add_argument("--new", action="store_true", help="the key does not exist yet")
     x = c.add_parser("show"); x.add_argument("key", nargs="?")
     c.add_parser("history")
     t = sub.add_parser("train", help="training runs in the ledger (reins/training.py)").add_subparsers(dest="sub", required=True)
@@ -429,8 +430,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(v, ensure_ascii=False, indent=1)); return 0
             with _closing(connect()) as c:
                 if args.sub == "set":
-                    r = settings_edit.set_(c, args.key, args.value, args.why, args.by)
+                    r = settings_edit.set_(c, args.key, args.value, args.why, args.by, args.new)
                     print(f"{r['key']}: {r['old']!r} -> {r['new']!r}  (decision #{r['decision']}; previous file {r['kept']})")
+                    if r.get("usage"):
+                        print(f"  {r['usage']}")
                     print("  running services read config.toml on each pass; the gateway and board pick it up without a restart")
                 else:
                     for d in settings_edit.history(c):

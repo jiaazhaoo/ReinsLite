@@ -40,7 +40,7 @@ def get(key: str):
     return cur
 
 
-def set_(con, key: str, raw: str, why: str, by: str = "user") -> dict:
+def set_(con, key: str, raw: str, why: str, by: str = "user", new_key: bool = False) -> dict:
     if not why.strip():
         raise ReinsError("a config change needs --why: one line saying why")
     if not re.fullmatch(r"[A-Za-z_][\w-]*(\.[A-Za-z_][\w-]*)?", key):
@@ -48,6 +48,16 @@ def set_(con, key: str, raw: str, why: str, by: str = "user") -> dict:
     section, name = key.split(".", 1) if "." in key else (None, key)
     value, toml = _literal(raw)
     old = get(key)
+    cur = config()
+    if section is None and isinstance(cur.get(name), dict):
+        raise ReinsError(f"{key} is a section; set one of its values: " + ", ".join(f"{key}.{k}" for k in cur[name]))
+    if old is None and not new_key:
+        known = sorted(f"{k}.{kk}" for k, v in cur.items() if isinstance(v, dict) for kk in v) + sorted(k for k, v in cur.items() if not isinstance(v, dict))
+        close = [k for k in known if name in k][:6]
+        raise ReinsError(f"{key} is not a known setting" + (f" (did you mean {', '.join(close)}?)" if close else "")
+                         + "; add a new one with --new")
+    if old is not None and isinstance(old, (int, float)) != isinstance(value, (int, float)):
+        raise ReinsError(f"{key} is {type(old).__name__} ({old!r}); {raw!r} is not")
     p = _path()
     text = p.read_text(encoding="utf-8") if p.exists() else ""
     lines = text.splitlines()
@@ -88,7 +98,22 @@ def set_(con, key: str, raw: str, why: str, by: str = "user") -> dict:
     tmp.write_text(new_text, encoding="utf-8")
     tmp.replace(p)
     did = decisions.add(con, f"config: {key} {old!r} -> {value!r}", why.strip(), by)
-    return {"key": key, "old": old, "new": value, "decision": did, "kept": str(kept) if kept else None}
+    return {"key": key, "old": old, "new": value, "decision": did, "kept": str(kept) if kept else None,
+            "usage": usage(con) if section == "pool" else None}
+
+
+def usage(con) -> str:
+    """What the pool limits are measured against: actual spend per day, so a raise is decided on numbers."""
+    import datetime as _dt
+    since = (_dt.date.today() - _dt.timedelta(days=30)).isoformat()
+    days = [r[0] for r in con.execute("SELECT SUM(amount) FROM spend WHERE at>=? GROUP BY substr(at,1,10)", (since,))]
+    from . import spend
+    c = spend.commitment(con)
+    if not days:
+        return "no spend in the last 30 days"
+    days.sort()
+    return (f"last 30 days: {len(days)} days with spend, highest ${days[-1]:.2f}/day, median ${days[len(days) // 2]:.2f}; "
+            f"today ${c['today']:.2f}; live batches may still spend ${c['held_total']:.2f}")
 
 
 def history(con) -> list[dict]:
