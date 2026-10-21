@@ -15,6 +15,14 @@ purpose on record; the known problem belonged to no batch, so no issue could hol
     reins brief SUBJECT                              one screen: the live version, who is changing it, the services that
                                                      run it, open problems, facts, decisions
     reins issue open --module M | --service S --symptom '...'      a problem that belongs to no batch
+    reins changes [SUBJECT] [--since 2h]             the live feed
+
+Live (2026-10-21): every change to a subject is a row in `change` the moment it happens (a fact added or retired, a
+problem opened / taken / fixed / closed, a service registered / touched / restarted / down, a module version started /
+released / abandoned). A session follows what it was briefed on, edited, changed or develops; the hook hands it the
+others' changes at its next tool call or prompt. Commands that touch a registered service (restart its unit, write
+into its data, run a script there) are recorded by the hook as they run, without the session saying so; a session that
+changed a subject and wrote no fact is asked for one before it stops, once.
 
 A subject is a module name or a service name. The hook hands a session the brief of a subject the first time the
 session edits the subject's files or names it (a module, a service name, a port) in a prompt.
@@ -59,6 +67,18 @@ CREATE TABLE IF NOT EXISTS service_event (
   detail   TEXT,
   session  TEXT
 );
+CREATE TABLE IF NOT EXISTS change (                -- the live feed: every change to a subject, as it happens
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  at        TEXT NOT NULL,
+  subject   TEXT NOT NULL,                            -- a module or a service
+  kind      TEXT NOT NULL,
+  detail    TEXT,
+  session   TEXT
+);
+CREATE TABLE IF NOT EXISTS change_seen (
+  session   TEXT PRIMARY KEY,
+  last_id   INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS note (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   at        TEXT NOT NULL,
@@ -77,8 +97,8 @@ IGNORE = [r"^/usr/(libexec|lib|sbin)/", r"^/(opt|snap)/", r"gnome-", r"^/usr/bin
 
 
 def ensure(con) -> None:
-    if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='note'").fetchone():
-        con.executescript(SCHEMA)
+    if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='change_seen'").fetchone():
+        con.executescript(SCHEMA)                                   # CREATE IF NOT EXISTS: adds what is missing
     from . import issues
     issues.ensure(con)
     cols = {r[1] for r in con.execute("PRAGMA table_info(issue)")}
@@ -176,6 +196,139 @@ def discover(con) -> dict:
 def _event(con, service: str, event: str, detail: str = "", by: str | None = None) -> None:
     con.execute("INSERT INTO service_event (at, service, event, detail, session) VALUES (?,?,?,?,?)",
                 (now(), service, event, detail, by or session()))
+    changed(con, service, event, detail, by)
+
+
+# ------------------------------------------------------------------ the live feed
+def changed(con, subject: str | None, kind: str, detail: str = "", by: str | None = None) -> None:
+    """Record a change to a module or a service the moment it happens (inside the caller's transaction). Sessions that
+    follow the subject get it at their next tool call or prompt (pending())."""
+    if not subject:
+        return
+    if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='change'").fetchone():
+        return                                     # a registry without C17 tables yet: nothing follows anything
+    con.execute("INSERT INTO change (at, subject, kind, detail, session) VALUES (?,?,?,?,?)",
+                (now(), subject, kind, (detail or "")[:300], by or session()))
+
+
+FOLLOW_H = 24          # a session follows what it was briefed on, edited or changed in this window
+
+
+def following(con, sid: str) -> set[str]:
+    """The subjects a session follows: briefed on, its edits' modules, services it changed, its candidates' modules;
+    and the services of the modules it follows."""
+    ensure(con)
+    since = (dt.datetime.now() - dt.timedelta(hours=FOLLOW_H)).isoformat(timespec="seconds")
+    subj = {r[0] for r in con.execute("SELECT detail FROM session_event WHERE session_id=? AND kind='brief'", (sid,))}
+    subj |= {r[0] for r in con.execute("SELECT DISTINCT module FROM session_event WHERE session_id=? AND kind='edit'"
+                                       " AND module IS NOT NULL AND at>?", (sid, since))}
+    subj |= {r[0] for r in con.execute("SELECT DISTINCT service FROM service_event WHERE session=? AND at>?", (sid, since))}
+    subj |= {r[0] for r in con.execute("SELECT module FROM module_version WHERE session=? AND status='candidate'", (sid,))}
+    mods = set(subj)
+    subj |= {r[0] for r in con.execute(f"SELECT name FROM service WHERE module IN ({','.join('?' * len(mods))})", list(mods))} if mods else set()
+    return {x for x in subj if x}
+
+
+def pending(con, sid: str, limit: int = 12) -> list[dict]:
+    """Changes by other sessions (or the watchdog) to what this session follows, since it was last told; marks them told.
+    A session's first call starts at the current end of the feed: the brief already covers the past."""
+    ensure(con)
+    with tx(con):
+        row = con.execute("SELECT last_id FROM change_seen WHERE session=?", (sid,)).fetchone()
+        top = con.execute("SELECT COALESCE(MAX(id), 0) FROM change").fetchone()[0]
+        if not row:
+            con.execute("INSERT INTO change_seen VALUES (?,?)", (sid, top))
+            return []
+        if top <= row[0]:
+            return []
+        subj = following(con, sid)
+        rows = [dict(r) for r in con.execute("SELECT * FROM change WHERE id>? AND id<=? ORDER BY id", (row[0], top))
+                if r["subject"] in subj and r["session"] != sid]
+        con.execute("UPDATE change_seen SET last_id=? WHERE session=?", (top, sid))
+    return rows[-limit:]
+
+
+def render_changes(rows: list[dict]) -> str:
+    if not rows:
+        return ""
+    lines = ["[reins] Changed meanwhile by other sessions (what you are working on; check before relying on what you saw):"]
+    for r in rows:
+        who = "watchdog" if r["session"] == "watchdog" else f"session {str(r['session'] or '?')[:8]}"
+        lines.append(f"  {r['at'][11:16]} {r['subject']}: {r['kind']} — {(r['detail'] or '')[:160]} ({who})")
+    return "\n".join(lines)
+
+
+# ------------------------------------------------------------------ changes nobody announced
+def _service_dirs(con) -> list[tuple[str, str, str | None]]:
+    out = []
+    for s in con.execute("SELECT name, data, unit, built_by FROM service WHERE status<>'retired'"):
+        for d in json.loads(s["data"] or "[]") + ([str(Path(s["built_by"]).parent)] if s["built_by"] else []):
+            out.append((s["name"], d.rstrip("/"), s["unit"]))
+    return out
+
+
+def capture_command(con, sid: str, cmd: str, cwd: str | None) -> list[str]:
+    """A command that touched a registered service, recorded as that service's event the moment it ran: restarting its
+    unit, writing into its data, running a script there, or opening its database for writing. Returns the services."""
+    ensure(con)
+    from . import sessions
+    hit = {}
+    dirs = _service_dirs(con)
+    units = {u: n for n, _, u in dirs if u}
+    segs = sessions.segments(cmd)
+    targets = sessions.redirect_targets(cmd)
+    for n, d, _ in dirs:                                 # a redirection into its data writes it, whatever the program
+        if any(os.path.abspath(os.path.join(cwd or "/", t)) == d or os.path.abspath(os.path.join(cwd or "/", t)).startswith(d + "/")
+               for t in targets):
+            hit.setdefault(n, cmd.strip().splitlines()[0][:200])
+    for seg in segs:
+        argv = seg["argv"]
+        words = " ".join(argv)
+        if argv[:1] == ["systemctl"] and any(v in argv for v in ("restart", "stop", "start", "reload")):
+            for u, n in units.items():
+                if u in argv or u.removesuffix(".service") in argv:
+                    hit[n] = "systemctl " + " ".join(a for a in argv[1:] if not a.startswith("-"))
+        for n, d, _ in dirs:
+            here = cwd and (cwd.rstrip("/") == d or cwd.startswith(d + "/"))
+            named = any(a == d or a.startswith(d + "/") for a in argv)
+            writes = any(t == d or t.startswith(d + "/") for t in targets) or any(
+                a in ("cp", "mv", "rm", "ln", "rsync", "sqlite3", "tee", "touch", "mkdir") for a in argv[:1])
+            runs = bool(argv) and (re.search(r"python|\.py$|\.sh$|sqlite3", argv[0]) or any(a.endswith((".py", ".sh")) for a in argv[1:2]))
+            if (named or here) and (writes or runs) and not re.match(r"^(cat|ls|head|tail|grep|wc|du|stat|file|less)$", argv[0] if argv else ""):
+                hit.setdefault(n, words[:200])
+    if hit:
+        with tx(con):
+            for n, what in hit.items():
+                _event(con, n, "touched", f"ran: {what}", by=sid)
+    return sorted(hit)
+
+
+def capture_edit(con, sid: str, path: str) -> list[str]:
+    ensure(con)
+    p = os.path.abspath(path)
+    hit = sorted({n for n, d, _ in _service_dirs(con) if p == d or p.startswith(d + "/")})
+    if hit:
+        with tx(con):
+            for n in hit:
+                _event(con, n, "touched", f"edited {p}", by=sid)
+    return hit
+
+
+def unrecorded(con, sid: str) -> list[str]:
+    """Subjects this session changed (touched a service, edited a module) and wrote no fact or event about."""
+    ensure(con)
+    since = con.execute("SELECT started FROM session WHERE id=?", (sid,)).fetchone()
+    since = since[0] if since else "0"
+    changed_ = {r[0] for r in con.execute("SELECT DISTINCT service FROM service_event WHERE session=? AND event='touched' AND at>=?",
+                                          (sid, since))}
+    changed_ |= {r[0] for r in con.execute("SELECT DISTINCT module FROM session_event WHERE session_id=? AND kind='edit'"
+                                           " AND module IS NOT NULL AND at>=?", (sid, since))}
+    told = {r[0] for r in con.execute("SELECT subject FROM note WHERE session=? AND at>=?", (sid, since))}
+    told |= {r[0] for r in con.execute("SELECT service FROM service_event WHERE session=? AND event IN ('changed','registered') AND at>=?",
+                                       (sid, since))}
+    told |= {r[0] for r in con.execute("SELECT module FROM module_version WHERE session=?", (sid,))}   # its about says it
+    asked = {r[0] for r in con.execute("SELECT detail FROM session_event WHERE session_id=? AND kind='asked_note'", (sid,))}
+    return sorted(changed_ - told - asked)
 
 
 def adopt(con, port: int, name: str, about: str, data: list[str] | None = None, built_by: str | None = None,
@@ -254,6 +407,7 @@ def note_add(con, subject: str, text: str, why: str = "") -> int:
     with tx(con):
         cur = con.execute("INSERT INTO note (at, subject, text, why, session) VALUES (?,?,?,?,?)",
                           (now(), subject, text.strip(), why.strip() or None, session()))
+        changed(con, subject, "fact", text.strip())
     return cur.lastrowid
 
 
@@ -272,8 +426,11 @@ def note_retire(con, nid: int, why: str) -> None:
     if not why.strip():
         raise ReinsError("--why: what replaced it or why it is no longer true")
     with tx(con):
-        if not con.execute("UPDATE note SET status='retired', retired_why=? WHERE id=? AND status='active'", (why, nid)).rowcount:
+        row = con.execute("SELECT subject, text FROM note WHERE id=? AND status='active'", (nid,)).fetchone()
+        if not row:
             raise ReinsError(f"no active note #{nid}")
+        con.execute("UPDATE note SET status='retired', retired_why=? WHERE id=?", (why, nid))
+        changed(con, row["subject"], "fact_retired", f"#{nid} ({row['text'][:80]}): {why}")
 
 
 # ------------------------------------------------------------------ the brief

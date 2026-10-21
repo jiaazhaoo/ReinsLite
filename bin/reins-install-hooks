@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Install or update reins's Claude Code hooks in ~/.claude/settings.json (idempotent; other hooks are kept).
+
+Every event goes to hooks/session_hook.py of this checkout. PostToolUse covers Bash too: the live feed of shared
+knowledge (C17) is delivered after every tool call, and commands that touch a registered service are recorded as they
+run. The previous settings file is kept as settings.json.bak-<time>."""
+import json
+import shutil
+import sys
+import time
+from pathlib import Path
+
+here = Path(__file__).resolve().parents[1]
+cmd = f"python3 {here / 'hooks' / 'session_hook.py'}"
+WANT = {"SessionStart": None, "SessionEnd": None, "UserPromptSubmit": None, "Stop": None,
+        "PreToolUse": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "PostToolUse": "Bash|Edit|Write|MultiEdit|NotebookEdit"}
+f = Path.home() / ".claude" / "settings.json"
+cfg = json.loads(f.read_text()) if f.exists() else {}
+hooks = cfg.setdefault("hooks", {})
+changed = []
+for ev, matcher in WANT.items():
+    groups = hooks.setdefault(ev, [])
+    mine = [g for g in groups if any("session_hook.py" in h.get("command", "") for h in g.get("hooks", []))]
+    entry = {"hooks": [{"type": "command", "command": cmd}]}
+    if matcher:
+        entry = {"matcher": matcher, **entry}
+    if mine == [entry]:
+        continue
+    hooks[ev] = [g for g in groups if g not in mine] + [entry]
+    changed.append(ev)
+if not changed:
+    print(f"{f}: reins hooks already up to date")
+    sys.exit(0)
+if f.exists():
+    bak = f.with_name(f"settings.json.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+    shutil.copy2(f, bak)
+    print(f"kept the previous file: {bak}")
+f.parent.mkdir(parents=True, exist_ok=True)
+f.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
+print(f"{f}: reins hooks updated for {', '.join(changed)} (new sessions pick them up; running ones at their next start)")

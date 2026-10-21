@@ -41,6 +41,12 @@ def add(con, name: str, project: str, about: str) -> None:
 def _event(con, version: str, event: str, detail: str | None = None) -> None:
     con.execute("INSERT INTO module_event (at, version, event, detail, session) VALUES (?,?,?,?,?)",
                 (now(), version, event, detail, session()))
+    if event in ("created", "released", "abandoned", "retired"):          # the live feed (C17)
+        from . import knowledge
+        row = con.execute("SELECT module, about FROM module_version WHERE version=?", (version,)).fetchone()
+        if row:
+            knowledge.changed(con, row["module"], {"created": "work_started"}.get(event, event),
+                              f"{version}: {(row['about'] or '')[:160]}")
 
 
 def new(con, module: str, suffix: str, about: str, cwd: Path, pins: dict | None = None,
