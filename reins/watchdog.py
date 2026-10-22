@@ -13,6 +13,7 @@ paused (first, so they raise no stall notices), leases nobody can need, an early
 from __future__ import annotations
 
 import datetime as dt
+import os
 import shutil
 import subprocess
 import time
@@ -179,7 +180,8 @@ def once(con=None) -> list[str]:
     from . import sentinel, upkeep
     return ([f"released {n} resource claim(s) of ended processes"] if n else []) + upkeep.reconcile(con) + check_batches(con, cfg) + \
         check_machine(con, cfg) + poll_balances_due(con, cfg) + release_stale_reservations(con, cfg) + sentinel.watch_running(con) + \
-        _lifecycle(con) + upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _services(con) + check_gateway(con, cfg) + _sync(con)
+        _lifecycle(con) + upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _services(con) + check_gateway(con, cfg) + _sync(con) + \
+        (check_code_fresh(con, cfg) if os.environ.get("INVOCATION_ID") else [])   # only the systemd watchdog restarts units
 
 
 def _sync(con) -> list[str]:
@@ -192,6 +194,67 @@ def _sync(con) -> list[str]:
         except Exception as e:                                                  # noqa: BLE001 -- never stop the watchdog
             out.append(f"{f.__module__}.{f.__name__} skipped: {e}")
     return out
+
+
+def _started(unit: str) -> float | None:
+    """Unix time the unit's main process started (systemd), None when unknown or not running."""
+    try:
+        v = subprocess.run(["systemctl", "--user", "show", "-p", "ExecMainStartTimestamp", "--timestamp=unix", "--value", unit],
+                           capture_output=True, text=True, timeout=10).stdout.strip()
+        return float(v.lstrip("@")) if v.lstrip("@") else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def _code_time() -> float | None:
+    """Time of the last commit on the checked-out main that touched the code the services run (reins/, bin/)."""
+    root = Path(__file__).resolve().parents[1]
+    try:
+        v = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%ct", "HEAD", "--", "reins", "bin"],
+                           capture_output=True, text=True, timeout=10).stdout.strip()
+        return float(v) if v else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def check_code_fresh(con, cfg, started=None, code_time=None, inflight=None, restart=None) -> list[str]:
+    """A long-running service keeps the code it started with. `reins dev finish` merges into main but restarts nothing,
+    so 2026-10-22 the gateway ran six hours of code that did not know the batch type `intake` and refused every intake
+    batch's paid call with 401. Each pass: a service whose process started before the last code commit is restarted --
+    the board at once, the gateway only when no paid call is in flight, the watchdog itself last."""
+    started = started or _started
+    ct = (code_time or _code_time)()
+    if not ct:
+        return []
+    units = [("board", cfg.get("board_unit", "reins-board")), ("gateway", cfg.get("gateway_unit", "reins-gateway")),
+             ("watchdog", cfg.get("watchdog_unit", "reins-watchdog"))]
+    out = []
+    for role, unit in units:
+        t = started(unit)
+        if not t or t >= ct:
+            continue
+        if role == "gateway":
+            n = inflight() if inflight else _gateway_inflight(cfg)
+            if n is None or n > 0:
+                out.append(f"{unit} runs code older than main; waiting for {n if n is not None else '?'} paid call(s) to finish")
+                continue
+        do = restart or (lambda u: subprocess.run(["systemctl", "--user", "restart", "--no-block", u],
+                                                   capture_output=True, timeout=30).returncode == 0)
+        did = do(unit)
+        out.append(f"{unit} restarted on new code" if did else f"{unit} runs old code; restart FAILED")
+        notify.send(con, f"code_reload:{unit}", "info" if did else "action",
+                    f"{unit} restarted to load the merged code" if did else f"{unit} runs old code and could not be restarted",
+                    "its process started before the last commit to reins/ or bin/ on main", cooldown_min=0 if did else 60)
+    return out
+
+
+def _gateway_inflight(cfg) -> int | None:
+    import json as _json
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{cfg['gateway_port']}/health/deep", timeout=10) as r:
+            return int(_json.loads(r.read()).get("inflight") or 0)
+    except Exception:                                                            # noqa: BLE001
+        return None
 
 
 _GW_FAILS = 0

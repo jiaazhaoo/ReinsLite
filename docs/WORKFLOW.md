@@ -126,6 +126,11 @@ benchmark 自己也进化：生产错例 → dev；没调过参的新 case → h
 | 批发布 | `reins dev finish V`（会话提议）→ 用户点头 | 门禁结果 + 结果变了的 case 页面 | 批或打回 |
 | 验收交付 | `reins accept sample/grade/decide` | 固定 seed 抽样的评分表；F 数对错误预算 | 交付 / 带说明交付 / 返工 |
 
+**合并后服务自己换新代码**：网关、看板、watchdog 是常驻进程，`reins dev finish` 合并后它们仍跑旧代码
+（2026-10-22 网关跑了 6 小时旧代码，不认识 `intake` 批次类型，所有接收批次的付费调用都被 401 拒掉）。watchdog
+每分钟比较：进程启动时间早于 main 上 reins/ 或 bin/ 的最后一次提交，就重启它——看板立刻，网关等没有在途付费调用，
+watchdog 自己最后。
+
 **长期批准**：一类批次每次都要的小额花费，用户可以一次批好：`reins config set standing.TYPE USD --why '...'`
 （记成一条决策；0 = 关掉；不能超过 `max_batch_cap`）。之后这类批次只要有付费阶段，开批次时就自动得到这个上限，
 照样过机器池和自己池子的每日检查；池子不够时上限留在 $0，记一条 `standing_refused` 事件，付费阶段照旧等人批。
