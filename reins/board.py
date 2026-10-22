@@ -533,5 +533,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve(port: int | None = None) -> None:
     port = port or config()["board_port"]
+    from .store import enable_stack_dumps
+    enable_stack_dumps()
     print(f"reins board on http://127.0.0.1:{port}", file=sys.stderr)
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()

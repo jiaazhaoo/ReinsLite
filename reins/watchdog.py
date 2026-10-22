@@ -172,7 +172,7 @@ def once(con=None) -> list[str]:
     from . import sentinel, upkeep
     return ([f"released {n} resource claim(s) of ended processes"] if n else []) + upkeep.reconcile(con) + check_batches(con, cfg) + \
         check_machine(con, cfg) + poll_balances_due(con, cfg) + release_stale_reservations(con, cfg) + sentinel.watch_running(con) + \
-        upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _services(con) + _sync(con)
+        upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _services(con) + check_gateway(con, cfg) + _sync(con)
 
 
 def _sync(con) -> list[str]:
@@ -185,6 +185,74 @@ def _sync(con) -> list[str]:
         except Exception as e:                                                  # noqa: BLE001 -- never stop the watchdog
             out.append(f"{f.__module__}.{f.__name__} skipped: {e}")
     return out
+
+
+_GW_FAILS = 0
+GW_HUNG_PASSES = 3            # this many passes (minutes) without a deep-health answer: the gateway is stuck
+
+
+def check_gateway(con, cfg, probe=None, restart=None) -> list[str]:
+    """The paid gateway answers its deep health check (database, single-flight lock) within 10 s, or after three passes
+    it is restarted -- after its threads' stacks are dumped into the journal (SIGUSR1) so the cause can be found.
+    2026-10-22: it hung for 53 minutes (every handler thread waiting on a lock, CPU 0) and no paid call went through
+    for any batch; nothing noticed, because the process was alive and accepting connections."""
+    global _GW_FAILS
+    import json as _json
+    import os as _os
+    import signal as _signal
+    url = f"http://127.0.0.1:{cfg['gateway_port']}/health/deep"
+    try:
+        if probe:
+            ans = probe(url)
+        else:
+            with urllib.request.urlopen(url, timeout=10) as r:
+                ans = _json.loads(r.read())
+        ok = bool(ans.get("ok"))
+    except ConnectionRefusedError:
+        _GW_FAILS = 0
+        return []                                       # not running at all: systemd restarts it; gateway_down covers it
+    except Exception as e:                                                       # noqa: BLE001  timeout, 503, reset
+        if isinstance(getattr(e, "reason", None), ConnectionRefusedError):
+            _GW_FAILS = 0
+            return []
+        if getattr(e, "code", None) == 404 and not probe:    # a gateway started before /health/deep: its plain /health
+            try:
+                with urllib.request.urlopen(url.removesuffix("/deep"), timeout=10) as r:
+                    _GW_FAILS = 0 if r.status == 200 else _GW_FAILS
+                    return []
+            except Exception as e2:                                             # noqa: BLE001
+                e = e2
+        ok, ans = False, {"error": str(e)[:120]}
+    if ok:
+        _GW_FAILS = 0
+        if (ans.get("oldest_inflight_s") or 0) > 900:
+            notify.send(con, "gateway_slow", "warn", f"a paid request has been in the gateway for {ans['oldest_inflight_s'] // 60} min",
+                        f"threads {ans.get('threads')}, busy {ans.get('busy')}; dump: kill -USR1 $(systemctl --user show -p MainPID --value "
+                        f"{cfg.get('gateway_unit', 'reins-gateway')})", cooldown_min=60)
+        return []
+    _GW_FAILS += 1
+    if _GW_FAILS < GW_HUNG_PASSES:
+        return [f"gateway did not answer its health check ({_GW_FAILS}/{GW_HUNG_PASSES}): {ans}"]
+    _GW_FAILS = 0
+    unit = cfg.get("gateway_unit", "reins-gateway")
+    if restart:
+        did = restart(unit)
+    else:
+        try:
+            pid = int(subprocess.run(["systemctl", "--user", "show", "-p", "MainPID", "--value", unit],
+                                     capture_output=True, text=True, timeout=10).stdout.strip() or 0)
+            if pid:
+                _os.kill(pid, _signal.SIGUSR1)            # every thread's stack into the journal, then restart
+                time.sleep(2)
+            did = subprocess.run(["systemctl", "--user", "restart", unit], capture_output=True, timeout=60).returncode == 0
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            did = False
+    notify.send(con, "gateway_hung", "action",
+                f"paid gateway stuck for {GW_HUNG_PASSES} min: {'restarted' if did else 'RESTART FAILED'}",
+                f"last answer: {ans}. Thread stacks before the restart: journalctl --user -u {unit} (search 'Thread 0x'). "
+                f"In-flight paid calls failed and are retried by their clients; answers already received are cached.",
+                cooldown_min=0)
+    return [f"gateway hung: {'restarted' if did else 'restart failed'}"]
 
 
 def _services(con) -> list[str]:
@@ -215,6 +283,8 @@ def release_stale_reservations(con, cfg) -> list[str]:
 
 
 def run(interval: int = 60) -> None:
+    from .store import enable_stack_dumps
+    enable_stack_dumps()
     con = connect()
     while True:
         try:

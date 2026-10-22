@@ -503,7 +503,9 @@ def config() -> dict:
     return {**defaults, **cfg, **nested}
 
 
-def connect(path: Path | None = None) -> sqlite3.Connection:
+def connect(path: Path | None = None, ensure: bool = True) -> sqlite3.Connection:
+    """A registry connection. ensure=False skips the schema and migrations: for a long-running server that ensured them
+    once at start (the gateway opened one per request and re-ran every CREATE / migration each time)."""
     h = home() if path is None else path
     h.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(h / "reins.db", timeout=30, isolation_level=None)
@@ -511,6 +513,8 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA foreign_keys=ON")
     con.execute("PRAGMA busy_timeout=30000")
+    if not ensure:
+        return con
     _rename_legacy(con)
     con.executescript(SCHEMA)
     _migrate(con)
@@ -609,3 +613,14 @@ def today() -> str:
 
 def session() -> str | None:
     return os.environ.get("REINS_SESSION") or os.environ.get("CLAUDE_CODE_SESSION_ID")   # explicit override first
+
+
+def enable_stack_dumps() -> None:
+    """kill -USR1 <pid> writes where every thread is to stderr (the journal) -- no debugger, so it works where
+    ptrace is not allowed (2026-10-22: the gateway hung for an hour and nobody could see where)."""
+    import faulthandler
+    import signal
+    try:
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+    except (AttributeError, ValueError, RuntimeError):
+        pass
