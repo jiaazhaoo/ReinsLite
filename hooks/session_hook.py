@@ -92,6 +92,31 @@ def _ask_for_facts(con, sid: str) -> str:
         return ""
 
 
+def _ask_for_batches(con, sid: str) -> str:
+    """Batches this session owns with nothing alive: asked once which end each gets (2026-10-22: 68 batches were left
+    open, every owner had moved on after reporting results)."""
+    try:
+        from reins import lifecycle
+        from reins.store import now, tx
+        rows = lifecycle.loose_for(con, sid)
+        asked = {r[0] for r in con.execute("SELECT detail FROM session_event WHERE session_id=? AND kind='asked_batch'", (sid,))}
+        rows = [r for r in rows if r["batch_id"] not in asked]
+        if not rows:
+            return ""
+        with tx(con):
+            for r in rows:
+                con.execute("INSERT INTO session_event (at, session_id, kind, detail) VALUES (?,?, 'asked_batch', ?)",
+                            (now(), sid, r["batch_id"]))
+        lines = "\n".join(f"  {r['batch_id']} ({r['type']}, {r['status']}: {(r['status_reason'] or '-')[:70]})" for r in rows[:12])
+        return ("[reins] Before you stop: you own batches with nothing running. Give each an end so it does not stay open "
+                "for ever:\n" + lines + "\n  finished -> reins batch stage-end B STAGE (or it ends by itself if it reported "
+                "no cases);  will not be finished -> reins batch abandon B --why '...';  still yours, to resume later -> say so "
+                "in one line. (Asked once per batch.)")
+    except Exception as e:                                                      # noqa: BLE001
+        log(f"ask batches: {e!r}")
+        return ""
+
+
 def _purpose_from_prompt(con, sid: str, prompt: str) -> None:
     """A session that never said what it is for is known by its first request, so the others can see it."""
     text = " ".join((prompt or "").split())
@@ -138,7 +163,7 @@ def main() -> int:
             with tx(con):
                 con.execute("UPDATE session SET last_seen=?, status='active' WHERE id=?", (now(), sid))
             if ev == "Stop" and not data.get("stop_hook_active"):
-                ask = _ask_for_facts(con, sid)
+                ask = _ask_for_facts(con, sid) or _ask_for_batches(con, sid)
                 if ask:                                  # changed a module or a service and left no fact: ask once
                     print(json.dumps({"decision": "block", "reason": ask}))
                     return 0

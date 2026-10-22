@@ -115,6 +115,10 @@ def reconcile(con) -> list[str]:
         quiet_min = (dt.datetime.now() - dt.datetime.fromisoformat(max(s for s in signs if s))).total_seconds() / 60
         if quiet_min < (GONE_AFTER_MIN if procs else GONE_AFTER_H_UNRUN * 60):
             continue
+        from . import lifecycle
+        if procs and procs[-1]["state"] == "exited" and procs[-1]["exit_code"] == 0 and lifecycle.finish_unreported(con, bid):
+            out.append(f"{bid}: done (exit 0, no per-case outcomes)")
+            continue                                    # finished, not stuck: no pause
         last = procs[-1] if procs else None
         if not last:
             why = f"process gone: nothing run by reins and no progress for {quiet_min / 60:.0f} h"
@@ -134,14 +138,15 @@ def reconcile(con) -> list[str]:
                     con.execute("UPDATE process SET state='lost', ended=COALESCE(ended, ?) WHERE id=?", (now(), p["id"]))
         batches.set_status(con, bid, "paused", why, system=True)
         out.append(f"{bid}: {why} -> paused")
-    if 0 < len(out) <= 3:                                # one notice each; a backlog (after a reboot) is one notice
-        for line in out:
+    gone = [x for x in out if x.endswith(" -> paused")]
+    if 0 < len(gone) <= 3:                                # one notice each; a backlog (after a reboot) is one notice
+        for line in gone:
             bid, why = line.split(": ", 1)
             notify.send(con, f"gone:{bid}", "action", f"{bid}: {why.removesuffix(' -> paused')}",
                         ("check its results, then end its stages or reins batch abandon" if "exit 0" in why else
                          "start it again with reins run, or reins batch abandon if it will not be finished"), cooldown_min=0)
-    elif out:
-        notify.send(con, f"gone:{now()[:16]}", "action", f"{len(out)} batches paused: their process is gone",
+    elif gone:
+        notify.send(con, f"gone:{now()[:16]}", "action", f"{len(gone)} batches paused: their process is gone",
                     "the board lists them under 'needs you' with the command for each", cooldown_min=0)
     return out
 
