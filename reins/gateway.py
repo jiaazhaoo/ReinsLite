@@ -25,6 +25,7 @@ import os
 import sqlite3
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,6 +40,12 @@ _INFLIGHT: dict[str, threading.Event] = {}    # request sha -> set when the call
 _INFLIGHT_LOCK = threading.Lock()
 
 
+_STARTED: dict[str, float] = {}               # request sha -> when its owner started (the deep health check reports the oldest)
+MAX_ACTIVE = 64                               # requests handled at once; more wait up to WAIT_S, then get 503 (no thread pile-up)
+WAIT_S = 30
+_ACTIVE = threading.BoundedSemaphore(MAX_ACTIVE)
+
+
 def _claim(sha: str) -> threading.Event | None:
     """None: this thread owns the call for `sha`. An Event: the same request is already in flight; wait for it.
     (2026-10-10: 26 + 20 identical judge requests were forwarded and paid twice, seconds apart.)"""
@@ -46,12 +53,14 @@ def _claim(sha: str) -> threading.Event | None:
         ev = _INFLIGHT.get(sha)
         if ev is None:
             _INFLIGHT[sha] = threading.Event()
+            _STARTED[sha] = time.time()
         return ev
 
 
 def _done(sha: str) -> None:
     with _INFLIGHT_LOCK:
         ev = _INFLIGHT.pop(sha, None)
+        _STARTED.pop(sha, None)
     if ev:
         ev.set()
 
@@ -59,7 +68,7 @@ def _done(sha: str) -> None:
 def _con() -> sqlite3.Connection:
     """The registry connection of the request being handled (opened on first use, closed by Handler.handle)."""
     if getattr(_local, "con", None) is None:
-        _local.con = connect()
+        _local.con = connect(ensure=False)        # the schema was ensured once at start (serve)
     return _local.con
 
 
@@ -121,9 +130,19 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def handle(self):
+        if not _ACTIVE.acquire(timeout=WAIT_S):            # saturated (or stuck): answer at once instead of piling up
+            try:
+                self.rfile.readline(65537)
+                body = b'{"error": {"message": "gateway busy: too many requests at once; retry", "code": 503}}'
+                self.wfile.write(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nConnection: close\r\n"
+                                 b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+            except OSError:
+                pass
+            return
         try:
             super().handle()
         finally:
+            _ACTIVE.release()
             _close_con()
 
     def _send(self, code: int, payload: dict | bytes, ctype="application/json"):
@@ -230,6 +249,22 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path.rstrip("/") == "/health":
             self._send(200, {"ok": True}); return
+        if self.path.rstrip("/") == "/health/deep":           # what a stuck gateway cannot answer (reins/watchdog.py)
+            t0 = time.time()
+            got = _INFLIGHT_LOCK.acquire(timeout=3)
+            if got:
+                oldest = min(_STARTED.values(), default=None)
+                n_inflight = len(_INFLIGHT)
+                _INFLIGHT_LOCK.release()
+            c = connect(ensure=False)
+            try:
+                c.execute("SELECT 1 FROM batch LIMIT 1").fetchone()
+            finally:
+                c.close()
+            self._send(200 if got else 503, {"ok": got, "threads": threading.active_count(), "inflight": n_inflight if got else None,
+                                             "oldest_inflight_s": round(time.time() - oldest) if got and oldest else 0,
+                                             "busy": MAX_ACTIVE - _ACTIVE._value, "check_ms": round(1000 * (time.time() - t0))})
+            return
         self._err(404, "gateway serves POST /p/<provider>/v1/chat/completions and GET /p/<provider>/... (reins/providers.py)")
 
     def do_POST(self):
@@ -371,6 +406,12 @@ def serve(port: int | None = None) -> None:
         raise ReinsError(f"no provider key found: write one to {home() / 'secrets'}/<provider>.key (chmod 600)")
     port = port or config()["gateway_port"]
     (home() / "cache").mkdir(parents=True, exist_ok=True)
+    from .store import enable_stack_dumps
+    enable_stack_dumps()                                  # kill -USR1: every thread's stack into the journal
+    global _ACTIVE, MAX_ACTIVE
+    MAX_ACTIVE = int(config().get("gateway_max_active", MAX_ACTIVE))
+    _ACTIVE = threading.BoundedSemaphore(MAX_ACTIVE)
+    connect().close()                                     # schema and migrations once; requests skip them
     srv = Server(("127.0.0.1", port), Handler)
     print(f"reins gateway on http://127.0.0.1:{port}/api/v1  (cache {home() / 'cache'})", file=sys.stderr)
     srv.serve_forever()
