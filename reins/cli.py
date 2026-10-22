@@ -212,6 +212,8 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--module-version"); x.add_argument("--output"); x.add_argument("--log")
     x = b.add_parser("mark"); x.add_argument("batch"); x.add_argument("stage"); x.add_argument("--file")
     x.add_argument("case", nargs="?"); x.add_argument("status", nargs="?"); x.add_argument("reason", nargs="?")
+    x = b.add_parser("lineage", help="which earlier run each batch repeats, splits or extends (--backfill: fill it in)")
+    x.add_argument("batch", nargs="?"); x.add_argument("--backfill", action="store_true")
     x = b.add_parser("stage-end"); x.add_argument("batch"); x.add_argument("stage")
     x.add_argument("--checks", type=Path, help="TSV check, ok[, detail]: the project's completeness checks; one failing "
                                                "check ends the stage failed (exit 1)")
@@ -1015,6 +1017,20 @@ def _batch(con, args, cfg) -> int:
         else:
             raise ReinsError("mark needs --file TSV or CASE_ID STATUS [REASON]")
         print(f"{batches.mark(con, args.batch, args.stage, rows)} events recorded")
+    elif args.sub == "lineage":
+        from . import lineage
+        if args.backfill:
+            print(f"{lineage.backfill(con)} batch(es) linked to the earlier run they repeat, split or extend")
+        elif args.batch:
+            b = batches.get(con, args.batch)
+            chain = [b]
+            while chain[-1]["parent"]:
+                chain.append(batches.get(con, chain[-1]["parent"]))
+            for x in chain:
+                ev = con.execute("SELECT detail FROM batch_event WHERE batch_id=? AND event='lineage'", (x["batch_id"],)).fetchone()
+                print(f"{x['batch_id']:<44} {x['status']:<7} {x['n_cases']:>6}  {ev[0] if ev else '(first run)'}")
+        else:
+            raise ReinsError("reins batch lineage BATCH | --backfill")
     elif args.sub == "stage-end":
         try:
             led = batches.stage_end(con, args.batch, args.stage, batches.read_checks(args.checks) if args.checks else None)
