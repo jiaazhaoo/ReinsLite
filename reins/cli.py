@@ -414,8 +414,37 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _split_run(argv: list[str]) -> tuple[list[str], list[str] | None]:
+    """`reins run ... -- CMD`: everything after the first `--` is the command, untouched. argparse's REMAINDER
+    swallowed `--self-staged` when it followed the batch, so the documented `reins run B --self-staged -- CMD` failed
+    with "give either a STAGE or --self-staged" and sessions found other spellings by trial (2026-10-22)."""
+    if argv and argv[0] == "run" and "--" in argv:
+        i = argv.index("--")
+        return argv[:i], argv[i + 1:]
+    return argv, None
+
+
+def _run_options(pre: list[str]) -> argparse.Namespace:
+    """The options of `reins run` before the `--` (no REMAINDER: options may follow the batch)."""
+    p = argparse.ArgumentParser(prog="reins run")
+    p.add_argument("batch"); p.add_argument("stage", nargs="?", default=None)
+    p.add_argument("--self-staged", action="store_true"); p.add_argument("--module-version")
+    p.add_argument("--cwd"); p.add_argument("--retries", type=int)
+    a = p.parse_args(pre[1:])
+    a.cmd = "run"
+    return a
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    argv, run_cmd = _split_run(argv)
+    if run_cmd is not None:
+        while run_cmd and run_cmd[0] == "--":              # `-- -- CMD`, a workaround some sessions used
+            run_cmd = run_cmd[1:]
+        args = _run_options(argv)
+        args.command = ["--"] + run_cmd
+    else:
+        args = build_parser().parse_args(argv)
     cwd = Path.cwd()
     cfg = project_config(cwd)
     try:
