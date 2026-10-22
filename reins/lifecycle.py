@@ -123,6 +123,11 @@ def sweep(con, stale_days: float | None = None) -> list[str]:
                 batches._event(con, bid, "closed", "stale")
                 con.execute("DELETE FROM lease WHERE resource=?", (f"batch:{bid}",))
             closed.append(bid)
+    for f in (tend_candidates, tend_issues):              # development work reaches an end the same way
+        try:
+            out += f(con)
+        except Exception as e:                                                  # noqa: BLE001
+            out.append(f"{f.__name__}: {e}")
     if closed:
         notify.send(con, f"stale_closed:{now()[:13]}", "info", f"{len(closed)} forgotten batches closed",
                     f"no process, no progress for {stale_days:g}+ days; outputs kept: {', '.join(closed[:20])}", cooldown_min=0)
@@ -138,3 +143,89 @@ def loose_for(con, sid: str) -> list[dict]:
         if not _alive(con, b["batch_id"]):
             rows.append(dict(b))
     return rows
+
+
+# ------------------------------------------------------------------ candidates and issues reach an end too
+CANDIDATE_IDLE_DAYS = 7
+VERIFY_WINDOW_DAYS = 14
+
+
+def _days_since(ts: str | None) -> float | None:
+    return None if not ts else (dt.datetime.now() - dt.datetime.fromisoformat(ts[:19])).total_seconds() / 86400
+
+
+def _candidate_last_activity(con, v) -> str | None:
+    """The newest sign of work on a candidate: an edit in its worktree, a module event, its creation."""
+    ts = [v["created"],
+          con.execute("SELECT MAX(at) FROM module_event WHERE version=?", (v["version"],)).fetchone()[0],
+          con.execute("SELECT MAX(at) FROM session_event WHERE kind='edit' AND worktree=?", (v["worktree"],)).fetchone()[0]
+          if v["worktree"] else None]
+    return max(t for t in ts if t)
+
+
+def tend_candidates(con, idle_days: float | None = None) -> list[str]:
+    """A candidate nobody has touched for idle_days (and whose session is not active) is abandoned; its branch and
+    worktree stay, `reins dev adopt WORKTREE` takes it up again. Issues it had taken go back to open.
+    2026-10-22: 6 candidates from 2026-10-09..22 sat open, their sessions ended or idle."""
+    idle_days = float(config().get("candidate_idle_days", CANDIDATE_IDLE_DAYS) if idle_days is None else idle_days)
+    from . import dev, issues
+    out = []
+    for v in con.execute("SELECT * FROM module_version WHERE status='candidate'").fetchall():
+        s = con.execute("SELECT status FROM session WHERE id=?", (v["session"],)).fetchone()
+        if s and s["status"] == "active":
+            continue
+        days = _days_since(_candidate_last_activity(con, v))
+        if days is None or days < idle_days:
+            continue
+        why = (f"nothing done on it for {days:.0f} days and its session is {s['status'] if s else 'gone'}; "
+               f"branch {v['branch'] or '?'} and worktree kept (reins dev adopt {v['worktree']} to take it up again)")
+        dev.abandon(con, v["version"], why)
+        issues.ensure(con)
+        with tx(con):
+            for i in con.execute("SELECT id FROM issue WHERE version=? AND status='in_progress'", (v["version"],)).fetchall():
+                con.execute("UPDATE issue SET status='open', version=NULL, fix_session=NULL WHERE id=?", (i[0],))
+                issues._ev(con, i[0], "reopened", f"{v['version']} abandoned: {why[:120]}")
+        out.append(f"{v['version']}: abandoned ({days:.0f} days idle)")
+    return out
+
+
+def tend_issues(con, window_days: float | None = None) -> list[str]:
+    """Issues that can no longer change: on a batch that was closed without finishing, or on a retired service ->
+    closed; fixed issues whose cases have a result in a run after the fix -> verified; fixed with no such run within
+    window_days -> closed, saying so."""
+    window_days = float(config().get("verify_window_days", VERIFY_WINDOW_DAYS) if window_days is None else window_days)
+    import json as _json
+    from . import issues
+    issues.ensure(con)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(issue)")}
+    out = []
+    for i in con.execute("SELECT * FROM issue WHERE status IN ('open','in_progress','fixed')").fetchall():
+        if i["batch_id"] and i["status"] == "open":
+            b = con.execute("SELECT status, status_reason FROM batch WHERE batch_id=?", (i["batch_id"],)).fetchone()
+            if b and b["status"] == "closed" and (b["status_reason"] or "").startswith("abandoned"):
+                issues.close(con, i["id"], f"its batch {i['batch_id']} was closed without finishing ({(b['status_reason'] or '')[11:90]})")
+                out.append(f"issue #{i['id']}: closed (batch closed)")
+                continue
+        if "service" in cols and i["service"] and i["status"] == "open":
+            s = con.execute("SELECT status FROM service WHERE name=?", (i["service"],)).fetchone()
+            if s and s["status"] == "retired":
+                issues.close(con, i["id"], f"service {i['service']} retired")
+                out.append(f"issue #{i['id']}: closed (service retired)")
+                continue
+        if i["status"] != "fixed":
+            continue
+        fixed_at = con.execute("SELECT MAX(at) FROM issue_event WHERE issue_id=? AND event='fixed'", (i["id"],)).fetchone()[0]
+        cases = _json.loads(i["cases"] or "[]")
+        if cases and fixed_at:
+            q = ",".join("?" * len(cases))
+            good = con.execute(f"SELECT COUNT(DISTINCT case_id) FROM case_current WHERE case_id IN ({q}) AND at>? AND status='done'"
+                               + (" AND stage=?" if i["stage"] else ""), (*cases, fixed_at, *([i["stage"]] if i["stage"] else []))).fetchone()[0]
+            if good >= len(cases):
+                issues.verify(con, i["id"], "reins", f"all {len(cases)} cases done in a run after the fix ({i['version']})")
+                out.append(f"issue #{i['id']}: verified")
+                continue
+        days = _days_since(fixed_at)
+        if days is not None and days >= window_days:
+            issues.close(con, i["id"], f"fixed by {i['version']} {days:.0f} days ago; its cases were not run again to verify")
+            out.append(f"issue #{i['id']}: closed (fixed, never re-run)")
+    return out
