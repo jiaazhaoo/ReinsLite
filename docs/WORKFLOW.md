@@ -126,6 +126,10 @@ benchmark 自己也进化：生产错例 → dev；没调过参的新 case → h
 | 批发布 | `reins dev finish V`（会话提议）→ 用户点头 | 门禁结果 + 结果变了的 case 页面 | 批或打回 |
 | 验收交付 | `reins accept sample/grade/decide` | 固定 seed 抽样的评分表；F 数对错误预算 | 交付 / 带说明交付 / 返工 |
 
+**长期批准**：一类批次每次都要的小额花费，用户可以一次批好：`reins config set standing.TYPE USD --why '...'`
+（记成一条决策；0 = 关掉；不能超过 `max_batch_cap`）。之后这类批次只要有付费阶段，开批次时就自动得到这个上限，
+照样过机器池和自己池子的每日检查；池子不够时上限留在 $0，记一条 `standing_refused` 事件，付费阶段照旧等人批。
+
 其余时间用户只看看板（`reins board serve`）的"运行中 / 开发中"两栏。批次结束、暂停、等批准都会推送通知；用户不需要问"好了么"。
 
 ## 测量闭环
