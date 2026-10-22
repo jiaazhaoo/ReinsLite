@@ -169,7 +169,8 @@ def disk_warning(con) -> list[str]:
     c = config()
     warn = float(c.get("disk_warn_pct", 85))
     out, seen = [], set()
-    for path in ("/data", str(home())):
+    from .store import disks
+    for path in disks() + [str(home())]:
         if Path(path).exists() and Path(path).stat().st_dev not in seen:      # one disk, one notice
             seen.add(Path(path).stat().st_dev)
             u = shutil.disk_usage(path)

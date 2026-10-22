@@ -21,6 +21,7 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
+from .paths import resolve, work_dir as _wd
 from . import batches, envs
 from .store import ReinsError, config, now, tx
 
@@ -48,13 +49,14 @@ def builtin(con, b) -> list[tuple[str, bool, str]]:
             envs.get(con, b["env_name"]); out.append(("env_exists", True, b["env_name"]))
         except ReinsError as e:
             out.append(("env_exists", False, str(e)))
-    for path in {"/data", str(Path(b["work_dir"]).resolve()) if b["work_dir"] else "/data"}:
+    from .store import disks
+    for path in dict.fromkeys(disks() + ([str(Path(_wd(b)).resolve())] if b["work_dir"] else [])):
         if Path(path).exists():
             u = shutil.disk_usage(path)
             pct = 100 * u.used / u.total
             out.append((f"disk_{path.strip('/').replace('/', '_') or 'root'}", pct < config()["disk_pause_pct"], f"{pct:.0f}% used"))
     if b["work_dir"]:
-        wd = Path(b["work_dir"])
+        wd = Path(_wd(b))
         out.append(("work_dir_writable", wd.exists() and os.access(wd, os.W_OK) or not wd.exists(), str(wd)))
     return out
 
@@ -75,7 +77,7 @@ def project_checks(b, root: Path | None) -> list[tuple[str, bool, str]]:
         from . import artifacts
         from .store import connect
         out += artifacts.check_tools(connect(), root, cfg)
-    env = {**os.environ, "REINS_BATCH": b["batch_id"], "REINS_CASES": b["case_set_path"], "REINS_WORK_DIR": b["work_dir"] or ""}
+    env = {**os.environ, "REINS_BATCH": b["batch_id"], "REINS_CASES": resolve(b["case_set_path"]), "REINS_WORK_DIR": _wd(b) or ""}
     for c in cfg.get("preflight", []):
         r = subprocess.run(c["cmd"], shell=True, cwd=str(root), env=env, capture_output=True, text=True, timeout=600)
         out.append((c["name"], r.returncode == 0, (r.stdout + r.stderr).strip()[-300:]))

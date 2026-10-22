@@ -38,7 +38,8 @@ def probe(b) -> list[str]:
     if hit and time.time() - hit[0] < 60:
         return hit[1]
     try:
-        r = subprocess.run(cmd.format(work_dir=b["work_dir"] or ""), shell=True, capture_output=True, text=True, timeout=20)
+        from .paths import work_dir as _wd
+        r = subprocess.run(cmd.format(work_dir=_wd(b) or ""), shell=True, capture_output=True, text=True, timeout=20)
         lines = [l for l in (r.stdout or r.stderr).splitlines() if l.strip()][:30]
     except subprocess.TimeoutExpired:
         lines = ["(progress probe timed out)"]

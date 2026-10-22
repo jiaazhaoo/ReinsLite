@@ -35,6 +35,7 @@ import re
 from pathlib import Path
 
 from . import projects
+from .paths import work_dir
 
 TYPES = ("production", "rework")
 _FILES: dict[str, tuple[float, dict]] = {}
@@ -257,7 +258,7 @@ def view(con) -> dict:
             for p in sorted(parts, key=lambda p: p["created"], reverse=True):
                 if not p["work_dir"]:
                     continue
-                for c, v in _results(Path(p["work_dir"]) / spec["file"], spec).items():
+                for c, v in _results(Path(work_dir(p)) / spec["file"], spec).items():
                     if c in members[p["batch_id"]] and c not in result:
                         result[c] = v
         finished = {c for c in cases if c in result or (last_stage and (last_stage, c) in outcome)}
@@ -601,7 +602,7 @@ def batch_table(con, rows, ledger: dict, imported: dict) -> list[dict]:
         owner: dict[str, str] = {}                          # results file -> newest batch using it
         for b in sorted(bs, key=lambda b: b["created"]):
             if spec.get("file") and b["work_dir"]:
-                owner[str(Path(b["work_dir"]) / spec["file"])] = b["batch_id"]
+                owner[str(Path(work_dir(b)) / spec["file"])] = b["batch_id"]
         values, details, table = {}, {}, []
         dspec = spec.get("delivered") or {}
         delivered = _delivered(cfg)
@@ -614,7 +615,7 @@ def batch_table(con, rows, ledger: dict, imported: dict) -> list[dict]:
             row = {"batch_id": bid, "name": (json.loads(b["aliases"] or "[]") or [b["purpose"][:60]])[0], "type": b["type"],
                    "status": b["status"], "date": (b["created"] or "")[:10], "closed": (b["closed"] or "")[:10],
                    "scope": dict(zip(scope_names, _split_scope(b["scope"], len(scope_names)))), "n": len(cases)}
-            f = str(Path(b["work_dir"]) / spec["file"]) if spec.get("file") and b["work_dir"] else None
+            f = str(Path(work_dir(b)) / spec["file"]) if spec.get("file") and b["work_dir"] else None
             if f and owner.get(f) != bid:
                 row["results_in"] = next((x["name"] for x in table if x["batch_id"] == owner[f]), None) or \
                     (json.loads(next(x for x in bs if x["batch_id"] == owner[f])["aliases"] or "[]") or [owner[f]])[0]

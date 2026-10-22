@@ -37,6 +37,7 @@ Project settings come from the nearest reins.toml (project, case_id_pattern, [de
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import json
 import sys
@@ -378,6 +379,9 @@ def build_parser() -> argparse.ArgumentParser:
     x = nt.add_parser("list"); x.add_argument("subject", nargs="?"); x.add_argument("--all", action="store_true")
     x = nt.add_parser("retire"); x.add_argument("id", type=int); x.add_argument("--why", required=True)
     x = sub.add_parser("brief", help="one screen on a module or a service before touching it"); x.add_argument("subject")
+    pa = sub.add_parser("paths", help="recorded paths after folders moved ([paths] moves)").add_subparsers(dest="sub", required=True)
+    x = pa.add_parser("resolve"); x.add_argument("path")
+    pa.add_parser("check")
     x = sub.add_parser("changes", help="the live feed of changes to modules and services")
     x.add_argument("subject", nargs="?"); x.add_argument("--since", default="24h", help="e.g. 2h, 3d")
     x = iss.add_parser("from-review"); x.add_argument("batch"); x.add_argument("--stage", default="check")
@@ -754,6 +758,16 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 artifacts.set_status(con, args.name, args.status, args.why); print("ok")
             return 0
+        if args.cmd == "paths":
+            from . import paths
+            if args.sub == "resolve":
+                r = paths.resolve(args.path)
+                print(r if r != args.path else f"{r}  (unchanged{'' if os.path.exists(r) else '; not found'})"); return 0
+            lost = paths.check(con)
+            for x in lost:
+                print(f"  {x['what']:<48} {x['path']}")
+            print(f"{len(lost)} recorded path(s) in use that cannot be found" if lost else "every recorded path in use is found")
+            return 1 if lost else 0
         if args.cmd == "changes":
             from . import knowledge
             import datetime as _dt
