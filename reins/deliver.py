@@ -119,7 +119,8 @@ def register(con, path: Path, batch: str, **check_kw) -> dict:
     b = batches.get(con, batch)
     with tx(con):
         v = con.execute("SELECT COALESCE(MAX(version),0)+1 FROM deliverable WHERE batch_id=?", (batch,)).fetchone()[0]
-        dest_dir = Path(b["work_dir"]) / "delivery" if b["work_dir"] else path.parent
+        from .paths import work_dir as _wd
+        dest_dir = Path(_wd(b)) / "delivery" if b["work_dir"] else path.parent
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / f"{path.stem}-v{v}{path.suffix}"
         if dest.exists():

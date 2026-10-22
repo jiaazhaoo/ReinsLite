@@ -30,6 +30,8 @@ def _minutes_since(ts: str | None) -> float | None:
 
 
 def _newest_mtime(path: str | None) -> float | None:
+    from .paths import resolve
+    path = resolve(path)                                  # a stage's recorded output may have been moved since
     if not path or not Path(path).exists():
         return None
     p = Path(path)
@@ -106,7 +108,8 @@ def _pause_all(con, why: str) -> list[str]:
 
 def check_machine(con, cfg) -> list[str]:
     out = []
-    for path in {"/data", str(home())}:
+    from .store import disks
+    for path in dict.fromkeys(disks() + [str(home())]):
         if Path(path).exists():
             u = shutil.disk_usage(path)
             pct = 100 * u.used / u.total

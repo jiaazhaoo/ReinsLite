@@ -42,7 +42,8 @@ DEFAULT_RETRIES = {"production": 3, "rework": 3}
 
 
 def _log_path(b, stage: str) -> Path:
-    base = Path(b["work_dir"]) / "logs" if b["work_dir"] else home() / "logs" / b["batch_id"]
+    from .paths import work_dir as _wd
+    base = Path(_wd(b)) / "logs" if b["work_dir"] else home() / "logs" / b["batch_id"]
     base.mkdir(parents=True, exist_ok=True)
     return base / f"{stage}.log"
 

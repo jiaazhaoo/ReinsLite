@@ -624,3 +624,8 @@ def enable_stack_dumps() -> None:
         faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
     except (AttributeError, ValueError, RuntimeError):
         pass
+
+
+def disks() -> list[str]:
+    """The folders whose disks reins watches (pause / warn / preflight): config.toml `disks`, else the registry's home."""
+    return [str(d) for d in (config().get("disks") or [str(home())])]
