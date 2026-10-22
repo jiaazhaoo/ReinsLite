@@ -47,12 +47,42 @@ def parse_stage_spec(spec: str) -> dict:
     return out
 
 
+def work_dir_regex(pattern: str, **fields) -> "re.Pattern":
+    """A project's work-dir pattern as a regex: {batch} {scope} {type} {project} are filled in, `*` is one path
+    segment (never a slash)."""
+    import re
+    rx = re.escape(pattern)
+    for k, v in fields.items():
+        rx = rx.replace(re.escape("{" + k + "}"), re.escape(v))
+    return re.compile(rx.replace(re.escape("*"), "[^/]+") + "/?")
+
+
+def check_work_dir(work_dir: str, patterns: list[str] | None, *, batch: str, scope: str, type_: str, project: str) -> str:
+    """With [run] work_dirs set in the project's reins.toml, a batch's work dir must match one of them; the folder is
+    created when its parent exists. Without the setting anything outside the code root is accepted (as before)."""
+    if not patterns:
+        return work_dir
+    fields = {"batch": batch, "scope": scope, "type": type_, "project": project}
+    wd = str(Path(work_dir))
+    if not any(work_dir_regex(p, **fields).fullmatch(wd) for p in patterns):
+        shown = "\n  ".join(p.replace("{batch}", batch) for p in patterns)
+        raise ReinsError(f"work dir {wd} is not where this project keeps runs; use one of (`{{batch}}` in --work-dir "
+                         f"becomes the batch id):\n  {shown}")
+    d = Path(wd)
+    if not d.exists():
+        if not d.parent.is_dir():
+            raise ReinsError(f"work dir parent {d.parent} does not exist; create it the way the data rules say first")
+        d.mkdir()
+    return wd
+
+
 def open_(con, *, project: str, scope: str, type_: str, purpose: str, case_file: Path | None,
           stages: list[dict], parent: str | None = None, release_name: str | None = None,
           aliases: list[str] | None = None, case_pattern: str = names.DEFAULT_CASE_PATTERN, case_key: str | None = None,
           work_dir: str | None = None, spend_cap: float = 0.0, day: str | None = None,
           ruleset: str | None = None, env_name: str | None = None, config_files: list[Path] | None = None,
-          input_files: list[Path] | None = None, workflow: str | None = None) -> str:
+          input_files: list[Path] | None = None, workflow: str | None = None,
+          work_dir_patterns: list[str] | None = None) -> str:
     if not purpose.strip():
         raise ReinsError("a batch needs a purpose (one sentence: why it runs)")
     if workflow:
@@ -105,6 +135,9 @@ def open_(con, *, project: str, scope: str, type_: str, purpose: str, case_file:
         seq = con.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM batch WHERE scope=? AND type=? AND day=?",
                           (scope, type_, day)).fetchone()[0]
         bid = names.batch_id(scope, type_, day, seq)
+        if work_dir:
+            work_dir = check_work_dir(work_dir.replace("{batch}", bid), work_dir_patterns,
+                                      batch=bid, scope=scope, type_=type_, project=project)
         con.execute("INSERT INTO batch (batch_id, project, scope, type, day, seq, purpose, parent, case_set_path,"
                     " case_set_sha, n_cases, release_name, aliases, status, spend_cap, work_dir, ruleset, env_name,"
                     " config_sha, input_shas, owner_session, created)"
