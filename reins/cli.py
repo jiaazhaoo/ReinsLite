@@ -932,7 +932,8 @@ def _batch(con, args, cfg) -> int:
                             release_name=args.release, aliases=args.alias,
                             case_pattern=cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN), case_key=_key(cfg),
                             work_dir=args.work_dir, spend_cap=args.cap, ruleset=args.ruleset, env_name=args.env,
-                            config_files=args.config, input_files=args.input, workflow=args.workflow)
+                            config_files=args.config, input_files=args.input, workflow=args.workflow,
+                            work_dir_patterns=cfg.get("run", {}).get("work_dirs"))
         probe = cfg.get("run", {}).get("probe")
         if probe:
             batches.set_probe(con, bid, probe)
