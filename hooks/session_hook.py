@@ -37,6 +37,8 @@ BRIEF_CHARS = 3000          # one brief, at most; at most two per prompt
 
 
 def _subjects_in(con, prompt: str) -> list[str]:
+    if "<task-notification>" in prompt or "SYSTEM NOTIFICATION" in prompt:
+        return []                                      # a background task's report, not the user naming something
     try:
         from reins import knowledge
         return knowledge.mentioned(con, prompt)[:2]
