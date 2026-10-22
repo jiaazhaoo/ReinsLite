@@ -155,6 +155,9 @@ def open_(con, *, project: str, scope: str, type_: str, purpose: str, case_file:
             con.execute("UPDATE batch SET workflow=? WHERE batch_id=?", (workflow, bid))
     if session():
         leases.acquire(con, f"batch:{bid}", "owner")
+    if not parent:                                         # which earlier run of this work it repeats, splits or extends
+        from . import lineage
+        lineage.relate(con, bid)
     return bid
 
 

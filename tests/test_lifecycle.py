@@ -87,7 +87,7 @@ class Lifecycle(unittest.TestCase):
         out = lifecycle.sweep(self.con)
         self.assertEqual(batches.get(self.con, finished)["status"], "done")
         self.assertEqual(batches.get(self.con, forgotten)["status"], "closed")
-        self.assertEqual(batches.get(self.con, prod)["status"], "paused")          # production ends by a person
+        self.assertEqual(batches.get(self.con, prod)["status"], "closed")          # production too: no result, idle 9 days
         self.assertIn("closed 1 stale batch(es)", out)
 
     def test_disk_pause_is_undone_when_space_returns(self):

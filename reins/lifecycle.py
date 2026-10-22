@@ -10,8 +10,8 @@ What kept them open, from the owners' transcripts and the ledger:
 Rules (finish() on a process's exit, sweep() on every watchdog pass):
   - a non-production batch whose command exited 0 and that reported no case outcome at all: its open stages end as
     'done (no per-case outcomes reported)'; the batch becomes done. Production and rework still need every case.
-  - production / rework that exited 0 with stages open: left for a person ('ended, check before closing'); the owner
-    is told in its inbox (and the board lists it).
+  - production / rework with nothing alive: settled by reins/lineage.py (results complete -> done; covered by a later
+    run -> closed as superseded; idle stale_days -> done partial or closed stopped). The person only starts runs.
   - disk pauses: only batches with something alive are paused; when the disk is below the pause line again they are
     resumed (their processes were only stopped).
   - a non-production batch with nothing alive and no sign of life for STALE_DAYS is closed as abandoned (outputs kept).
@@ -107,8 +107,12 @@ def sweep(con, stale_days: float | None = None) -> list[str]:
         if last and last["state"] in ("exited", "lost") and last["exit_code"] == 0 and finish_unreported(con, bid):
             out.append(f"{bid}: done (exit 0, no per-case outcomes)")
             continue
-        if b["type"] in STRICT:
-            continue                                        # production and rework end by a person
+        if b["type"] in STRICT:                              # production / rework: by its results and its later runs
+            from . import lineage
+            r = lineage.settle(con, bid, stale_days)
+            if r:
+                out.append(r)
+            continue
         idle = _idle_days(con, bid)
         if idle is not None and idle >= stale_days:
             why = f"nothing alive and no sign of life for {idle:.0f} days (closed by the watchdog; outputs kept)"
