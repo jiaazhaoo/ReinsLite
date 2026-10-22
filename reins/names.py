@@ -11,7 +11,7 @@ from pathlib import Path
 from .store import ReinsError
 
 TOKEN = r"[a-z][a-z0-9_]*"
-BATCH_TYPES = ("production", "rework", "experiment", "pilot", "eval", "benchmark_build", "smoke", "drift", "training")
+BATCH_TYPES = ("production", "rework", "experiment", "pilot", "eval", "benchmark_build", "smoke", "drift", "training", "intake")
 
 MODULE_VERSION = re.compile(rf"^(?P<module>{TOKEN})-(?P<suffix>[a-z0-9][a-z0-9_]*)-(?P<day>\d{{8}})-(?P<seq>[1-9]\d*)$")
 # <scope>-<type>-<YYYYMMDD>-<n>: scope is 1-4 tokens the project chooses (e.g. client-package: acme-q3)
@@ -127,8 +127,8 @@ def case_problems(ids: list[str], pattern: str = DEFAULT_CASE_PATTERN, key: str 
 
 
 def read_case_set(path: Path, key: str | None = None) -> list[str]:
-    """A .csv/.tsv with a case_id column (or the project's own name for it, `key`), or a plain list (one id per line,
-    no header)."""
+    """A .csv/.tsv with a case_id column (or the project's own name for it, `key`), a .json list of records with that
+    field (a client manifest), or a plain list (one id per line, no header)."""
     text = path.read_text(encoding="utf-8-sig")
     if path.suffix.lower() in (".csv", ".tsv"):
         rows = list(csv.DictReader(text.splitlines(), delimiter="\t" if path.suffix.lower() == ".tsv" else ","))
@@ -137,6 +137,17 @@ def read_case_set(path: Path, key: str | None = None) -> list[str]:
             raise ReinsError(f"{path}: no {CASE_KEY!r}{' or ' + repr(key) if key else ''} column "
                              f"(columns: {list(rows[0]) if rows else 'none'})")
         return [r[col] for r in rows]
+    if path.suffix.lower() == ".json":                 # a client manifest: a list of records (or {"records": [...]})
+        import json as _json
+        d = _json.loads(text)
+        if isinstance(d, dict):
+            d = d.get("records") or d.get("data") or next((v for v in d.values() if isinstance(v, list)), [])
+        if not isinstance(d, list) or not d or not isinstance(d[0], dict):
+            raise ReinsError(f"{path}: a JSON case set is a list of records")
+        col = case_field(d[0].keys(), key)
+        if not col:
+            raise ReinsError(f"{path}: no {CASE_KEY!r}{' or ' + repr(key) if key else ''} field (fields: {sorted(d[0])[:12]})")
+        return [str(r.get(col)) for r in d if r.get(col) not in (None, "")]
     return [ln for ln in text.splitlines() if ln != ""]
 
 
