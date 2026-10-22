@@ -149,6 +149,7 @@ def _on_kill(con, batch: str, stage: str, pid: int, cmd: str, how: str) -> None:
 
 def supervise(spec: dict) -> int:
     os.environ["REINS_HOME"] = spec["home"]
+    os.environ["REINS_SUPERVISOR"] = "1"                 # messages it sends reach the owner session (reins/inbox.py)
     con = connect()
     try:
         return _supervise(con, spec)
@@ -209,6 +210,11 @@ def _supervise(con, spec: dict) -> int:
             open_ = [r[0] for r in con.execute("SELECT stage FROM batch_stage WHERE batch_id=? AND status NOT IN ('done','skipped')"
                                                " ORDER BY ord", (batch,))]
             if open_:
+                from . import lifecycle
+                if lifecycle.on_exit_ok(con, batch) == "done":       # an experiment that reports no cases: ended
+                    notify.send(con, f"done:{batch}", "info", f"{batch}: done (exit 0, no per-case outcomes)",
+                                f"log: {spec['log']}", cooldown_min=0)
+                    return 0
                 notify.send(con, f"stage_incomplete:{batch}", "action", f"{batch}: command exited 0 but stages are not finished",
                             f"not done: {', '.join(open_)}. log: {spec['log']}", cooldown_min=0)
             else:
@@ -223,8 +229,10 @@ def _supervise(con, spec: dict) -> int:
                     from . import training
                     training.finished(con, batch)          # a training run registers the weights it wrote
             except ReinsError as e:
-                notify.send(con, f"stage_incomplete:{batch}:{stage}", "action",
-                            f"{batch}: {stage} exited 0 but the case ledger is incomplete", str(e), cooldown_min=0)
+                from . import lifecycle
+                if lifecycle.on_exit_ok(con, batch) != "done":    # a script that reports no cases ends here instead
+                    notify.send(con, f"stage_incomplete:{batch}:{stage}", "action",
+                                f"{batch}: {stage} exited 0 but the case ledger is incomplete", str(e), cooldown_min=0)
             return 0
         held = con.execute("SELECT status, status_reason FROM batch WHERE batch_id=?", (batch,)).fetchone()
         if held and held["status"] == "paused":       # paused meanwhile (the sentinel, a person): retrying hits the same wall

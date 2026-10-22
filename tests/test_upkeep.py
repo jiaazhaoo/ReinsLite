@@ -61,7 +61,7 @@ class Upkeep(unittest.TestCase):
         out = upkeep.reconcile(self.con)
         st = {b: batches.get(self.con, b) for b in (lost, ended, fresh, unrun_new, unrun_old)}
         self.assertEqual(st[lost]["status"], "paused"); self.assertTrue(st[lost]["status_reason"].startswith("process gone"))
-        self.assertIn("ended normally (exit 0)", st[ended]["status_reason"])
+        self.assertEqual(st[ended]["status"], "done")          # exit 0 and no cases reported: an experiment that finished
         self.assertEqual((st[fresh]["status"], st[unrun_new]["status"]), ("running", "running"))
         self.assertEqual(st[unrun_old]["status"], "paused")
         self.assertEqual(len(out), 3)
@@ -70,7 +70,7 @@ class Upkeep(unittest.TestCase):
         self.assertEqual(lost_proc, "lost")
 
     def test_resume_without_a_process_stays_paused(self):
-        b = self.batch(); self.proc(b, "exited", ago(hours=5), ago(hours=3), 0)
+        b = self.batch(); self.proc(b, "exited", ago(hours=5), ago(hours=3), 1)
         upkeep.reconcile(self.con)
         msg = runner.ctl(self.con, "resume", b, system=True)
         self.assertIn("stays paused", msg)

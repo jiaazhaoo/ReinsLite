@@ -99,10 +99,14 @@ def check_batches(con, cfg) -> list[str]:
 
 
 def _pause_all(con, why: str) -> list[str]:
+    """Pause what is running on a full disk -- only batches with something alive (a dead one writes nothing; pausing it
+    left it paused for ever). They are resumed when the disk is below the line again (reins/lifecycle.py)."""
+    from . import lifecycle
     paused = []
     for b in con.execute("SELECT batch_id FROM batch WHERE status='running'").fetchall():
-        runner.ctl(con, "pause", b[0], why, system=True)
-        paused.append(b[0])
+        if lifecycle._alive(con, b[0]):
+            runner.ctl(con, "pause", b[0], why, system=True)
+            paused.append(b[0])
     return paused
 
 
@@ -175,7 +179,7 @@ def once(con=None) -> list[str]:
     from . import sentinel, upkeep
     return ([f"released {n} resource claim(s) of ended processes"] if n else []) + upkeep.reconcile(con) + check_batches(con, cfg) + \
         check_machine(con, cfg) + poll_balances_due(con, cfg) + release_stale_reservations(con, cfg) + sentinel.watch_running(con) + \
-        upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _services(con) + check_gateway(con, cfg) + _sync(con)
+        _lifecycle(con) + upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _services(con) + check_gateway(con, cfg) + _sync(con)
 
 
 def _sync(con) -> list[str]:
@@ -256,6 +260,14 @@ def check_gateway(con, cfg, probe=None, restart=None) -> list[str]:
                 f"In-flight paid calls failed and are retried by their clients; answers already received are cached.",
                 cooldown_min=0)
     return [f"gateway hung: {'restarted' if did else 'restart failed'}"]
+
+
+def _lifecycle(con) -> list[str]:
+    from . import lifecycle
+    try:
+        return lifecycle.sweep(con)
+    except Exception as e:                                                      # noqa: BLE001  never stops the watchdog
+        return [f"lifecycle: {e}"]
 
 
 def _services(con) -> list[str]:

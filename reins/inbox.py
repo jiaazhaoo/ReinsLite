@@ -57,7 +57,10 @@ def owner_of(con, batch: str) -> str | None:
 def to_batch_owner(con, batch: str, title: str, body: str = "") -> int | None:
     """To whoever owns the batch now (after any hand-over). None when nobody does."""
     o = owner_of(con, batch)
-    if not o or o == session():
+    # the batch's own supervisor runs under its owner's session id: what it reports (a sentinel pause, an open stage)
+    # is for that session, not "to myself" (2026-10-22: every such message had been dropped)
+    import os
+    if not o or (o == session() and not os.environ.get("REINS_SUPERVISOR")):
         return None
     return send(con, o, title, body, batch)
 
