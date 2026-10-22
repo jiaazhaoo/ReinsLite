@@ -31,6 +31,11 @@ def _literal(raw: str):
         return raw, f'"{text}"'
 
 
+def _pool_name(type_: str) -> str:
+    from . import spend
+    return spend.pool_of(type_) or ""
+
+
 def get(key: str):
     cur = config()
     for part in key.split("."):
@@ -57,7 +62,19 @@ def set_(con, key: str, raw: str, why: str, by: str = "user", new_key: bool = Fa
         raise ReinsError(f"{key} is a section; set one of its values: " + ", ".join(f"{key}.{k}" for k in cur[name] if not isinstance(cur[name][k], dict)))
     in_pool = bool(section) and section.startswith("pool.") and name in ("hourly_cap", "daily_cap", "weekly_cap", "max_batch_cap",
                                                                          "per_session_daily_cap", "types")
-    if old is None and not new_key and not in_pool:                 # a pool's limit may be set for the first time
+    in_standing = section == "standing"                             # standing.TYPE = USD: a standing approval
+    if in_standing:
+        from . import names as _names
+        if name not in _names.BATCH_TYPES:
+            raise ReinsError(f"standing.{name}: not a batch type ({', '.join(sorted(_names.BATCH_TYPES))})")
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+            raise ReinsError(f"standing.{name} is a cap in USD per batch (0 turns it off)")
+        caps = [v for v in (get("pool.max_batch_cap"), get(f"pool.{_pool_name(name)}.max_batch_cap"))
+                if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        top = min(caps) if caps else None
+        if top is not None and value > top:
+            raise ReinsError(f"standing.{name} ${value} exceeds max_batch_cap ${top}")
+    if old is None and not new_key and not in_pool and not in_standing:                 # a pool's limit may be set for the first time
         known = sorted(f"{k}.{kk}" for k, v in cur.items() if isinstance(v, dict) for kk in v) + sorted(k for k, v in cur.items() if not isinstance(v, dict))
         close = [k for k in known if name in k][:6]
         raise ReinsError(f"{key} is not a known setting" + (f" (did you mean {', '.join(close)}?)" if close else "")

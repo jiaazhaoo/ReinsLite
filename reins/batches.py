@@ -158,7 +158,29 @@ def open_(con, *, project: str, scope: str, type_: str, purpose: str, case_file:
     if not parent:                                         # which earlier run of this work it repeats, splits or extends
         from . import lineage
         lineage.relate(con, bid)
+    standing_approval(con, bid)
     return bid
+
+
+def standing_approval(con, batch: str) -> float | None:
+    """A standing approval the user gave for a whole kind of batch: config [standing] TYPE = USD (set with
+    `reins config set standing.TYPE USD --why ...`, so it is a recorded decision). A new batch of that type with a paid
+    stage gets that cap at open, through the same pool checks as a hand approval; if the pools refuse, the batch stays
+    at $0 and the refusal is an event (the paid stage then waits for a hand approval, as before)."""
+    from .store import config as _config
+    b = get(con, batch)
+    usd = (_config().get("standing") or {}).get(b["type"])
+    if not isinstance(usd, (int, float)) or isinstance(usd, bool) or usd <= 0 or b["spend_cap"] >= usd:
+        return None
+    if not con.execute("SELECT 1 FROM batch_stage WHERE batch_id=? AND paid=1", (batch,)).fetchone():
+        return None
+    try:
+        approve_spend(con, batch, float(usd), who=f"standing approval (config standing.{b['type']})")
+    except ReinsError as e:
+        with tx(con):
+            _event(con, batch, "standing_refused", f"standing.{b['type']} ${usd:.2f}: {e}"[:800])
+        return None
+    return float(usd)
 
 
 def adopt(con, *, project: str, scope: str, type_: str, purpose: str, case_file: Path, work_dir: str,
