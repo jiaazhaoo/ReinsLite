@@ -105,3 +105,43 @@ class Legacy(unittest.TestCase):
         self.assertIn("skip-stage", buf.getvalue())
         a = p.parse_args(["spend", "weekly"])                     # still parses
         self.assertEqual((a.cmd, a.sub), ("spend", "weekly"))
+
+
+class Continuation(unittest.TestCase):
+    """2026-10-23: after a context compaction the conversation went on as a new session that could not stop a batch
+    its own earlier context had opened. A continuation is the same line of work."""
+
+    def setUp(self):
+        self._env = {k: os.environ.get(k) for k in ("REINS_HOME", "REINS_SESSION")}
+        self.tmp = Path(tempfile.mkdtemp(prefix="reins-cont-"))
+        os.environ["REINS_HOME"] = str(self.tmp / "home")
+        (self.tmp / "home").mkdir()
+        self.con = connect(self.tmp / "home")
+        self.proj = self.tmp / "proj"
+        self.proj.mkdir()
+        (self.proj / "aaaa1111.jsonl").write_text('{"type":"user","uuid":"m-1","parentUuid":null}\n{"type":"assistant","uuid":"m-2","parentUuid":"m-1"}\n')
+        (self.proj / "bbbb2222.jsonl").write_text('{"type":"custom-title"}\n{"type":"system","uuid":"n-1","parentUuid":null,"logicalParentUuid":"m-2"}\n')
+        (self.tmp / "cases.txt").write_text("101\n")
+
+    def tearDown(self):
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_continuation_inherits_batches(self):
+        from reins import sessions
+        os.environ["REINS_SESSION"] = "aaaa1111"
+        sessions.start(self.con, "aaaa1111", str(self.tmp), str(self.proj / "aaaa1111.jsonl"))
+        b = batches.open_(self.con, project="p", scope="x-wp1", type_="experiment", purpose="t",
+                          case_file=self.tmp / "cases.txt", stages=_stages("s1"))
+        os.environ["REINS_SESSION"] = "bbbb2222"
+        sessions.start(self.con, "bbbb2222", str(self.tmp), str(self.proj / "bbbb2222.jsonl"))
+        self.assertEqual(self.con.execute("SELECT owner_session FROM batch WHERE batch_id=?", (b,)).fetchone()[0], "bbbb2222")
+        self.assertEqual(self.con.execute("SELECT parent FROM session WHERE id='bbbb2222'").fetchone()[0], "aaaa1111")
+        self.assertEqual(self.con.execute("SELECT status FROM session WHERE id='aaaa1111'").fetchone()[0], "ended")
+
+    def test_not_a_continuation(self):
+        from reins import sessions
+        self.assertIsNone(sessions.continuation_of(str(self.proj / "aaaa1111.jsonl"), "aaaa1111"))
