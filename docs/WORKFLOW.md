@@ -126,6 +126,12 @@ benchmark 自己也进化：生产错例 → dev；没调过参的新 case → h
 | 批发布 | `reins dev finish V`（会话提议）→ 用户点头 | 门禁结果 + 结果变了的 case 页面 | 批或打回 |
 | 验收交付 | `reins accept sample/grade/decide` | 固定 seed 抽样的评分表；F 数对错误预算 | 交付 / 带说明交付 / 返工 |
 
+**改进闭环自己转**（2026-10-23 重构）：项目在 reins.toml 里写 `[review_source]`（审核数据库在哪、列名、判定词怎么对应），
+watchdog 每小时把最近 30 天生产/返工批次的人工判定导进来；AI 自动通过、但审核员判错的案件按错误类型自动开问题单。
+`reins issue dispatch N` 把问题单交给一个无人值守的 agent：开候选、在候选工作树里修、跑门禁直到通过，**不合并**——
+合并（`reins dev finish`）是人点“采用”的那一步。`config loop.auto_dispatch = true` 时开单后自动派出（默认关：会花
+agent 订阅额度、会改代码）。日志在 `$REINS_HOME/loop/issue-N.log`。
+
 **状态只有一个写入口**（2026-10-23 重构）：批次和阶段的状态只由 `reins/state.py` 改写，按转换表走（完成的批次不会再跑起来，
 跳过的阶段不会再开），转换时就检查：阶段完成要求每个案件都有结果（或批次标明不逐案记录 `per_case=0`），批次完成要求
 所有阶段都结束；每次变化都在批次上记一条 `state` 事件（从哪到哪、为什么）。`tests/test_state.py` 拒绝任何别的模块直接
