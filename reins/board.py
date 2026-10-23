@@ -383,7 +383,7 @@ def packages(con, days: int = 14, limit: int = 14) -> list[dict]:
     piece of work stands across intake, pilots, production and rework, without reading batch ids."""
     since = (dt.datetime.now() - dt.timedelta(days=days)).isoformat(timespec="seconds")
     by: dict[str, dict] = {}
-    for b in con.execute("SELECT batch_id, project, scope, type, status, created, closed, n_cases FROM batch WHERE created>?"
+    for b in con.execute("SELECT batch_id, project, scope, type, status, created, closed, n_cases, COALESCE(per_case,1) per_case FROM batch WHERE created>?"
                          " ORDER BY created DESC", (since,)):
         p = by.setdefault(b["scope"], {"scope": b["scope"], "project": b["project"], "last": b["created"], "types": {}, "runs": 0})
         p["runs"] += 1
@@ -393,7 +393,7 @@ def packages(con, days: int = 14, limit: int = 14) -> list[dict]:
             done = con.execute("SELECT COUNT(*) FROM case_current WHERE batch_id=? AND stage=? AND status='done'",
                                (b["batch_id"], last[0])).fetchone()[0] if last else 0
             p["types"][b["type"]] = {"type": b["type"], "batch_id": b["batch_id"], "status": b["status"], "at": b["closed"] or b["created"],
-                                     "n_cases": b["n_cases"], "done": done, "stage": last[0] if last else None,
+                                     "n_cases": b["n_cases"] if b["per_case"] else 0, "done": done, "stage": last[0] if last else None,
                                      "repeats": 0}
         p["types"][b["type"]]["repeats"] += 1
     out = sorted(by.values(), key=lambda p: p["last"], reverse=True)[:limit]
@@ -418,6 +418,7 @@ def run_history(con, limit: int = 60) -> list[dict]:
         aliases = json.loads(b["aliases"])
         out.append({"batch_id": bid, "title": aliases[0] if aliases else b["purpose"], "purpose": b["purpose"], "type": b["type"],
                     "scope": b["scope"], "named": bool(aliases), "project": b["project"], "stage_outcomes": _stage_outcomes(con, bid),
+                    "per_case": bool(b["per_case"]) if "per_case" in b.keys() else True,
                     "status": b["status"], "n_cases": b["n_cases"], "release": b["release_name"],
                     "stages_done": sum(1 for s in stages if s["status"] in ("done", "skipped")), "stages": len(stages),
                     "done": led["done"] if led else None, "skipped": led["skipped"] if led else None, "failed": led["failed"] if led else None,

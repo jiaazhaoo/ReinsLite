@@ -29,7 +29,7 @@ const I18N = {
     theme: "主题", ok: "正常", attention: "注意", action: "需要处理", none: "无",
     s_trained: "自训模型", s_pretrained: "开源模型", s_paid: "付费模型", s_prompt: "提示词", s_code: "代码工具", s_api: "外部接口", s_data: "数据",
     st_running: "运行中", st_paused: "暂停", st_open: "未开始", st_closed: "已关闭", st_done: "完成", st_failed: "失败", st_planned: "未开始", st_skipped: "跳过",
-    t_intake: "接收", by_package: "按工作包", by_package_sub: "每个工作包最新一次各类运行：接收 → 试跑 → 生产 → 返工；数字是最后一步完成的案件",
+    t_intake: "接收", not_per_case: "不按案件记录", by_package: "按工作包", by_package_sub: "每个工作包最新一次各类运行：接收 → 试跑 → 生产 → 返工；数字是最后一步完成的案件",
     runs_n: "共 {n} 次", earlier: "更早的 {n} 次", no_packages: "最近两周没有运行",
     t_production: "生产", t_rework: "返工", t_experiment: "实验", t_pilot: "试跑", t_eval: "评测", t_smoke: "冒烟", t_drift: "漂移", t_benchmark_build: "建基准",
     d_ship: "交付", d_ship_with_note: "带说明交付", d_rework: "返工",
@@ -83,7 +83,7 @@ const I18N = {
     theme: "Theme", ok: "OK", attention: "Attention", action: "Needs action", none: "none",
     s_trained: "Trained", s_pretrained: "Pretrained", s_paid: "Paid models", s_prompt: "Prompts", s_code: "Code", s_api: "APIs", s_data: "Data",
     st_running: "running", st_paused: "paused", st_open: "open", st_closed: "closed", st_done: "done", st_failed: "failed", st_planned: "planned", st_skipped: "skipped",
-    t_intake: "intake", by_package: "By work package", by_package_sub: "the newest run of each kind per work package: intake → pilot → production → rework; numbers are cases done in the last step",
+    t_intake: "intake", not_per_case: "not recorded per case", by_package: "By work package", by_package_sub: "the newest run of each kind per work package: intake → pilot → production → rework; numbers are cases done in the last step",
     runs_n: "{n} runs", earlier: "{n} earlier", no_packages: "no runs in the last two weeks",
     t_production: "production", t_rework: "rework", t_experiment: "experiment", t_pilot: "pilot", t_eval: "eval", t_smoke: "smoke", t_drift: "drift", t_benchmark_build: "benchmark build",
     d_ship: "ship", d_ship_with_note: "ship with note", d_rework: "rework",
@@ -393,7 +393,7 @@ const VIEWS = {
     S.run_history.forEach((h) => { const k = h.scope + "|" + h.type; if (!seen[k]) { seen[k] = { head: h, more: [] }; groups.push(seen[k]); } else seen[k].more.push(h); });
     const row = (h, sub) => [when(h.closed),
       `<b>${esc(sub ? h.batch_id : scopeName(h.scope) + " · " + typeName(h.type))}</b><div class="sub ellip" title="${esc(h.purpose)}">${esc(sub ? h.purpose : h.batch_id + " — " + h.purpose)}</div>`,
-      typeBadge(h.type), String(h.n_cases), outcomeBar(h.stage_outcomes, h.n_cases),
+      typeBadge(h.type), String(h.n_cases), h.per_case === false ? `<span class="faint">${esc(t("not_per_case"))}</span>` : outcomeBar(h.stage_outcomes, h.n_cases),
       usd(h.spent), h.hours != null ? h.hours + " h" : "—",
       h.decision ? badge(t("d_" + h.decision), "green") : ACCEPTED_TYPES.includes(h.type) ? `<span class="faint">${esc(t("not_accepted"))}</span>` : `<span class="faint">—</span>`];
     const rows = [];
