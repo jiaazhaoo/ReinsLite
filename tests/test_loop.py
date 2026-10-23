@@ -63,6 +63,17 @@ class Loop(unittest.TestCase):
         n = self.con.execute("SELECT COUNT(*) FROM issue WHERE batch_id=?", (self.b,)).fetchone()[0]
         self.assertEqual(n, 1)
 
+    def test_reruns_do_not_reopen(self):
+        with mock.patch.object(loop, "_cfg", return_value=self.cfg):
+            loop.tend(self.con, force=True)
+            b2 = batches.open_(self.con, project="p", scope="sheffield-wp3", type_="experiment", purpose="rerun", day="20990101",
+                               case_file=self.tmp / "cases.txt", work_dir=str(self.wd),
+                               stages=[{"stage": "check", "module_version": None, "paid": 0, "spend_cap": None, "time_limit_s": None}])
+            with tx(self.con):
+                self.con.execute("UPDATE batch SET type='rework' WHERE batch_id=?", (b2,))
+            loop.tend(self.con, force=True)
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM issue").fetchone()[0], 1)
+
     def test_dispatch_never_merges(self):
         with mock.patch.object(loop, "_cfg", return_value=self.cfg):
             loop.tend(self.con, force=True)
