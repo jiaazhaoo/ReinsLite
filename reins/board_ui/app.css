@@ -449,3 +449,30 @@ a.card { color: inherit; display: block; } a.card:hover { border-color: var(--bo
 .prodlink:hover { background: var(--hover); color: var(--text); }
 .prodlink svg { width: 17px; height: 17px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .prodlink .ext { margin-left: auto; color: var(--faint); }
+
+/* by work package (overview) */
+.pkgs { padding: 4px 0; }
+.pkg-row { display: grid; grid-template-columns: minmax(170px, 230px) 1fr; gap: 14px; align-items: center; padding: 10px 16px; border-top: 1px solid var(--border); }
+.pkg-row:first-child { border-top: 0; }
+.pkg-name { display: flex; flex-direction: column; gap: 2px; color: inherit; text-decoration: none; min-width: 0; }
+.pkg-name b { font-size: 14px; }
+.pkg-name .faint { font-size: 12px; }
+.pkg-steps { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pkg-step { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border: 1px solid var(--border); border-radius: 8px; font-size: 12.5px; }
+.pkg-step .faint { font-size: 12px; }
+.pkg-arrow { color: var(--faint); font-size: 12px; }
+@media (max-width: 720px) { .pkg-row { grid-template-columns: 1fr; gap: 6px; } }
+/* per-stage outcome bars (run history) */
+.obar { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.orow { display: grid; grid-template-columns: 74px 1fr auto; gap: 6px; align-items: center; font-size: 11.5px; }
+.ostage { font-family: var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.otrack { display: flex; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.otrack i { display: block; height: 100%; }
+.otrack i.g { background: var(--green); } .otrack i.s { background: var(--faint); } .otrack i.r { background: var(--red); }
+.olbl { color: var(--muted); white-space: nowrap; }
+.ellip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+td.span .cell { padding-top: 0; }
+details.earlier summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+.earlier-row { font-size: 12px; color: var(--muted); padding: 2px 0 2px 14px; }
+.pkg-dev { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.pkg-dev .dot { margin-right: 4px; }

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import subprocess
 import sys
 import time
@@ -77,6 +78,25 @@ def _resources(con) -> dict:
         return {"error": str(e)}
 
 
+def _resolved(con, r) -> bool:
+    """A notice whose condition is gone: a low balance that has since been topped up (a newer balance sample above the
+    amount the notice named; 2026-10-23 the board still showed 'openrouter balance $4.54' with $19.11 in the account),
+    or a notice about a batch that a later, finished run of the same scope and type has replaced."""
+    k = r["key"].split(":")
+    if k[0] == "balance_low" and len(k) == 2:
+        m = re.search(r"\$(\d+(?:\.\d+)?)", r["title"] or "")
+        last = con.execute("SELECT balance FROM balance_sample WHERE provider=? AND at>? ORDER BY at DESC LIMIT 1",
+                           (k[1], r["at"])).fetchone()
+        return bool(m and last and last[0] is not None and last[0] > float(m.group(1)) + 0.5)
+    if len(k) >= 2:                                       # a notice about a batch that a later run of the same work replaced
+        b = con.execute("SELECT scope, type, created, status FROM batch WHERE batch_id=?", (k[1],)).fetchone()
+        if b and b["status"] in ("done", "closed", "failed") and con.execute(
+                "SELECT 1 FROM batch WHERE scope=? AND type=? AND created>? AND status='done' LIMIT 1",
+                (b["scope"], b["type"], b["created"])).fetchone():
+            return True
+    return False
+
+
 def _latest_notes(con, hours: int = 6) -> list[dict]:
     """One line per notification key (the newest), from the last few hours; stale stage notices dropped."""
     since = (dt.datetime.now() - dt.timedelta(hours=hours)).isoformat(timespec="seconds")
@@ -89,7 +109,7 @@ def _latest_notes(con, hours: int = 6) -> list[dict]:
             st = con.execute("SELECT status FROM batch_stage WHERE batch_id=? AND stage=?", (k[1], k[2])).fetchone()
             if not st or st["status"] != "running":
                 continue
-        if r["level"] != "info":
+        if r["level"] != "info" and not _resolved(con, r):
             out.append(dict(r))
     return out
 
@@ -248,7 +268,7 @@ def _system_notes(con, hours: int = 6) -> list[dict]:
     since = (dt.datetime.now() - dt.timedelta(hours=hours)).isoformat(timespec="seconds")
     rows = con.execute("SELECT * FROM notification WHERE acked=0 AND at>? AND id IN (SELECT MAX(id) FROM notification GROUP BY key)"
                        " ORDER BY id DESC", (since,)).fetchall()
-    return [dict(r) for r in rows if r["key"].split(":")[0] in SYSTEM_KEYS or r["key"].startswith("gpu")][:5]
+    return [dict(r) for r in rows if (r["key"].split(":")[0] in SYSTEM_KEYS or r["key"].startswith("gpu")) and not _resolved(con, r)][:5]
 
 
 def running_cards(con) -> list[dict]:
@@ -276,6 +296,7 @@ def running_cards(con) -> list[dict]:
         iss = [{"id": i["id"], "status": i["status"], "symptom": i["symptom"], "n": len(i["cases"]), "version": i["version"]}
                for i in issues.list_(con, False, b["batch_id"])]
         out.append({"batch_id": b["batch_id"], "title": aliases[0] if aliases else b["purpose"], "purpose": b["purpose"],
+                    "scope": b["scope"], "named": bool(aliases),
                     "type": b["type"], "status": b["status"], "status_reason": b["status_reason"], "issues": iss,
                     "n_cases": b["n_cases"], "n_skipped": skipped, "skip_reasons": reasons,
                     "stage": cur["stage"] if cur else "-", "stage_ord": f"{cur['ord'] + 1}/{len(st['stages'])}" if cur else "-",
@@ -340,7 +361,42 @@ def dev_history(con, limit: int = 20) -> list[dict]:
     return out
 
 
-def run_history(con, limit: int = 15) -> list[dict]:
+def _stage_outcomes(con, bid: str) -> list[dict]:
+    """Per stage: done / skipped / failed, in one query (the board shows where a batch's cases went)."""
+    counts: dict[str, dict] = {}
+    for stage, status, n in con.execute("SELECT stage, status, COUNT(*) FROM case_current WHERE batch_id=? GROUP BY stage, status", (bid,)):
+        counts.setdefault(stage, {})[status] = n
+    return [{"stage": st["stage"], "status": st["status"], "done": counts.get(st["stage"], {}).get("done", 0),
+             "skipped": counts.get(st["stage"], {}).get("skipped", 0), "failed": counts.get(st["stage"], {}).get("failed", 0)}
+            for st in con.execute("SELECT stage, status FROM batch_stage WHERE batch_id=? ORDER BY ord", (bid,))]
+
+
+def packages(con, days: int = 14, limit: int = 14) -> list[dict]:
+    """By work package (batch scope): the newest batch of each type, most recently active package first -- where each
+    piece of work stands across intake, pilots, production and rework, without reading batch ids."""
+    since = (dt.datetime.now() - dt.timedelta(days=days)).isoformat(timespec="seconds")
+    by: dict[str, dict] = {}
+    for b in con.execute("SELECT batch_id, project, scope, type, status, created, closed, n_cases FROM batch WHERE created>?"
+                         " ORDER BY created DESC", (since,)):
+        p = by.setdefault(b["scope"], {"scope": b["scope"], "project": b["project"], "last": b["created"], "types": {}, "runs": 0})
+        p["runs"] += 1
+        if b["type"] not in p["types"]:
+            last = con.execute("SELECT stage FROM batch_stage WHERE batch_id=? AND status IN ('done','running') ORDER BY ord DESC LIMIT 1",
+                               (b["batch_id"],)).fetchone()
+            done = con.execute("SELECT COUNT(*) FROM case_current WHERE batch_id=? AND stage=? AND status='done'",
+                               (b["batch_id"], last[0])).fetchone()[0] if last else 0
+            p["types"][b["type"]] = {"type": b["type"], "batch_id": b["batch_id"], "status": b["status"], "at": b["closed"] or b["created"],
+                                     "n_cases": b["n_cases"], "done": done, "stage": last[0] if last else None,
+                                     "repeats": 0}
+        p["types"][b["type"]]["repeats"] += 1
+    out = sorted(by.values(), key=lambda p: p["last"], reverse=True)[:limit]
+    order = ["intake", "pilot", "production", "rework", "eval", "experiment", "benchmark_build", "smoke", "drift", "training"]
+    for p in out:
+        p["types"] = sorted(p["types"].values(), key=lambda x: order.index(x["type"]) if x["type"] in order else 99)
+    return out
+
+
+def run_history(con, limit: int = 60) -> list[dict]:
     out = []
     for b in con.execute("SELECT * FROM batch WHERE status IN ('closed','done','failed') ORDER BY created DESC LIMIT ?", (limit,)):
         bid = b["batch_id"]
@@ -354,12 +410,18 @@ def run_history(con, limit: int = 15) -> list[dict]:
             if starts and ends else None
         aliases = json.loads(b["aliases"])
         out.append({"batch_id": bid, "title": aliases[0] if aliases else b["purpose"], "purpose": b["purpose"], "type": b["type"],
+                    "scope": b["scope"], "named": bool(aliases), "project": b["project"], "stage_outcomes": _stage_outcomes(con, bid),
                     "status": b["status"], "n_cases": b["n_cases"], "release": b["release_name"],
                     "stages_done": sum(1 for s in stages if s["status"] in ("done", "skipped")), "stages": len(stages),
                     "done": led["done"] if led else None, "skipped": led["skipped"] if led else None, "failed": led["failed"] if led else None,
                     "spent": round(batches.spent(con, bid), 2), "hours": hours, "closed": b["closed"] or b["created"],
                     "decision": acc["decision"] if acc else None, "mixed": bool(b["mixed_version"])})
     return out
+
+
+def _real_runs(items: list[dict]) -> list[dict]:
+    """Unregistered runs whose command really starts a pipeline; a shell prelude (S=...; tr ...; cd ...) is not one."""
+    return [r for r in items if any(sessions.runs_pipeline(sg["argv"]) for sg in sessions.segments(r.get("what") or ""))]
 
 
 _GIT: dict[str, tuple[float, list[dict]]] = {}
@@ -494,7 +556,8 @@ def state(con) -> dict:
             "cost": spend.cost_view(con), "spend_all": spend.all_time(con), "pool": {**spend.pool_usage(con), "limits": config()["pool"]}, "pools": spend.pools_view(con),
             "notifications": _latest_notes(con), "system": _system_notes(con), "resources": _resources(con),
             "in_progress": developing, "dev_history": dev_history(con), "unregistered_dev": unregistered_dev(con),
-            "running": running, "unregistered_runs": sessions.unregistered_runs(con), "machine_jobs": machine_jobs(con),
+            "running": running, "unregistered_runs": _real_runs(sessions.unregistered_runs(con)), "machine_jobs": machine_jobs(con),
+            "packages": packages(con),
             "boot": _boot_time(),
             "run_history": run_history(con),
             # kept for callers of the previous shape

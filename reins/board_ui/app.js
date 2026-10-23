@@ -29,6 +29,8 @@ const I18N = {
     theme: "主题", ok: "正常", attention: "注意", action: "需要处理", none: "无",
     s_trained: "自训模型", s_pretrained: "开源模型", s_paid: "付费模型", s_prompt: "提示词", s_code: "代码工具", s_api: "外部接口", s_data: "数据",
     st_running: "运行中", st_paused: "暂停", st_open: "未开始", st_closed: "已关闭", st_done: "完成", st_failed: "失败", st_planned: "未开始", st_skipped: "跳过",
+    t_intake: "接收", by_package: "按工作包", by_package_sub: "每个工作包最新一次各类运行：接收 → 试跑 → 生产 → 返工；数字是最后一步完成的案件",
+    runs_n: "共 {n} 次", earlier: "更早的 {n} 次", no_packages: "最近两周没有运行",
     t_production: "生产", t_rework: "返工", t_experiment: "实验", t_pilot: "试跑", t_eval: "评测", t_smoke: "冒烟", t_drift: "漂移", t_benchmark_build: "建基准",
     d_ship: "交付", d_ship_with_note: "带说明交付", d_rework: "返工",
     g_active: "在动", g_decide: "要你决定", g_stuck: "停住了", g_stale: "长期没动",
@@ -81,6 +83,8 @@ const I18N = {
     theme: "Theme", ok: "OK", attention: "Attention", action: "Needs action", none: "none",
     s_trained: "Trained", s_pretrained: "Pretrained", s_paid: "Paid models", s_prompt: "Prompts", s_code: "Code", s_api: "APIs", s_data: "Data",
     st_running: "running", st_paused: "paused", st_open: "open", st_closed: "closed", st_done: "done", st_failed: "failed", st_planned: "planned", st_skipped: "skipped",
+    t_intake: "intake", by_package: "By work package", by_package_sub: "the newest run of each kind per work package: intake → pilot → production → rework; numbers are cases done in the last step",
+    runs_n: "{n} runs", earlier: "{n} earlier", no_packages: "no runs in the last two weeks",
     t_production: "production", t_rework: "rework", t_experiment: "experiment", t_pilot: "pilot", t_eval: "eval", t_smoke: "smoke", t_drift: "drift", t_benchmark_build: "benchmark build",
     d_ship: "ship", d_ship_with_note: "ship with note", d_rework: "rework",
     g_active: "Moving", g_decide: "Needs you", g_stuck: "Stuck", g_stale: "Long idle",
@@ -165,7 +169,32 @@ function crab(kind, cls = "crab") {
 const badge = (text, cls = "", dot = false) => `<span class="badge ${cls}">${dot ? `<span class="dot ${dot}"></span>` : ""}${esc(text)}</span>`;
 const STATUS_CLS = { running: "green", paused: "amber", failed: "red", done: "blue", closed: "", open: "", planned: "", skipped: "" };
 const statusBadge = (s) => badge(t("st_" + s), STATUS_CLS[s] || "", s === "running" ? "green" : s === "paused" ? "amber" : s === "failed" ? "red" : false);
-const typeBadge = (ty) => badge(t("t_" + ty), "outline");
+const typeName = (ty) => { const v = t("t_" + ty); return v === "t_" + ty ? ty : v; };
+const typeBadge = (ty) => badge(typeName(ty), "outline");
+const ACCEPTED_TYPES = ["production", "rework"];          // only deliveries are accepted by a person
+const scopeName = (sc) => String(sc || "").replace(/-(wp[\w-]+)$/i, " $1").replace(/^./, (c) => c.toUpperCase());
+function outcomeBar(so, n) {                              // per stage: where the batch's cases went
+  return `<div class="obar">${(so || []).map((x) => {
+    const tot = Math.max(n || 0, x.done + x.skipped + x.failed, 1);
+    const seg = (v, c) => (v ? `<i class="${c}" style="width:${(100 * v / tot).toFixed(1)}%"></i>` : "");
+    const lbl = [x.done ? `${t("done")} ${x.done}` : "", x.skipped ? `${t("skipped")} ${x.skipped}` : "", x.failed ? `${t("failed")} ${x.failed}` : ""].filter(Boolean).join(" · ") || t("st_" + x.status);
+    return `<div class="orow" title="${esc(x.stage + ": " + lbl)}"><span class="ostage">${esc(x.stage)}</span><span class="otrack">${seg(x.done, "g")}${seg(x.skipped, "s")}${seg(x.failed, "r")}</span><span class="olbl">${esc(lbl)}</span></div>`;
+  }).join("")}</div>`;
+}
+// a batch's short name: its alias if it has one, else "<work package> · <kind>"; the purpose is shown under it
+const runTitle = (r) => (r.named || !r.scope ? r.title : scopeName(r.scope) + " · " + typeName(r.type));
+const MAIN_TYPES = ["intake", "pilot", "production", "rework"];   // the delivery chain; the rest is development
+function packagesPanel() {
+  const P = (S.packages || []).map((p) => ({ ...p, main: p.types.filter((x) => MAIN_TYPES.includes(x.type)), dev: p.types.filter((x) => !MAIN_TYPES.includes(x.type)) }))
+    .sort((a, b) => (b.main.length > 0) - (a.main.length > 0));
+  if (!P.length) return `<div class="card empty">${esc(t("no_packages"))}</div>`;
+  const dot = (st) => (st === "running" ? "green" : st === "paused" || st === "open" ? "amber" : st === "failed" ? "red" : st === "done" ? "blue" : "");
+  const step = (x) => `<span class="pkg-step" title="${esc(x.batch_id)}"><span class="dot ${dot(x.status)}"></span><b>${esc(typeName(x.type))}</b>
+    <span class="faint">${esc(t("st_" + x.status))}${x.n_cases ? ` · ${x.done}/${x.n_cases}` : ""} · ${when(x.at)}${x.repeats > 1 ? ` · ×${x.repeats}` : ""}</span></span>`;
+  return `<div class="card pkgs">${P.map((p) => `<div class="pkg-row"><a class="pkg-name" href="#/runs"><b>${esc(scopeName(p.scope))}</b><span class="faint">${esc(p.project || "")} · ${esc(t("runs_n", { n: p.runs }))}</span></a>
+    <div><div class="pkg-steps">${p.main.map((x, i) => `${i ? '<span class="pkg-arrow">→</span>' : ""}${step(x)}`).join("") || `<span class="faint" style="font-size:12.5px">—</span>`}</div>
+    ${p.dev.length ? `<div class="pkg-dev">${p.dev.map((x) => `<span title="${esc(x.batch_id)}"><span class="dot ${dot(x.status)}"></span>${esc(typeName(x.type))}${x.repeats > 1 ? ` ×${x.repeats}` : ""}</span>`).join("")}</div>` : ""}</div></div>`).join("")}</div>`;
+}
 const HEALTH = { green: ["ok", "green"], yellow: ["attention", "amber"], red: ["action", "red"] };
 const sectionHead = (title, sub, more) => `<div class="section-head"><h2>${esc(title)}</h2>${sub ? `<span class="sub">${esc(sub)}</span>` : ""}${more || ""}</div>`;
 const meterCls = (p) => (p >= 90 ? "red" : p >= 70 ? "amber" : "");
@@ -225,7 +254,8 @@ function tbl(cols, rows, empty = "—", small = false) {
   if (!rows.length) return `<div class="card empty">${esc(empty)}</div>`;
   return `<div class="card tbl ${small ? "tbl-s" : ""}"><table><colgroup>${cols.map((c) => `<col style="width:${c.w || "auto"}">`).join("")}</colgroup>
     <thead><tr>${cols.map((c) => `<th class="${c.cls || ""}">${esc(c.h)}</th>`).join("")}</tr></thead>
-    <tbody>${rows.map((r) => `<tr>${r.map((cell, i) => `<td class="${cols[i].cls || ""}" data-label="${esc(cols[i].h)}"><div class="cell">${cell}</div></td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+    <tbody>${rows.map((r) => `<tr>${r.map((cell, i) => cell && cell.span ? `<td class="span" colspan="${cell.span}"><div class="cell">${cell.html}</div></td>`
+      : `<td class="${cols[i].cls || ""}" data-label="${esc(cols[i].h)}"><div class="cell">${cell}</div></td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function stepper(r) {
@@ -248,10 +278,10 @@ function runNotes(r) {
 
 function runCard(r) {
   const [hk, hc] = HEALTH[r.health] || HEALTH.green;
-  const same = (r.purpose || "").trim() === (r.title || "").trim();
+  const same = (r.purpose || "").trim() === runTitle(r).trim();
   const stat = (k, v) => `<span><span class="k">${esc(k)}</span> ${v}</span>`;
   return `<div class="card run compact">
-    <div class="run-head"><div style="min-width:0"><h3 title="${esc(r.purpose)}">${esc(r.title)}</h3><div class="id">${esc(r.batch_id)}</div></div>
+    <div class="run-head"><div style="min-width:0"><h3 title="${esc(r.purpose)}">${esc(runTitle(r))}</h3><div class="id">${esc(r.batch_id)}</div></div>
       <div class="right">${r.status !== "running" ? statusBadge(r.status) : ""}${typeBadge(r.type)}${r.health !== "green" ? badge(t(hk), hc) : ""}</div></div>
     ${same ? "" : `<div class="purpose">${esc(r.purpose)}</div>`}
     ${stepper(r)}
@@ -330,7 +360,7 @@ const VIEWS = {
     const flows = S.pipelines.map((p, pi) => `<div class="section">${sectionHead(t("flow") + (S.pipelines.length > 1 ? " · " + p.project : ""), t("flow_sub"), `<a class="more" href="#/pipeline">${esc(t("view_division"))} →</a>`)}${stepFlow(p, pi, false)}</div>`).join("");
     const act = S.running.filter((r) => r.group === "active");
     const runs = act.length ? `<div class="card mini">${act.map((r) => `<a class="mini-row" href="#/runs">
-        <span class="t">${esc(r.title)}</span><span class="faint nowrap" style="font-size:12px">${esc(r.stage)} ${esc(r.stage_ord)}</span>
+        <span class="t">${esc(runTitle(r))}</span><span class="faint nowrap" style="font-size:12px">${esc(r.stage)} ${esc(r.stage_ord)}</span>
         <span class="s">${esc(t("t_" + r.type))} · ${r.adopted ? esc(t("adopted")) : esc(r.progress)} · ${usd(r.spent)} / ${usd(r.cap)}${r.eta && r.eta !== "-" ? " · " + esc(t("eta")) + " " + esc(r.eta) : ""}</span>
         <div class="meter"><i style="width:${r.pct}%"></i></div></a>`).join("")}</div>` : `<div class="card empty">${esc(t("nothing_running"))}</div>`;
     const devs = S.in_progress.length ? `<div class="card mini">${S.in_progress.map((d) => `<a class="mini-row" href="#/dev"><span class="t">${esc(d.module)}</span>
@@ -339,6 +369,7 @@ const VIEWS = {
     return `<div class="page-head"><div><h1>${esc(t("overview"))}</h1><p>${esc(t("ov_sub"))}</p></div></div>
       ${kpis}
       <div class="section">${sectionHead(t("needs_you"), t("needs_you_sub"), `<a class="more" href="#/runs">${esc(t("all"))} →</a>`)}${todoPanel(false)}</div>
+      <div class="section">${sectionHead(t("by_package"), t("by_package_sub"), `<a class="more" href="#/runs">${esc(t("all"))} →</a>`)}${packagesPanel()}</div>
       ${flows}
       <div class="section cols"><div>${sectionHead(t("g_active"), t("active_sub"), `<a class="more" href="#/runs">${esc(t("all"))} →</a>`)}${runs}
           ${(S.machine_jobs || []).length ? `<div class="section" style="margin-top:22px">${sectionHead(t("jobs"), t("jobs_sub"))}${jobsHtml()}</div>` : ""}</div>
@@ -356,11 +387,21 @@ const VIEWS = {
       </div>`).join("") || `<div class="card empty">workflow freeze NAME</div>`}`;
   },
   runs() {
-    const hist = tbl([{ h: t("ended"), w: "11%" }, { h: t("batch"), w: "27%" }, { h: t("type"), w: "9%" }, { h: t("cases"), cls: "num", w: "8%" },
-        { h: t("result"), w: "19%" }, { h: t("spend"), cls: "num", w: "9%" }, { h: t("time"), cls: "num", w: "7%" }, { h: t("acceptance"), w: "10%" }],
-      S.run_history.map((h) => [when(h.closed), `<b>${esc(h.title)}</b><div class="sub mono">${esc(h.batch_id)}</div>`, typeBadge(h.type), String(h.n_cases),
-        esc(t("stages_done", { a: h.stages_done, b: h.stages })) + (h.done != null ? `<div class="sub">${esc(t("done"))} ${h.done}${h.skipped ? ` · ${esc(t("skipped"))} ${h.skipped}` : ""}${h.failed ? ` · <span style="color:var(--red)">${esc(t("failed"))} ${h.failed}</span>` : ""}</div>` : ""),
-        usd(h.spent), h.hours != null ? h.hours + " h" : "—", h.decision ? badge(t("d_" + h.decision), "green") : `<span class="faint">${esc(t("not_accepted"))}</span>`]));
+    const groups = [];
+    const seen = {};
+    S.run_history.forEach((h) => { const k = h.scope + "|" + h.type; if (!seen[k]) { seen[k] = { head: h, more: [] }; groups.push(seen[k]); } else seen[k].more.push(h); });
+    const row = (h, sub) => [when(h.closed),
+      `<b>${esc(sub ? h.batch_id : scopeName(h.scope) + " · " + typeName(h.type))}</b><div class="sub ellip" title="${esc(h.purpose)}">${esc(sub ? h.purpose : h.batch_id + " — " + h.purpose)}</div>`,
+      typeBadge(h.type), String(h.n_cases), outcomeBar(h.stage_outcomes, h.n_cases),
+      usd(h.spent), h.hours != null ? h.hours + " h" : "—",
+      h.decision ? badge(t("d_" + h.decision), "green") : ACCEPTED_TYPES.includes(h.type) ? `<span class="faint">${esc(t("not_accepted"))}</span>` : `<span class="faint">—</span>`];
+    const rows = [];
+    groups.forEach((g) => {
+      rows.push(row(g.head, false));
+      if (g.more.length) rows.push([{ html: `<details class="earlier"><summary>${esc(t("earlier", { n: g.more.length }))}</summary>${g.more.map((h) => `<div class="earlier-row">${when(h.closed)} · <span class="mono">${esc(h.batch_id)}</span> · ${esc(t("st_" + h.status))} · ${usd(h.spent)}</div>`).join("")}</details>`, span: 8 }]);
+    });
+    const hist = tbl([{ h: t("ended"), w: "10%" }, { h: t("batch"), w: "26%" }, { h: t("type"), w: "7%" }, { h: t("cases"), cls: "num", w: "6%" },
+        { h: t("result"), w: "31%" }, { h: t("spend"), cls: "num", w: "7%" }, { h: t("time"), cls: "num", w: "5%" }, { h: t("acceptance"), w: "8%" }], rows);
     const act = S.running.filter((r) => r.group === "active");
     return `<div class="page-head"><div><h1>${esc(t("runs"))}</h1><p>${esc(t("runs_sub"))}</p></div></div>
       <div class="section" style="margin-top:0">${sectionHead(t("g_active"), t("active_sub"))}${resourcesLine()}
