@@ -296,6 +296,11 @@ council，一个会话只读了服务器参数就说不行；另一个会话正�
 - 改额度：`reins config set pool.development.daily_cap 30 --why '...'`，记成一条决策，同时显示近 30 天实际日用量。
   被额度拦下时，正确的解法是缩小或关闭占着余额的批次（报错里有命令）；调高额度要用户决定。
 - 看板"成本"页：两个池各自的今日、本周用量和上限，以及整机合计。
+- **单个服务商的额度**（2026-10-23）：config.toml `[providers.<name>]` 里的 `hourly_cap`、`daily_cap`、`weekly_cap`（美元），
+  管这个服务商在所有批次上的合计花费（已花 + 预留，时间窗口和池一样）。超了就 402、批次暂停；窗口有余额后 `reins ctl resume B`。
+  改额度：`reins config set providers.gemini.daily_cap 50 --why '...'`。看板服务商卡片显示"已花 / 上限"。
+  Gemini 走它的 OpenAI 兼容接口（`/p/gemini/v1`，key 放 `secrets/gemini.key`）；它不报花费，每个模型要先 `reins spend price`。
+  网关把 `total_tokens − prompt_tokens` 当输出计价：Gemini 的思考 token 不在 `completion_tokens` 里，但按输出收费。
 
 ## 目录挪动之后（2026-10-22）
 

@@ -12,7 +12,9 @@ instead of a key. For every /chat/completions request the gateway
      provider's reported cost (usage.cost; OpenRouter returns it when usage.include=true), else the price table;
      a model with neither (no price, provider does not report costs) is refused, the batch paused, someone told;
      an identical request already in flight waits for that answer instead of being paid twice,
-  4. on a cap: answers 402 with a message naming the reins command to run, pauses the batch, notifies.
+  4. on a cap (the batch's, its stage's, the pools', or the provider's own daily_cap / weekly_cap / hourly_cap in
+     config.toml [providers.<name>]): answers 402 with a message naming the reins command to run, pauses the batch,
+     notifies.
 Streaming is refused (the cost is only known at the end; reserve/settle needs the whole answer).
 
 Keys: $REINS_HOME/secrets/<key_file>.key (one line, chmod 600) or <ENV>_API_KEY in the gateway's own environment.
@@ -115,11 +117,26 @@ def cache_path(sha: str):
     return home() / "cache" / sha[:2] / f"{sha}.json"
 
 
+def tokens_out(usage: dict) -> int | None:
+    """Billed output tokens. Gemini's OpenAI-compatible answers leave thinking tokens out of completion_tokens and only
+    count them in total_tokens (2026-10-23: completion 3, prompt 14, total 413), yet bill them as output."""
+    out = usage.get("completion_tokens")
+    if usage.get("total_tokens") is not None and usage.get("prompt_tokens") is not None:
+        out = max(out or 0, usage["total_tokens"] - usage["prompt_tokens"])
+    return out
+
+
 def cost_of(con, model: str, usage: dict) -> tuple[float, str]:
     if usage.get("cost") is not None:
         return float(usage["cost"]), "provider"
     (pi, po), src = spend.price(con, model)
-    return usage.get("prompt_tokens", 0) * pi / 1e6 + usage.get("completion_tokens", 0) * po / 1e6, src
+    return usage.get("prompt_tokens", 0) * pi / 1e6 + (tokens_out(usage) or 0) * po / 1e6, src
+
+
+def cap_message(batch: str, e: spend.CapReached) -> str:
+    if isinstance(e, spend.ProviderCapReached):
+        return f"{e}. Batch paused. To continue once the window has room or the cap is raised: reins ctl resume {batch}"
+    return f"{e}. Batch paused. To continue: reins batch approve {batch} --cap USD && reins ctl resume {batch}"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -212,10 +229,10 @@ class Handler(BaseHTTPRequestHandler):
             spend.record_free(con, batch, stage, provider=led, model=api, request_sha=sha, module_version=mv)
             self._send(200, cp.read_bytes()); return
         try:
-            rid = spend.reserve(con, batch, stage, price)
+            rid = spend.reserve(con, batch, stage, price, provider=led)
         except spend.CapReached as e:
             self._on_cap(con, batch, str(e))
-            self._err(402, f"{e}. Batch paused. To continue: reins batch approve {batch} --cap USD && reins ctl resume {batch}"); return
+            self._err(402, cap_message(batch, e)); return
         except ReinsError as e:
             self._err(409, str(e)); return
         url = spec["base"].rstrip("/") + rest + "?" + urlencode({**q, kp: key})
@@ -319,10 +336,10 @@ class Handler(BaseHTTPRequestHandler):
     def _forward(self, con, spec, upstream_url, provider, key, batch, stage, body, model, sha, mv, cp, drift):
         est = spend.estimate(con, batch, stage, model)
         try:
-            rid = spend.reserve(con, batch, stage, est)
+            rid = spend.reserve(con, batch, stage, est, provider=provider)
         except spend.CapReached as e:
             self._on_cap(con, batch, str(e))
-            self._err(402, f"{e}. Batch paused. To continue: reins batch approve {batch} --cap USD && reins ctl resume {batch}")
+            self._err(402, cap_message(batch, e))
             return
         except ReinsError as e:
             self._err(409, str(e)); return
@@ -346,7 +363,7 @@ class Handler(BaseHTTPRequestHandler):
             d = None
         amount, priced = cost_of(con, model, usage) if code == 200 else (0.0, "none")
         spend.settle(con, rid, provider=provider, model=model, amount=amount, priced=priced,
-                     tokens_in=usage.get("prompt_tokens"), tokens_out=usage.get("completion_tokens"), cache_hit=False,
+                     tokens_in=usage.get("prompt_tokens"), tokens_out=tokens_out(usage), cache_hit=False,
                      request_sha=sha, http_status=code, module_version=mv)
         if priced == "default":
             notify.send(con, f"unpriced:{model}", "action", f"{model}: cost guessed at the default price",
@@ -388,8 +405,11 @@ class Handler(BaseHTTPRequestHandler):
             batches.set_status(con, batch, "paused", f"spend: {why}", system=True)
         except ReinsError:
             pass
-        notify.send(con, f"cap:{batch}", "action", f"{batch} paused: spend cap or balance reached",
-                    f"{why}\nreins batch approve {batch} --cap USD  then  reins ctl resume {batch}", cooldown_min=10)
+        fix = (f"reins ctl resume {batch} once the provider's window has room (or after reins config set providers...)"
+               if why.startswith("provider ") and "reins config set providers." in why
+               else f"reins batch approve {batch} --cap USD  then  reins ctl resume {batch}")
+        notify.send(con, f"cap:{batch}", "action", f"{batch} paused: spend cap or balance reached", f"{why}\n{fix}",
+                    cooldown_min=10)
 
 
 class Server(ThreadingHTTPServer):

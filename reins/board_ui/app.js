@@ -454,7 +454,7 @@ const VIEWS = {
         ${!c.key_present ? badge(t("no_key"), "red") : !c.has_endpoint ? badge(t("no_balance_api")) : c.error ? badge(t("query_failed"), "red") : badge(t("live"), "green", "green")}</div>
         <div class="bal ${c.balance != null && c.balance < 10 ? "low" : ""}">${c.has_endpoint ? usd(c.balance) : "—"}</div>
         <div class="faint" style="font-size:12px">${esc(c.spend_source === "balance" ? t("by_balance") : c.per_call ? t("per_call") : t("ledger_only"))}${c.balance_at ? " · " + when(c.balance_at) : ""}</div>
-        <div class="rows"><div>${esc(t("today"))}<b>${usd(c.spent_today)}</b></div><div>${esc(t("week"))}<b>${usd(c.spent_week)}</b></div><div>${esc(t("calls"))}<b>${c.calls_today}</b></div></div></div>`).join("")}</div>`;
+        <div class="rows"><div>${esc(t("today"))}<b>${usd(c.spent_today)}${c.limits && c.limits.daily_cap != null ? ` <span class="faint">/ ${usd(c.limits.daily_cap)}</span>` : ""}</b></div><div>${esc(t("week"))}<b>${usd(c.spent_week)}${c.limits && c.limits.weekly_cap != null ? ` <span class="faint">/ ${usd(c.limits.weekly_cap)}</span>` : ""}</b></div><div>${esc(t("calls"))}<b>${c.calls_today}</b></div></div></div>`).join("")}</div>`;
     const byb = {};
     S.cost.forEach((c) => c.by_batch.forEach((b) => { byb[b.batch_id] = byb[b.batch_id] || {}; byb[b.batch_id][c.provider] = b.usd; }));
     const provs = S.cost.map((c) => c.provider);

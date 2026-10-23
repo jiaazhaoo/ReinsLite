@@ -215,6 +215,48 @@ def pool_check(con, batch: str, amount: float) -> None:
                              f"per-session daily cap ${lim['per_session_daily_cap']:.2f}")
 
 
+PROVIDER_LIMITS = ("hourly_cap", "daily_cap", "weekly_cap")
+
+
+class ProviderCapReached(CapReached):
+    """One provider's own limit (config.toml [providers.<name>] daily_cap ...), not the batch's or a pool's."""
+
+
+def provider_usage(con, ledger: str) -> dict:
+    """Spent + held on one provider (every batch): last hour, today, the same window as the pools' week."""
+    import datetime as _dt
+    now_ = _dt.datetime.now()
+    out = {}
+    for k, ts in (("hour", (now_ - _dt.timedelta(hours=1)).isoformat(timespec="seconds")), ("today", now_.date().isoformat()),
+                  ("week", (now_.date() - _dt.timedelta(days=7)).isoformat())):
+        s = con.execute("SELECT COALESCE(SUM(amount),0) FROM spend WHERE provider=? AND at>=?", (ledger, ts)).fetchone()[0]
+        r = con.execute("SELECT COALESCE(SUM(amount),0) FROM spend_reserve WHERE state='open' AND provider=? AND at>=?",
+                        (ledger, ts)).fetchone()[0]
+        out[k] = s + r
+    return out
+
+
+def provider_limits(ledger: str) -> tuple[str, dict]:
+    """(provider name, its limits) for a ledger name; no limits when the provider is unknown or sets none."""
+    from . import providers
+    spec = providers.by_ledger(ledger) or {}
+    return spec.get("name", ledger), {k: float(spec[k]) for k in PROVIDER_LIMITS if spec.get(k) is not None}
+
+
+def provider_check(con, ledger: str, amount: float) -> None:
+    """Would this spend break the provider's own hourly / daily / weekly cap? Raises ProviderCapReached."""
+    name, lim = provider_limits(ledger)
+    if not lim:
+        return
+    u = provider_usage(con, ledger)
+    for k, window in (("hourly_cap", "hour"), ("daily_cap", "today"), ("weekly_cap", "week")):
+        if k in lim and u[window] + amount > lim[k]:
+            when = {"hour": "in the last hour", "today": "today", "week": "this week"}[window]
+            raise ProviderCapReached(
+                f"provider {name}: ${u[window]:.2f} spent {when} + ${amount:.3f} > {k.replace('_', ' ')} ${lim[k]:.2f} "
+                f"(raise it: reins config set providers.{name}.{k} USD --why '...')")
+
+
 def caps(con, batch: str, stage: str) -> tuple[float, float | None]:
     b = batches.get(con, batch)
     st = con.execute("SELECT spend_cap FROM batch_stage WHERE batch_id=? AND stage=?", (batch, stage)).fetchone()
@@ -223,8 +265,9 @@ def caps(con, batch: str, stage: str) -> tuple[float, float | None]:
     return b["spend_cap"], st["spend_cap"]
 
 
-def reserve(con, batch: str, stage: str, amount: float) -> int:
-    """Hold `amount` against the caps. Raises CapReached (nothing reserved) when it would not fit."""
+def reserve(con, batch: str, stage: str, amount: float, provider: str | None = None) -> int:
+    """Hold `amount` against the caps (and `provider`'s own, a ledger name). Raises CapReached (nothing reserved) when
+    it would not fit."""
     with tx(con):
         b = batches.get(con, batch)
         if b["status"] != "running":
@@ -240,8 +283,10 @@ def reserve(con, batch: str, stage: str, amount: float) -> int:
             if used_s + amount > scap:
                 raise CapReached(f"{batch}/{stage}: ${used_s:.3f} + ${amount:.3f} > stage cap ${scap:.2f}")
         pool_check(con, batch, amount)
-        cur = con.execute("INSERT INTO spend_reserve (at, batch_id, stage, amount, state) VALUES (?,?,?,?, 'open')",
-                          (now(), batch, stage, amount))
+        if provider:
+            provider_check(con, provider, amount)
+        cur = con.execute("INSERT INTO spend_reserve (at, batch_id, stage, amount, state, provider) VALUES (?,?,?,?, 'open', ?)",
+                          (now(), batch, stage, amount, provider))
         return cur.lastrowid
 
 
@@ -368,7 +413,8 @@ def cost_view(con) -> list[dict]:
                     "spent_today": spent_today if spent_today is not None else round(led_today[0], 2),
                     "spent_week": spent_week if spent_week is not None else round(led_week, 2),
                     "spend_source": src, "calls_today": led_today[1], "last_call": led_today[2],
-                    "by_batch": by_batch, "error": (latest is None and _key(p) is not None and bool(spec.get("balance")))})
+                    "by_batch": by_batch, "error": (latest is None and _key(p) is not None and bool(spec.get("balance"))),
+                    "limits": provider_limits(p)[1]})
     return out
 
 
