@@ -169,6 +169,10 @@ def build_parser() -> argparse.ArgumentParser:
     x = d.add_parser("show", help="a module or module version: what it does, its state, and the sessions it came from")
     x.add_argument("name")
 
+    k = sub.add_parser("check", help="what must be true of the registry, checked now (reins/invariants.py)").add_subparsers(dest="sub", required=True)
+    x = k.add_parser("state", help="conservation, process agreement, stage order, board visibility")
+    x.add_argument("--only", action="append", choices=["conservation", "process", "stage_order", "visible"])
+    x.add_argument("--json", action="store_true")
     c = sub.add_parser("config", help="check the nearest reins.toml; change $REINS_HOME/config.toml with a record").add_subparsers(dest="sub", required=True)
     c.add_parser("check")
     x = c.add_parser("set", help="change one value of config.toml (kept and recorded as a decision)")
@@ -1165,6 +1169,23 @@ def _measure(con, args, cfg, cwd) -> int:
             for b in bench.list_(con):
                 print(f"{b['name']:<32} v{b['version']:<3} {b['status']:<7} cases={b['n_cases']} dev={b['n_dev']} holdout={b['n_holdout']}"
                       f" labelset={b['labelset']}{'  HOLDOUT COMPROMISED' if b['holdout_compromised'] else ''}  {b['path']}")
+    elif args.cmd == "check":
+        from . import invariants
+        items = invariants.run(con, args.only)
+        if args.json:
+            print(json.dumps(items, ensure_ascii=False, indent=1))
+        else:
+            by: dict[str, list] = {}
+            for i in items:
+                by.setdefault(i["check"], []).append(i)
+            print(f"{len(items)} state error(s)" + ("" if items else ": the registry agrees with itself"))
+            for name, xs in by.items():
+                print(f"\n{name} ({len(xs)})")
+                for i in xs[:40]:
+                    print(f"  {i['batch'] or '-'}  {i['detail']}")
+                if len(xs) > 40:
+                    print(f"  ... {len(xs) - 40} more (--json for all)")
+        return 1 if items else 0
     elif args.cmd == "threshold":
         if args.sub == "set":
             r = bench.set_threshold(con, args.module, args.name, args.value, args.n, args.split, args.benchmark, args.by, args.note)

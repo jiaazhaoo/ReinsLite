@@ -181,7 +181,21 @@ def once(con=None) -> list[str]:
     return ([f"released {n} resource claim(s) of ended processes"] if n else []) + upkeep.reconcile(con) + check_batches(con, cfg) + \
         check_machine(con, cfg) + poll_balances_due(con, cfg) + release_stale_reservations(con, cfg) + sentinel.watch_running(con) + \
         _lifecycle(con) + upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _services(con) + check_gateway(con, cfg) + _sync(con) + \
-        (check_code_fresh(con, cfg) if os.environ.get("INVOCATION_ID") else [])   # only the systemd watchdog restarts units
+        (check_code_fresh(con, cfg) if os.environ.get("INVOCATION_ID") else []) + _invariants(con)   # only the systemd watchdog restarts units
+
+
+def _invariants(con) -> list[str]:
+    """The registry's state checked and repaired every pass (reins/invariants.py). What the repairs cannot clear becomes
+    an issue for a development session; nothing goes to the user's board."""
+    from . import invariants
+    try:
+        r = invariants.tend(con)
+    except Exception as e:                                                      # noqa: BLE001 -- never stop the watchdog
+        return [f"state check skipped: {e}"]
+    out = [f"state check repaired: {x}" for x in r["repaired"][:20]]
+    if r["issues"]:
+        out.append(f"state check opened issue(s) {r['issues']}")
+    return out
 
 
 def _sync(con) -> list[str]:

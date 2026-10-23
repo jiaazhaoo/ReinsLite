@@ -463,6 +463,18 @@ CREATE TABLE IF NOT EXISTS balance_sample (
 );
 CREATE INDEX IF NOT EXISTS balance_sample_p ON balance_sample (provider, id);
 -- C8 notifications sent
+CREATE TABLE IF NOT EXISTS invariant_run (     -- reins/invariants.py: one row per watchdog pass whose result changed
+  id    INTEGER PRIMARY KEY AUTOINCREMENT,
+  at    TEXT NOT NULL,
+  n     INTEGER NOT NULL,
+  items TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS invariant_seen (    -- a violation the repairs could not clear: how long, and its issue
+  key       TEXT PRIMARY KEY,
+  first_at  TEXT NOT NULL,
+  passes    INTEGER NOT NULL,
+  issue_id  INTEGER
+);
 CREATE TABLE IF NOT EXISTS notification (
   id     INTEGER PRIMARY KEY AUTOINCREMENT,
   at     TEXT NOT NULL,
@@ -531,7 +543,8 @@ MIGRATIONS = [("batch", "probe_cmd", "TEXT"), ("batch", "time_budget_h", "REAL")
               # module gates (2026-10-19): which module a gate scored, its own metrics, how much of the downstream re-ran
               ("gate_log", "module", "TEXT"), ("gate_log", "metrics", "TEXT"), ("gate_log", "cases_rerun", "INTEGER"),
               ("gate_log", "cases_reused", "INTEGER"),
-              ("benchmark", "module", "TEXT")]                  # the module a benchmark scores (None: end to end)
+              ("benchmark", "module", "TEXT"),                  # the module a benchmark scores (None: end to end)
+              ("batch", "per_case", "INTEGER DEFAULT 1")]       # 0: the run records no per-case outcomes (reins/invariants.py)
 
 
 def _rename_legacy(con: sqlite3.Connection) -> None:
