@@ -190,8 +190,8 @@ def ack(con, batch: str, stage: str, why: str) -> dict:
                              " AND check_name NOT LIKE 'sentinel_%'", (batch, stage, last)).fetchone()[0] if last else 0
         reopened = False
         if st and st["status"] == "failed" and not others:
-            con.execute("UPDATE batch_stage SET status='done', note=? WHERE batch_id=? AND stage=?",
-                        (f"sentinel findings acknowledged: {why.strip()}"[:1000], batch, stage))
+            from . import state
+            state.stage_to(con, batch, stage, "done", f"sentinel findings acknowledged: {why.strip()}"[:1000])
             reopened = True
         con.execute("INSERT INTO batch_event (at, batch_id, event, detail) VALUES (?,?, 'sentinel_ack', ?)",
                     (now(), batch, f"{stage}: {', '.join(x['check'] for x in found)}; {why.strip()}"[:1000]))

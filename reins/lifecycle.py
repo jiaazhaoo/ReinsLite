@@ -43,18 +43,18 @@ def finish_unreported(con, bid: str, why: str = "its command exited 0") -> bool:
     b = batches.get(con, bid)
     if b["type"] in STRICT or _outcomes(con, bid) or b["status"] in ("done", "closed", "failed"):
         return False
-    t = now()
+    from . import state
     with tx(con):
-        open_ = con.execute("SELECT stage, status FROM batch_stage WHERE batch_id=? AND status IN ('running','planned')",
+        state.no_per_case(con, bid, f"no per-case outcome reported and {why}")   # the truth, said once on the batch
+        open_ = con.execute("SELECT stage, status FROM batch_stage WHERE batch_id=? AND status IN ('running','planned','failed')",
                             (bid,)).fetchall()
         for st in open_:
-            new = "done" if st["status"] == "running" else "skipped"
-            con.execute("UPDATE batch_stage SET status=?, ended=?, note=? WHERE batch_id=? AND stage=?",
-                        (new, t, f"no per-case outcomes reported; ended because {why}", bid, st["stage"]))
+            new = "skipped" if st["status"] == "planned" else "done"
+            state.stage_to(con, bid, st["stage"], new, f"no per-case outcomes reported; ended because {why}")
             batches._event(con, bid, "stage_end" if new == "done" else "stage_skipped",
                            f"{st['stage']}: no per-case outcomes reported ({why})")
         if b["status"] == "paused":
-            con.execute("UPDATE batch SET status='running', status_reason=NULL WHERE batch_id=?", (bid,))
+            state.batch_to(con, bid, "running", "its command exited 0", reason=None)
         batches._maybe_done(con, bid)
     return batches.get(con, bid)["status"] == "done"
 
@@ -94,35 +94,44 @@ def _idle_days(con, bid: str) -> float | None:
     return None if h is None else h / 24
 
 
+def _sweep_one(con, b, stale_days: float) -> str | None:
+    bid = b["batch_id"]
+    if _alive(con, bid):
+        return None
+    last = con.execute("SELECT state, exit_code FROM process WHERE batch_id=? ORDER BY id DESC LIMIT 1", (bid,)).fetchone()
+    if last and last["state"] in ("exited", "lost") and last["exit_code"] == 0 and finish_unreported(con, bid):
+        return f"{bid}: done (exit 0, no per-case outcomes)"
+    if b["type"] in STRICT:                              # production / rework: by its results and its later runs
+        from . import lineage
+        return lineage.settle(con, bid, stale_days)
+    idle = _idle_days(con, bid)
+    if idle is not None and idle >= stale_days:
+        why = f"nothing alive and no sign of life for {idle:.0f} days (closed by the watchdog; outputs kept)"
+        from . import state
+        with tx(con):
+            state.batch_to(con, bid, "closed", why, reason=f"abandoned: {why}", closed=True)
+            batches._event(con, bid, "abandoned", why)
+            batches._event(con, bid, "closed", "stale")
+            con.execute("DELETE FROM lease WHERE resource=?", (f"batch:{bid}",))
+        return "closed"
+    return None
+
+
 def sweep(con, stale_days: float | None = None) -> list[str]:
     """Every pass: finish what ended unreported, resume disk pauses, close forgotten non-production batches."""
     stale_days = float(config().get("stale_days", STALE_DAYS) if stale_days is None else stale_days)
     out = resume_after_disk(con)
     closed = []
     for b in con.execute("SELECT * FROM batch WHERE status IN ('running','paused','open')").fetchall():
-        bid = b["batch_id"]
-        if _alive(con, bid):
+        try:                                             # one batch a guard refuses does not stop the others
+            r = _sweep_one(con, b, stale_days)
+        except Exception as e:                           # noqa: BLE001 -- the state check escalates what stays wrong
+            out.append(f"{b['batch_id']}: not settled: {e}"[:300])
             continue
-        last = con.execute("SELECT state, exit_code FROM process WHERE batch_id=? ORDER BY id DESC LIMIT 1", (bid,)).fetchone()
-        if last and last["state"] in ("exited", "lost") and last["exit_code"] == 0 and finish_unreported(con, bid):
-            out.append(f"{bid}: done (exit 0, no per-case outcomes)")
-            continue
-        if b["type"] in STRICT:                              # production / rework: by its results and its later runs
-            from . import lineage
-            r = lineage.settle(con, bid, stale_days)
-            if r:
-                out.append(r)
-            continue
-        idle = _idle_days(con, bid)
-        if idle is not None and idle >= stale_days:
-            why = f"nothing alive and no sign of life for {idle:.0f} days (closed by the watchdog; outputs kept)"
-            with tx(con):
-                con.execute("UPDATE batch SET status='closed', status_reason=?, closed=? WHERE batch_id=?",
-                            (f"abandoned: {why}", now(), bid))
-                batches._event(con, bid, "abandoned", why)
-                batches._event(con, bid, "closed", "stale")
-                con.execute("DELETE FROM lease WHERE resource=?", (f"batch:{bid}",))
-            closed.append(bid)
+        if r == "closed":
+            closed.append(b["batch_id"])
+        elif r:
+            out.append(r)
     for f in (tend_candidates, tend_issues):              # development work reaches an end the same way
         try:
             out += f(con)
