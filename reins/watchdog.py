@@ -181,7 +181,16 @@ def once(con=None) -> list[str]:
     return ([f"released {n} resource claim(s) of ended processes"] if n else []) + upkeep.reconcile(con) + check_batches(con, cfg) + \
         check_machine(con, cfg) + poll_balances_due(con, cfg) + release_stale_reservations(con, cfg) + sentinel.watch_running(con) + \
         _lifecycle(con) + upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _services(con) + check_gateway(con, cfg) + _sync(con) + \
-        (check_code_fresh(con, cfg) if os.environ.get("INVOCATION_ID") else []) + _invariants(con) + _legacy(con)   # only the systemd watchdog restarts units
+        (check_code_fresh(con, cfg) if os.environ.get("INVOCATION_ID") else []) + _invariants(con) + _legacy(con) + _loop(con)   # only the systemd watchdog restarts units
+
+
+def _loop(con) -> list[str]:
+    """The improvement loop (reins/loop.py): reviewer verdicts in, misses out as issues, hourly."""
+    from . import loop
+    try:
+        return loop.tend(con)
+    except Exception as e:                                                      # noqa: BLE001 -- never stop the watchdog
+        return [f"improvement loop skipped: {e}"]
 
 
 def _legacy(con) -> list[str]:

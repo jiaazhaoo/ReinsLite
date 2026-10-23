@@ -370,6 +370,8 @@ def build_parser() -> argparse.ArgumentParser:
     x = se.add_parser("inherit", help="take over the batches and worktrees of the session this one was forked from")
     x.add_argument("--from", dest="src", help="session id (default: the parent of this session)"); x.add_argument("--why", default="")
     iss = sub.add_parser("issue").add_subparsers(dest="sub", required=True)
+    x = iss.add_parser("dispatch", help="hand an issue to a headless agent: candidate, fix, gate; it never merges (reins/loop.py)")
+    x.add_argument("id", type=int)
     x = iss.add_parser("open"); x.add_argument("--batch"); x.add_argument("--cases", default="")
     x.add_argument("--module"); x.add_argument("--service")
     x.add_argument("--symptom", required=True); x.add_argument("--stage")
@@ -893,6 +895,9 @@ def main(argv: list[str] | None = None) -> int:
                 i = issues.open_(con, args.batch, [c for c in args.cases.split(",") if c], args.symptom, args.stage,
                                  module=args.module, service=args.service)
                 print(f"issue #{i} opened on {args.batch or args.module or args.service}")
+            elif args.sub == "dispatch":
+                from . import loop
+                print(loop.dispatch(con, args.id))
             elif args.sub == "from-review":
                 ids = issues.from_review(con, args.batch, args.stage)
                 print(f"{len(ids)} issue(s) opened: {ids}" if ids else "no uncovered wrong verdicts")
