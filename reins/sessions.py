@@ -418,8 +418,9 @@ def continuation_of(transcript: str | None, sid: str) -> str | None:
     return None
 
 
-def adopt_continuation(con, sid: str, transcript: str | None) -> str | None:
-    """Same line of work: record the previous session as parent, end it, inherit what it held. Returns its id."""
+def adopt_continuation(con, sid: str, transcript: str | None) -> dict | None:
+    """Same line of work: record the previous session as parent, end it, inherit what it held. Returns what inherit
+    returns ({"from", "leases", "batches"}), None when this is not a continuation."""
     prev = continuation_of(transcript, sid)
     if not prev:
         return None
@@ -429,8 +430,7 @@ def adopt_continuation(con, sid: str, transcript: str | None) -> str | None:
         con.execute("UPDATE session SET status='ended', ended=COALESCE(ended, ?) WHERE id=? AND status<>'ended'", (now(), prev))
         con.execute("INSERT INTO session_event (at, session_id, kind, detail) VALUES (?,?, 'end', ?)",
                     (now(), prev, f"continued in {sid[:8]} after a context compaction"))
-    inherit(con, sid, prev, why="continued after a context compaction")
-    return prev
+    return inherit(con, sid, prev, why="continued after a context compaction")
 
 
 def start(con, sid: str, cwd: str | None, transcript: str | None, source: str = "startup") -> dict:
@@ -518,7 +518,7 @@ def inherit(con, me: str, src: str | None = None, why: str = "") -> dict:
             row = con.execute("SELECT transcript FROM session WHERE id=?", (me,)).fetchone()
             prev = continuation_of(row["transcript"] if row else None, me)
             if prev:                                     # a continuation after a context compaction: the same line of work
-                return {"inherited_from": adopt_continuation(con, me, row["transcript"]), "continued": True}
+                return adopt_continuation(con, me, row["transcript"])
             raise ReinsError("this session was not forked from another; name the one to take over: --from SESSION")
         src = anc[0]
     if src == me:
