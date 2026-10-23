@@ -262,8 +262,11 @@ def machine_jobs(con) -> list[dict]:
         out.append({"pid": pid, "elapsed_h": round(et / 3600, 1), "cpu": round(cpu), "rss_gb": round(rss / 1e6, 1),
                     "gpu_mb": gpu.get(pid), "cmd": args[:200]})
     out.sort(key=lambda j: (-(j["gpu_mb"] or 0), -j["cpu"]))
-    _JOBS = (time.time(), out[:8])
+    _JOBS = (time.time(), out[:JOB_LIMIT])
     return _JOBS[1]
+
+
+JOB_LIMIT = 8          # heaviest unregistered jobs shown
 
 
 SYSTEM_KEYS = ("disk", "gateway_down", "balance_low", "gpu", "mem")

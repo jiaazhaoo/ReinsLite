@@ -68,14 +68,14 @@ class Triage(unittest.TestCase):
 
     def test_unregistered_heavy_job_is_seen(self):
         import subprocess, sys, time
-        board.JOB_SECS, board._JOBS = 0, (0.0, [])
+        board.JOB_SECS, board._JOBS, board.JOB_LIMIT = 0, (0.0, []), 10_000   # a busy machine must not push it out
         p = subprocess.Popen([sys.executable, "-c", "import time\nt=time.time()\nwhile time.time()-t<20: pass"])
         try:
             time.sleep(2.5)
             jobs = board.machine_jobs(self.con)
             self.assertIn(p.pid, [j["pid"] for j in jobs])
         finally:
-            p.kill(); board.JOB_SECS = 120
+            p.kill(); board.JOB_SECS, board.JOB_LIMIT = 120, 8
 
     def test_abandon_stale_and_refuse_fresh(self):
         old = self.batch("experiment", "running", idle_h=80)

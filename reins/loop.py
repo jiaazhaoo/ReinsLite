@@ -5,8 +5,9 @@ fixes it -> the gate -> resume" waited for someone. Now:
 
   1. import   the project's review databases ([review_source] in its reins.toml) are read every hour for the recent
               production / rework batches; new verdicts become review records (append-only, signed by the reviewer)
-  2. misses   a case the run finished without a person (its result value is in [results] good) that a reviewer marked
-              wrong is a miss; misses no open issue covers become one issue per error type, on the batch
+  2. misses   a case the newest run of a work package finished without a person (its result value is in [results]
+              good) that a reviewer marked wrong is a miss; misses no open issue in that work package covers become
+              one issue per error type, on the batch
   3. dispatch an issue can be handed to a headless agent: it starts a candidate for the issue (reins dev start ...
               --issue N), fixes it in that worktree and runs the project's gate until it is green. It never merges:
               `reins dev finish VERSION` is the one step a person takes ("采用"). Off unless config
@@ -116,9 +117,12 @@ def misses(con, bid: str) -> dict[str, list[str]]:
 
 
 def open_issues(con, bid: str) -> list[int]:
-    """One issue per error type for misses no open issue on the batch covers yet."""
+    """One issue per error type for misses no open issue in the same work package (scope) covers yet: a miss is the
+    case's problem, not one run's -- reruns of the same work do not open it again."""
+    scope = batches.get(con, bid)["scope"]
     covered = set()
-    for r in con.execute("SELECT cases FROM issue WHERE batch_id=? AND status<>'closed'", (bid,)):
+    for r in con.execute("SELECT i.cases FROM issue i JOIN batch b ON b.batch_id=i.batch_id WHERE b.scope=? AND i.status<>'closed'",
+                         (scope,)):
         covered |= set(json.loads(r[0]))
     made = []
     for et, cases in sorted(misses(con, bid).items()):
@@ -136,8 +140,11 @@ def tend(con, force: bool = False) -> list[str]:
     _LAST["tend"] = time.time()
     since = (dt.datetime.now() - dt.timedelta(days=DAYS)).isoformat(timespec="seconds")
     out = []
-    for b in con.execute("SELECT batch_id, project FROM batch WHERE type IN ('production','rework') AND created>?"
-                         " AND status<>'closed'", (since,)).fetchall():
+    newest = {}                                          # the newest production / rework run of each work package
+    for b in con.execute("SELECT batch_id, project, scope FROM batch WHERE type IN ('production','rework') AND created>?"
+                         " AND status<>'closed' ORDER BY created", (since,)).fetchall():
+        newest[(b["project"], b["scope"])] = b
+    for b in newest.values():
         if not _cfg(b["project"]).get("review_source"):
             continue
         try:
