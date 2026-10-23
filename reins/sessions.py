@@ -384,6 +384,55 @@ def event(con, sid: str, kind: str, *, cwd: str | None = None, transcript: str |
     return info
 
 
+def continuation_of(transcript: str | None, sid: str) -> str | None:
+    """The session this one continues after a context compaction: the transcript's first record that starts a new chain
+    (parentUuid null) names the previous conversation's last message as logicalParentUuid; the transcript holding that
+    message is the previous session's. None when this is not a continuation."""
+    import json as _json
+    import subprocess as _sp
+    if not transcript or not Path(transcript).is_file():
+        return None
+    uid = None
+    try:
+        with open(transcript, encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if i > 400:
+                    break
+                try:
+                    d = _json.loads(line)
+                except ValueError:
+                    continue
+                if d.get("logicalParentUuid") and d.get("parentUuid") is None and not d.get("isSidechain"):
+                    uid = d["logicalParentUuid"]
+                    break
+    except OSError:
+        return None
+    if not uid:
+        return None
+    p = _sp.run(["grep", "-rlF", "--include=*.jsonl", f'"uuid":"{uid}"', str(Path(transcript).parent)],
+                capture_output=True, text=True, timeout=60)
+    for hit in p.stdout.split():
+        stem = Path(hit).stem
+        if stem != sid:
+            return stem
+    return None
+
+
+def adopt_continuation(con, sid: str, transcript: str | None) -> str | None:
+    """Same line of work: record the previous session as parent, end it, inherit what it held. Returns its id."""
+    prev = continuation_of(transcript, sid)
+    if not prev:
+        return None
+    with tx(con):
+        _ensure(con, prev, None, None)
+        con.execute("UPDATE session SET parent=COALESCE(parent, ?) WHERE id=?", (prev, sid))
+        con.execute("UPDATE session SET status='ended', ended=COALESCE(ended, ?) WHERE id=? AND status<>'ended'", (now(), prev))
+        con.execute("INSERT INTO session_event (at, session_id, kind, detail) VALUES (?,?, 'end', ?)",
+                    (now(), prev, f"continued in {sid[:8]} after a context compaction"))
+    inherit(con, sid, prev, why="continued after a context compaction")
+    return prev
+
+
 def start(con, sid: str, cwd: str | None, transcript: str | None, source: str = "startup") -> dict:
     """SessionStart: register, detect a fork, and return what the session should be told about itself."""
     with tx(con):
@@ -399,6 +448,11 @@ def start(con, sid: str, cwd: str | None, transcript: str | None, source: str = 
                         (pre, parent, sid))
         con.execute("INSERT INTO session_event (at, session_id, kind, worktree, detail) VALUES (?,?,?,?,?)",
                     (now(), sid, "start" if source == "startup" else "resume", cwd, f"source={source}" + (f"; forked from {parent}" if parent else "")))
+    if not parent:
+        try:
+            adopt_continuation(con, sid, transcript)
+        except Exception:                                                        # noqa: BLE001 -- never blocks a start
+            pass
     return briefing(con, sid)
 
 
@@ -461,6 +515,10 @@ def inherit(con, me: str, src: str | None = None, why: str = "") -> dict:
         src = row["id"]
     else:
         if not anc:
+            row = con.execute("SELECT transcript FROM session WHERE id=?", (me,)).fetchone()
+            prev = continuation_of(row["transcript"] if row else None, me)
+            if prev:                                     # a continuation after a context compaction: the same line of work
+                return {"inherited_from": adopt_continuation(con, me, row["transcript"]), "continued": True}
             raise ReinsError("this session was not forked from another; name the one to take over: --from SESSION")
         src = anc[0]
     if src == me:
