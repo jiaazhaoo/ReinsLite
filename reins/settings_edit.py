@@ -62,6 +62,7 @@ def set_(con, key: str, raw: str, why: str, by: str = "user", new_key: bool = Fa
         raise ReinsError(f"{key} is a section; set one of its values: " + ", ".join(f"{key}.{k}" for k in cur[name] if not isinstance(cur[name][k], dict)))
     in_pool = bool(section) and section.startswith("pool.") and name in ("hourly_cap", "daily_cap", "weekly_cap", "max_batch_cap",
                                                                          "per_session_daily_cap", "types")
+    in_provider = bool(section) and section.startswith("providers.") and name in ("hourly_cap", "daily_cap", "weekly_cap")
     in_standing = section == "standing"                             # standing.TYPE = USD: a standing approval
     if in_standing:
         from . import names as _names
@@ -74,7 +75,13 @@ def set_(con, key: str, raw: str, why: str, by: str = "user", new_key: bool = Fa
         top = min(caps) if caps else None
         if top is not None and value > top:
             raise ReinsError(f"standing.{name} ${value} exceeds max_batch_cap ${top}")
-    if old is None and not new_key and not in_pool and not in_standing:                 # a pool's limit may be set for the first time
+    if in_provider and (not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0):
+        raise ReinsError(f"{key} is a cap in USD (a number >= 0)")
+    if in_provider:
+        from . import providers as _providers
+        if section.split(".", 1)[1] not in _providers.all_():
+            raise ReinsError(f"{section}: no such provider ({', '.join(sorted(_providers.all_()))})")
+    if old is None and not new_key and not in_pool and not in_standing and not in_provider:                 # a pool's limit may be set for the first time
         known = sorted(f"{k}.{kk}" for k, v in cur.items() if isinstance(v, dict) for kk in v) + sorted(k for k, v in cur.items() if not isinstance(v, dict))
         close = [k for k in known if name in k][:6]
         raise ReinsError(f"{key} is not a known setting" + (f" (did you mean {', '.join(close)}?)" if close else "")

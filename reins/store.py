@@ -177,7 +177,8 @@ CREATE TABLE IF NOT EXISTS spend_reserve (
   batch_id  TEXT NOT NULL,
   stage     TEXT NOT NULL,
   amount    REAL NOT NULL,
-  state     TEXT NOT NULL CHECK (state IN ('open', 'settled', 'released'))
+  state     TEXT NOT NULL CHECK (state IN ('open', 'settled', 'released')),
+  provider  TEXT                                        -- ledger name; its own caps count open holds too
 );
 CREATE TABLE IF NOT EXISTS spend (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -555,7 +556,8 @@ MIGRATIONS = [("batch", "probe_cmd", "TEXT"), ("batch", "time_budget_h", "REAL")
               ("gate_log", "module", "TEXT"), ("gate_log", "metrics", "TEXT"), ("gate_log", "cases_rerun", "INTEGER"),
               ("gate_log", "cases_reused", "INTEGER"),
               ("benchmark", "module", "TEXT"),                  # the module a benchmark scores (None: end to end)
-              ("batch", "per_case", "INTEGER DEFAULT 1")]       # 0: the run records no per-case outcomes (reins/invariants.py)
+              ("batch", "per_case", "INTEGER DEFAULT 1"),       # 0: the run records no per-case outcomes (reins/invariants.py)
+              ("spend_reserve", "provider", "TEXT")]             # per-provider caps (2026-10-23) count a provider's open holds
 
 
 def _rename_legacy(con: sqlite3.Connection) -> None:

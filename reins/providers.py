@@ -10,6 +10,9 @@ $REINS_HOME/config.toml, so nothing about a particular provider is wired into th
     env = "MISTRAL"                             # the runner sets MISTRAL_BASE_URL / MISTRAL_API_KEY for the pipeline
     [providers.google_maps]
     per_call = { geocode = 0.005 }              # USD per call by API path (GET services are priced per call)
+    [providers.gemini]
+    daily_cap = 50.0                            # USD; this provider alone, every batch together
+    weekly_cap = 200.0
 
 Fields:
   kind         chat (POST <base>/chat/completions, OpenAI-compatible) | get (GET passthrough, key as a query parameter)
@@ -24,6 +27,8 @@ Fields:
   low_balance  USD; the watchdog asks for a top-up below it (default 5)
   key_param, path_prefix, per_call, default_call   get services: where the key goes, which path part names the API, prices
   default_chat true for the one chat provider also served at /api/v1 (older clients)
+  hourly_cap, daily_cap, weekly_cap   USD this provider may cost across all batches (spent + held; the windows of the
+               pools in reins/spend.py). A call that would cross one gets 402 and its batch is paused, like any cap
 """
 from __future__ import annotations
 
@@ -38,6 +43,7 @@ PRESETS: dict[str, dict] = {
     "deepseek": {"kind": "chat", "base": "https://api.deepseek.com/v1", "env": "DEEPSEEK",
                  "balance": {"url": "https://api.deepseek.com/user/balance", "parse": "deepseek"}},
     "openai": {"kind": "chat", "base": "https://api.openai.com/v1", "env": "OPENAI"},
+    "gemini": {"kind": "chat", "base": "https://generativelanguage.googleapis.com/v1beta/openai", "env": "GEMINI"},
     "google_maps": {"kind": "get", "base": "https://maps.googleapis.com", "env": "GOOGLE_MAPS", "key_file": "google",
                     "ledger": "google", "key_param": "key", "path_prefix": "/maps/api/", "default_call": 0.005,
                     "per_call": {"geocode": 0.005, "place/findplacefromtext": 0.017, "place/details": 0.017,
