@@ -142,9 +142,10 @@ def misses(con, bid: str) -> dict[str, list[str]]:
     res = production._results(Path(wd) / spec["file"], spec)
     good = set(spec.get("good") or [])
     out: dict[str, set] = {}
-    for (case, _t, _rev), v in review.current_verdicts(con, bid).items():
+    for (case, _t, rev), v in review.current_verdicts(con, bid).items():
         if v["verdict"] == "wrong" and case in res and res[case][0] in good:
-            out.setdefault(v["error_type"] or "unspecified", set()).add(case)
+            who = rev.split(":", 1)[1] if rev.startswith("client:") else "reviewer"
+            out.setdefault(f"{who}|{v['error_type'] or 'unspecified'}", set()).add(case)
     return {k: sorted(v) for k, v in out.items()}
 
 
@@ -157,11 +158,14 @@ def open_issues(con, bid: str) -> list[int]:
                          (scope,)):
         covered |= set(json.loads(r[0]))
     made = []
-    for et, cases in sorted(misses(con, bid).items()):
+    for key, cases in sorted(misses(con, bid).items()):
+        who, et = key.split("|", 1)
         new = [c for c in cases if c not in covered]
         if new:
-            made.append(issues.open_(con, bid, new, f"finished without a person but marked wrong by a reviewer: "
+            by = "a reviewer" if who == "reviewer" else f"the client ({who})"
+            made.append(issues.open_(con, bid, new, f"finished without a person but marked wrong by {by}: "
                                                     f"{len(new)} cases, {et}", "check", et))
+            covered |= set(new)
     return made
 
 

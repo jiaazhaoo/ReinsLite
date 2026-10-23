@@ -56,7 +56,7 @@ class Loop(unittest.TestCase):
         with mock.patch.object(loop, "_cfg", return_value=self.cfg):
             self.assertEqual(loop.import_reviews(self.con, self.b), 3)
             self.assertEqual(loop.import_reviews(self.con, self.b), 0)            # nothing twice
-            self.assertEqual(loop.misses(self.con, self.b), {"polygon_extent": ["101"]})
+            self.assertEqual(loop.misses(self.con, self.b), {"reviewer|polygon_extent": ["101"]})
             out = loop.tend(self.con, force=True)
             self.assertTrue(any("issue #" in o for o in out))
             self.assertEqual(loop.tend(self.con, force=True), [])                 # covered: no second issue
@@ -69,7 +69,10 @@ class Loop(unittest.TestCase):
                                              "commands": [f"echo '{ev}'"]}}
         with mock.patch.object(loop, "_cfg", return_value=cfg):
             self.assertEqual(loop.import_reviews(self.con, self.b), 1)
-            self.assertEqual(loop.misses(self.con, self.b), {"SA-18": ["102"]})   # auto-passed, the client says wrong
+            self.assertEqual(loop.misses(self.con, self.b), {"HMLR|SA-18": ["102"]})   # auto-passed, the client says wrong
+            loop.open_issues(self.con, self.b)
+        sym = self.con.execute("SELECT symptom FROM issue WHERE batch_id=?", (self.b,)).fetchone()[0]
+        self.assertIn("the client (HMLR)", sym)
 
     def test_reruns_do_not_reopen(self):
         with mock.patch.object(loop, "_cfg", return_value=self.cfg):
