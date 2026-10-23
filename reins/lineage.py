@@ -99,21 +99,29 @@ def superseded_by(con, b) -> str | None:
 
 
 def _finish(con, bid: str, note: str) -> None:
-    t = now()
+    """Settle a run: its unfinished stages end (a stage that ran is done only once every case has an outcome there --
+    from the results file where the case reached the end, else skipped with the reason), then the batch is done."""
+    from . import state
+    b = batches.get(con, bid)
+    with_result = results_of(con, b)
     with tx(con):
         for st in con.execute("SELECT stage, status FROM batch_stage WHERE batch_id=? AND status NOT IN ('done','skipped')",
                               (bid,)).fetchall():
-            new = "skipped" if st["status"] == "planned" else "done"
-            con.execute("UPDATE batch_stage SET status=?, ended=COALESCE(ended, ?), note=? WHERE batch_id=? AND stage=?",
-                        (new, t, note[:500], bid, st["stage"]))
-        con.execute("UPDATE batch SET status='done', status_reason=? WHERE batch_id=?", (note[:300], bid))
+            if st["status"] == "planned":
+                state.stage_to(con, bid, st["stage"], "skipped", note[:500])
+                continue
+            if state.per_case(con, bid):
+                state.account(con, bid, st["stage"], with_result, "no outcome recorded by the run (settled by reins)")
+            state.stage_to(con, bid, st["stage"], "done", note[:500])
+        state.batch_to(con, bid, "done", "settled by reins (lineage)", reason=note[:300])
         batches._event(con, bid, "finished", note)
         batches._event(con, bid, "done", "settled by reins (lineage)")
 
 
 def _close(con, bid: str, why: str) -> None:
     with tx(con):
-        con.execute("UPDATE batch SET status='closed', status_reason=?, closed=? WHERE batch_id=?", (f"abandoned: {why}"[:300], now(), bid))
+        from . import state
+        state.batch_to(con, bid, "closed", why, reason=f"abandoned: {why}"[:300], closed=True)
         batches._event(con, bid, "abandoned", why)
         batches._event(con, bid, "closed", why)
         con.execute("DELETE FROM lease WHERE resource=?", (f"batch:{bid}",))

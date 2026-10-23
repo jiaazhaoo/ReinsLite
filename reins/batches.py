@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import leases, modules, names
+from . import leases, modules, names, state
 from .store import ReinsError, now, session, today, tx
 
 STRICT_TYPES = ("production", "rework")       # must run released module versions; may auto-restart
@@ -344,11 +344,9 @@ def stage_start(con, batch: str, stage: str, module_version: str | None = None, 
             con.execute("UPDATE batch SET mixed_version=1 WHERE batch_id=?", (batch,))
             warnings.append(f"MIXED VERSION: stage {stage} planned {st['module_version']}, now runs {mv}")
             _event(con, batch, "mixed_version", f"{stage}: {st['module_version']} -> {mv}")
-        con.execute("UPDATE batch_stage SET status='running', module_version=?, started=COALESCE(started, ?),"
-                    " output_path=COALESCE(?, output_path), log_path=COALESCE(?, log_path) WHERE batch_id=? AND stage=?",
-                    (mv, now(), output_path, log_path, batch, stage))
-        con.execute("UPDATE batch SET status='running', status_reason=NULL WHERE batch_id=? AND status IN ('open', 'paused')",
-                    (batch,))
+        state.stage_to(con, batch, stage, "running", module_version=mv, output_path=output_path, log_path=log_path)
+        if b["status"] in ("open", "paused"):
+            state.batch_to(con, batch, "running", f"stage {stage} started", reason=None)
         _event(con, batch, "stage_start", f"{stage} {mv or ''}".strip())
     return warnings
 
@@ -450,12 +448,11 @@ def stage_end(con, batch: str, stage: str, checks: list[tuple[str, bool, str]] |
         led["failed_checks"] = [{"check": n, "detail": d} for n, _, d in bad]
         if bad:
             note = "checks failed: " + "; ".join(f"{n} ({d})" for n, _, d in bad)
-            con.execute("UPDATE batch_stage SET status='failed', ended=?, note=? WHERE batch_id=? AND stage=?",
-                        (t, note[:1000], batch, stage))
+            state.stage_to(con, batch, stage, "failed", note[:1000])
             _event(con, batch, "stage_failed", f"{stage} {counts}; {note}"[:1000])
             led["status"] = "failed"
         else:
-            con.execute("UPDATE batch_stage SET status='done', ended=? WHERE batch_id=? AND stage=?", (t, batch, stage))
+            state.stage_to(con, batch, stage, "done")
             _event(con, batch, "stage_end", f"{stage} {counts}")
             led["status"] = "done"
         orphans = without_input(con, batch, stage)
@@ -475,10 +472,7 @@ def stage_end(con, batch: str, stage: str, checks: list[tuple[str, bool, str]] |
 
 
 def _maybe_done(con, batch: str) -> None:
-    left = con.execute("SELECT COUNT(*) FROM batch_stage WHERE batch_id=? AND status NOT IN ('done','skipped')",
-                       (batch,)).fetchone()[0]
-    if left == 0:
-        con.execute("UPDATE batch SET status='done' WHERE batch_id=?", (batch,))
+    if state.maybe_done(con, batch):
         _event(con, batch, "done", "all stages finished")
 
 
@@ -501,7 +495,7 @@ def skip_stage(con, batch: str, stage: str, why: str) -> None:
         _own(con, batch)
         if _stage(con, batch, stage)["status"] != "planned":
             raise ReinsError(f"stage {stage} already started; it cannot be skipped")
-        con.execute("UPDATE batch_stage SET status='skipped', note=? WHERE batch_id=? AND stage=?", (why, batch, stage))
+        state.stage_to(con, batch, stage, "skipped", why)
         _event(con, batch, "stage_skipped", f"{stage}: {why}")
         _maybe_done(con, batch)
 
@@ -515,7 +509,7 @@ def set_status(con, batch: str, status: str, why: str, system: bool = False) -> 
             _own(con, batch)
         if b["status"] not in allowed[status]:
             raise ReinsError(f"batch is {b['status']}; cannot become {status}")
-        con.execute("UPDATE batch SET status=?, status_reason=? WHERE batch_id=?", (status, why, batch))
+        state.batch_to(con, batch, status, why, reason=why)
         _event(con, batch, status, why)
 
 
@@ -556,10 +550,9 @@ def abandon(con, batch: str, why: str, stale_h: float = 24) -> None:
             raise ReinsError(f"{batch} belongs to session {str(owner)[:8]}" + (" (active)" if owner_active else "") +
                              f"; others may abandon it only when that session is inactive and the batch idle {stale_h:g} h")
     with tx(con):
-        con.execute("UPDATE batch SET status='failed', status_reason=?, closed=? WHERE batch_id=?",
-                    (f"abandoned: {why.strip()}", now(), batch))
+        state.batch_to(con, batch, "failed", "abandoned", reason=f"abandoned: {why.strip()}", closed=True)
         _event(con, batch, "abandoned", f"{why.strip()} (by session {str(session())[:8]})")
-        con.execute("UPDATE batch SET status='closed' WHERE batch_id=?", (batch,))
+        state.batch_to(con, batch, "closed", "abandoned")
         _event(con, batch, "closed", "abandoned")
     leases.release(con, f"batch:{batch}", force=True)
 
@@ -587,7 +580,7 @@ def close(con, batch: str) -> None:
             "SELECT stage FROM batch_stage WHERE batch_id=? AND status NOT IN ('done', 'skipped') ORDER BY ord", (batch,))]
         if open_stages and b["status"] != "failed":
             raise ReinsError(f"cannot close: stages not done or skipped: {', '.join(open_stages)}")
-        con.execute("UPDATE batch SET status='closed', closed=? WHERE batch_id=?", (now(), batch))
+        state.batch_to(con, batch, "closed", "closed by its owner", closed=True)
         _event(con, batch, "closed")
     leases.release(con, f"batch:{batch}", force=True)
 

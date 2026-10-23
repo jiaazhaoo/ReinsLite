@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 
+from . import state
 from .store import now, tx
 
 LIVE = ("open", "running", "paused")
@@ -129,9 +130,7 @@ def repair(con, items: list[dict]) -> list[str]:
                 outcomes = con.execute("SELECT COUNT(*) FROM case_event WHERE batch_id=? AND status<>'started'", (bid,)).fetchone()[0]
                 if b["type"] not in STRICT and not outcomes:
                     with tx(con):
-                        con.execute("UPDATE batch SET per_case=0 WHERE batch_id=?", (bid,))
-                        batches._event(con, bid, "per_case_off", "the run recorded no per-case outcome; its counts are not "
-                                                                 "per case (state check)")
+                        state.no_per_case(con, bid, "the run recorded no per-case outcome (state check)")
                     done.append(f"{bid}: not recorded per case")
                     continue
                 from . import lineage
@@ -142,15 +141,11 @@ def repair(con, items: list[dict]) -> list[str]:
                         " AND e.case_id=c.case_id WHERE c.batch_id=? AND (e.status IS NULL OR e.status='started')", (stage, bid))]
                     if not missing:
                         continue
-                    ok = [c for c in missing if c in with_result]
-                    rest = [c for c in missing if c not in with_result]
-                    t = now()
                     with tx(con):
-                        con.executemany("INSERT INTO case_event (at, batch_id, stage, case_id, status, reason) VALUES (?,?,?,?,?,?)",
-                                        [(t, bid, stage, c, "done", "has a result in the run's results file (repaired by the state check)") for c in ok]
-                                        + [(t, bid, stage, c, "skipped", REPAIRED) for c in rest])
-                        batches._event(con, bid, "outcomes_repaired", f"{stage}: {len(ok)} done from the results file, "
-                                                                      f"{len(rest)} skipped ({REPAIRED})")
+                        n_ok, n_rest = state.account(con, bid, stage, with_result, REPAIRED)
+                        batches._event(con, bid, "outcomes_repaired", f"{stage}: {n_ok} done from the results file, "
+                                                                      f"{n_rest} skipped ({REPAIRED})")
+                    ok, rest = range(n_ok), range(n_rest)
                     done.append(f"{bid}/{stage}: {len(ok)} done from the results file, {len(rest)} skipped")
             elif chk == "process" and "recorded as" in i["detail"]:
                 with tx(con):
@@ -162,9 +157,10 @@ def repair(con, items: list[dict]) -> list[str]:
                     done.append(f"{bid}: process marked lost")
             elif chk == "stage_order" and i["detail"].startswith("batch done, stage(s) not finished"):
                 with tx(con):
-                    n = con.execute("UPDATE batch_stage SET status='skipped', ended=COALESCE(ended, ?), note=? WHERE batch_id=?"
-                                    " AND status NOT IN ('done','skipped')",
-                                    (now(), "the batch ended before this stage ran (state check)", bid)).rowcount
+                    left = [r[0] for r in con.execute("SELECT stage FROM batch_stage WHERE batch_id=? AND status NOT IN ('done','skipped')", (bid,))]
+                    for st_name in left:
+                        state.stage_to(con, bid, st_name, "skipped", "the batch ended before this stage ran (state check)")
+                    n = len(left)
                     batches._event(con, bid, "stages_skipped", f"{n} unfinished stage(s) of a done batch (state check)")
                 done.append(f"{bid}: {n} stage(s) skipped")
         except Exception as e:                                                  # noqa: BLE001 -- left for escalation

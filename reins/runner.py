@@ -68,8 +68,9 @@ def start(con, batch: str, stage: str, cmd: list[str], cwd: Path, module_version
         log = _log_path(b, "run")
         warnings, mv = [], None
         if b["status"] in ("open", "paused"):
-            batches.set_status(con, batch, "running", "self-staged run started", system=True) if b["status"] == "paused" else \
-                con.execute("UPDATE batch SET status='running' WHERE batch_id=?", (batch,))
+            from . import state
+            with tx(con):
+                state.batch_to(con, batch, "running", "self-staged run started", reason=None)
     else:
         log = _log_path(b, stage)
         warnings = batches.stage_start(con, batch, stage, module_version, log_path=str(log))
