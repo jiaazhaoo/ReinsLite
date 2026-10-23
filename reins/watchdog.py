@@ -181,7 +181,31 @@ def once(con=None) -> list[str]:
     return ([f"released {n} resource claim(s) of ended processes"] if n else []) + upkeep.reconcile(con) + check_batches(con, cfg) + \
         check_machine(con, cfg) + poll_balances_due(con, cfg) + release_stale_reservations(con, cfg) + sentinel.watch_running(con) + \
         _lifecycle(con) + upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _services(con) + check_gateway(con, cfg) + _sync(con) + \
-        (check_code_fresh(con, cfg) if os.environ.get("INVOCATION_ID") else []) + _invariants(con)   # only the systemd watchdog restarts units
+        (check_code_fresh(con, cfg) if os.environ.get("INVOCATION_ID") else []) + _invariants(con) + _legacy(con)   # only the systemd watchdog restarts units
+
+
+def _legacy(con) -> list[str]:
+    """Legacy commands (cli.LEGACY) unused for 14 days after they were marked: one issue each, to remove the code."""
+    import datetime as _dt
+    from . import cli, issues
+    try:
+        if _dt.date.today() < _dt.date.fromisoformat(cli.LEGACY_SINCE) + _dt.timedelta(days=14):
+            return []
+        since = (_dt.datetime.now() - _dt.timedelta(days=14)).isoformat(timespec="seconds")
+        used = {r[0] for r in con.execute("SELECT DISTINCT command FROM legacy_use WHERE at>?", (since,))}
+        out = []
+        for c in sorted(cli.LEGACY - used):
+            symptom = f"legacy command 'reins {c}' unused for 14 days: remove it (cli.LEGACY)"
+            if con.execute("SELECT 1 FROM issue WHERE symptom=?", (symptom,)).fetchone():
+                continue
+            try:
+                n = issues.open_(con, None, [], symptom, module="core")
+            except Exception:                                                   # noqa: BLE001 -- no core module here
+                continue
+            out.append(f"issue #{n}: remove legacy command {c}")
+        return out
+    except Exception as e:                                                      # noqa: BLE001 -- never stop the watchdog
+        return [f"legacy check skipped: {e}"]
 
 
 def _invariants(con) -> list[str]:
