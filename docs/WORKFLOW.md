@@ -301,6 +301,10 @@ council，一个会话只读了服务器参数就说不行；另一个会话正�
   改额度：`reins config set providers.gemini.daily_cap 50 --why '...'`。看板服务商卡片显示"已花 / 上限"。
   Gemini 走它的 OpenAI 兼容接口（`/p/gemini/v1`，key 放 `secrets/gemini.key`）；它不报花费，每个模型要先 `reins spend price`。
   网关把 `total_tokens − prompt_tokens` 当输出计价：Gemini 的思考 token 不在 `completion_tokens` 里，但按输出收费。
+- **改道**（2026-10-23）：`[providers.openrouter] reroute = ["google/gemini-3.8-flash -> gemini/gemini-3.8-flash"]` 把点名的模型
+  改发到另一个服务商（模型不变）。缓存仍按客户端原样的请求记，旧缓存照样命中；目标服务商没 key 或没价格就不改道；
+  目标的额度满了、拒绝（402 余额、429 限流、出错）时这一次由原服务商回答，不暂停批次（`reroute_fallback = false` 关掉回退）。
+  改：`reins config set providers.openrouter.reroute '[...]' --why ...`。
 
 ## 目录挪动之后（2026-10-22）
 

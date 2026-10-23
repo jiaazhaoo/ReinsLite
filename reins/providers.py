@@ -27,6 +27,10 @@ Fields:
   low_balance  USD; the watchdog asks for a top-up below it (default 5)
   key_param, path_prefix, per_call, default_call   get services: where the key goes, which path part names the API, prices
   default_chat true for the one chat provider also served at /api/v1 (older clients)
+  reroute      ["MODEL -> PROVIDER[/TARGET_MODEL]", ...]: these models are sent to that chat provider instead (same model
+               unless named), e.g. reroute = ["google/gemini-3.8-flash -> gemini/gemini-3.8-flash"] on openrouter.
+               Skipped when the target has no key or no price; on the target's cap or a refusal the original answers
+  reroute_fallback  false: no fallback (the target's cap or refusal stops the call like any cap)
   hourly_cap, daily_cap, weekly_cap   USD this provider may cost across all batches (spent + held; the windows of the
                pools in reins/spend.py). A call that would cross one gets 402 and its batch is paused, like any cap
 """
@@ -70,6 +74,19 @@ def all_() -> dict[str, dict]:
 
 def get(name: str) -> dict | None:
     return all_().get(name)
+
+
+def reroute(spec: dict, model: str) -> tuple[dict, str] | None:
+    """(target chat provider, target model) when `spec` reroutes `model`, else None."""
+    for rule in spec.get("reroute") or []:
+        src, arrow, dst = (x.strip() for x in str(rule).partition("->"))
+        if not arrow or src != model:
+            continue
+        name, _, tmodel = dst.partition("/")
+        t = get(name)
+        if t and t["kind"] == "chat" and t["name"] != spec["name"]:
+            return t, tmodel or model
+    return None
 
 
 def by_ledger(ledger: str) -> dict | None:
