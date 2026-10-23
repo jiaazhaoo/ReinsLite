@@ -424,7 +424,13 @@ def view(con) -> dict:
     tot["running"] = sum(1 for p in out if p["status"] == "running")
     dev = development(con, ids_all, imported, days)
     table = batch_table(con, rows, ledger, imported)
+    from . import quality
+    try:
+        q = quality.latest(con)                          # each release's real error rate (refreshed daily by the watchdog)
+    except Exception:                                    # noqa: BLE001 -- a registry without the table yet
+        q = []
     return {"at": now.isoformat(timespec="seconds"), "totals": tot, "dev": dev, "batches": table, "packages": out, "labels": labels,
+            "quality": q,
             "reasons": reasons_cfg, "daily": [{"day": d, "n": daily.get(d, 0), "usd": round(spend_daily.get(d, 0), 2)} for d in days]}
 
 

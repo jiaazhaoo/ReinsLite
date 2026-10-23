@@ -169,6 +169,8 @@ def build_parser() -> argparse.ArgumentParser:
     x = d.add_parser("show", help="a module or module version: what it does, its state, and the sessions it came from")
     x.add_argument("name")
 
+    x = sub.add_parser("quality", help="each release's real error rate from human and client verdicts (reins/quality.py)")
+    x.add_argument("--project"); x.add_argument("--refresh", action="store_true"); x.add_argument("--json", action="store_true")
     k = sub.add_parser("check", help="what must be true of the registry, checked now (reins/invariants.py)").add_subparsers(dest="sub", required=True)
     x = k.add_parser("state", help="conservation, process agreement, stage order, board visibility")
     x.add_argument("--only", action="append", choices=["conservation", "process", "stage_order", "visible"])
@@ -585,7 +587,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{r['name']}" + ("" if r["new"] else "  (unchanged rules: same version)")
                   + (f"\n  lane diff: {r['diff_summary']}  -> {r['diff_path']}" if r.get("diff_summary") else ""))
             return 0
-        if args.cmd in ("bench", "threshold", "env", "review", "accept", "preflight", "deliver"):
+        if args.cmd in ("bench", "threshold", "env", "review", "accept", "preflight", "deliver", "check", "quality"):
             return _measure(con, args, cfg, cwd)
         if args.cmd == "module":
             return _module(con, args, cfg)
@@ -1215,6 +1217,23 @@ def _measure(con, args, cfg, cwd) -> int:
             for b in bench.list_(con):
                 print(f"{b['name']:<32} v{b['version']:<3} {b['status']:<7} cases={b['n_cases']} dev={b['n_dev']} holdout={b['n_holdout']}"
                       f" labelset={b['labelset']}{'  HOLDOUT COMPROMISED' if b['holdout_compromised'] else ''}  {b['path']}")
+    elif args.cmd == "quality":
+        from . import quality
+        qs = quality.refresh(con, args.project) if args.refresh else quality.latest(con, args.project)
+        if args.json:
+            print(json.dumps(qs, ensure_ascii=False, indent=1)); return 0
+        if not qs:
+            print("no quality computed yet: reins quality --refresh"); return 0
+        for q in qs:
+            print(f"{q['project']}  ({q['verdicts']} verdicts, {q['unattributed']} on work done before reins; {q['at'][:16]})")
+            print(f"  {'release':16s} {'batches':>7s} {'cases':>7s} {'auto':>6s} {'checked':>8s} {'missed':>7s} {'miss rate':>9s} {'to person: wrong':>17s}")
+            for r in q["releases"]:
+                mr = (f"{100 * r['miss_rate']:.1f}%" + ("*" if r.get("low_n") else "")) if r["miss_rate"] is not None else "-"
+                au = f"{100 * r['auto_share']:.0f}%" if r["auto_share"] is not None else "-"
+                fp = f"{r['wrong_human']}/{r['checked_human']}" if r["checked_human"] else "-"
+                print(f"  {r['release']:16s} {r['batches']:7d} {r['cases']:7d} {au:>6s} {r['checked_auto']:8d} {r['wrong_auto']:7d} {mr:>9s} {fp:>17s}")
+            print(f"  * fewer than {quality.MIN_N} auto-passed cases checked: too few to compare")
+        return 0
     elif args.cmd == "check":
         from . import invariants
         items = invariants.run(con, args.only)
