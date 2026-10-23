@@ -37,7 +37,7 @@ const I18N = {
     gs_decide: "暂停了或在等你：看原因，照命令处理", gs_stuck: "两小时到一天没有新结果", gs_stale: "一天以上没有任何动静，大多可以清理",
     k_moving: "正在跑", k_approve: "等你批花费", k_sentinel: "结果看起来不对", k_spend_cap: "花费到上限", k_disk: "磁盘满时暂停",
     k_killed: "进程被杀", k_exited: "报错退出", k_overtime: "超出时间预算", k_stopped: "被手动停止", k_note: "人工暂停",
-    k_unreported: "结束了但没回报结果", k_idle: "没有新结果", k_paused: "已暂停",
+    k_not_started: "开好了，还没开跑", k_unreported: "结束了但没回报结果", k_idle: "没有新结果", k_paused: "已暂停",
     k_reboot: "重启后进程没了", k_lost: "进程不在了", k_ended: "进程结束了，批次没收尾",
     jobs: "机器上未登记的任务", jobs_sub: "在跑，但没经过 reins：看不到账本、进度和花费", plus_jobs: "另有 {n} 个未登记任务在跑",
     gpu: "显卡", running_for: "已跑 {n} 小时",
@@ -91,7 +91,7 @@ const I18N = {
     gs_decide: "paused or waiting for you: read the reason, run the command", gs_stuck: "no new result for 2 h to a day", gs_stale: "no sign of life for over a day; most can be closed",
     k_moving: "running", k_approve: "awaiting a spend cap", k_sentinel: "results look wrong", k_spend_cap: "spend cap reached", k_disk: "paused on a full disk",
     k_killed: "process killed", k_exited: "exited with an error", k_overtime: "over its time budget", k_stopped: "stopped by hand", k_note: "paused by a person",
-    k_unreported: "ended without reporting results", k_idle: "no new results", k_paused: "paused",
+    k_not_started: "opened, not started yet", k_unreported: "ended without reporting results", k_idle: "no new results", k_paused: "paused",
     k_reboot: "process gone after a reboot", k_lost: "process gone", k_ended: "process ended, batch not wrapped up",
     jobs: "Unregistered jobs on this machine", jobs_sub: "running, but not through reins: no ledger, progress or spend", plus_jobs: "+{n} unregistered job(s) running",
     gpu: "GPU", running_for: "running {n} h",
@@ -282,8 +282,9 @@ function runCard(r) {
   const stat = (k, v) => `<span><span class="k">${esc(k)}</span> ${v}</span>`;
   return `<div class="card run compact">
     <div class="run-head"><div style="min-width:0"><h3 title="${esc(r.purpose)}">${esc(runTitle(r))}</h3><div class="id">${esc(r.batch_id)}</div></div>
-      <div class="right">${r.status !== "running" ? statusBadge(r.status) : ""}${typeBadge(r.type)}${r.health !== "green" ? badge(t(hk), hc) : ""}</div></div>
+      <div class="right">${r.kind === "not_started" ? badge(t("k_not_started"), "amber") : r.status !== "running" ? statusBadge(r.status) : ""}${typeBadge(r.type)}${r.health !== "green" ? badge(t(hk), hc) : ""}</div></div>
     ${same ? "" : `<div class="purpose">${esc(r.purpose)}</div>`}
+    ${r.kind === "not_started" ? `<div class="tc" style="margin:0 0 10px"><code>${esc(r.cmd)}</code>${copyBtn(r.cmd)}</div>` : ""}
     ${stepper(r)}
     <div class="statline">
       ${stat(t("cases"), `<b>${r.n_cases}</b>${r.n_skipped ? ` <span class="faint">(${r.n_skipped} ${esc(t("skipped"))})</span>` : ""}`)}
@@ -324,7 +325,7 @@ function todoPanel(full) {
       ${st.sort((a, b) => (b.idle_h || 0) - (a.idle_h || 0)).map((r) => `<div class="srow"><span class="mono">${esc(r.batch_id)}</span><span class="faint">${esc(idleText(r))}</span><span class="faint">${esc(r.status_reason || "")}</span></div>`).join("")}</details>` : "";
   const sys = (S.system || []).map((n) => `<div class="alert ${n.level}">${icon("alert")}<div style="min-width:0"><b>${esc(n.title)}</b><div class="body">${esc(n.body)}</div></div><span class="when">${when(n.at)}</span></div>`).join("");
   const unreg = (S.unregistered_runs || []).map((u) => `<div class="alert warn">${icon("alert")}<div><b>${esc(t("unreg_run"))} · ${esc(u.kind)}</b><div class="body">${esc(u.what)} — ${esc(t("unreg_note"))}</div></div><span class="when">${when(u.at)}</span></div>`).join("");
-  const body = sec("decide", g.decide, true) + sec("stuck", g.stuck, full) + stale;
+  const body = sec("decide", g.decide, true) + sec("stuck", g.stuck, true) + stale;   // stuck is open: nothing to find behind a fold
   return (sys || unreg ? `<div class="alerts">${sys}${unreg}</div>` : "") +
     (body ? `<div class="card todos">${body}</div>` : `<div class="card empty">${esc(t("all_clear"))}</div>`);
 }

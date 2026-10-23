@@ -208,6 +208,13 @@ def _advice(con, b, cur, needs: list[str], idle_h: float | None, alive: bool, ac
         if idle_h is not None and idle_h >= STALE_H:
             return "stale", kind, f"reins batch abandon {bid} --why '...'"
         return "stuck", kind, again if kind in ("reboot", "lost") else f"reins batch status {bid}"
+    started = con.execute("SELECT 1 FROM batch_stage WHERE batch_id=? AND started IS NOT NULL LIMIT 1", (bid,)).fetchone()
+    if b["status"] == "open" and not started and (idle_h is None or idle_h < STALE_H):
+        # opened, nothing run yet: about to start, not stuck (2026-10-23 Dartford WP4 sat in the folded 'stuck' group
+        # 20 minutes after it was opened, and the user could not find it)
+        first = cur["stage"] if cur else "STAGE"
+        return "active", "not_started", (f"reins preflight {bid} && reins run {bid} --self-staged -- CMD" if strict
+                                         else f"reins run {bid} {first} -- CMD")
     if idle_h is None or idle_h >= STALE_H:
         return ("stuck" if strict else "stale"), "idle", (f"reins batch status {bid}" if strict else f"reins batch abandon {bid} --why '...'")
     return "stuck", "idle", f"reins batch status {bid}"
