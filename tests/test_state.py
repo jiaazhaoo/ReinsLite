@@ -90,3 +90,18 @@ class Transitions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Legacy(unittest.TestCase):
+    def test_legacy_hidden_but_working(self):
+        import io, contextlib
+        from reins import cli
+        p = cli.build_parser()
+        cli._hide_legacy(p)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), self.assertRaises(SystemExit):
+            p.parse_args(["batch", "--help"])
+        self.assertNotIn("skip-cases", buf.getvalue())
+        self.assertIn("skip-stage", buf.getvalue())
+        a = p.parse_args(["spend", "weekly"])                     # still parses
+        self.assertEqual((a.cmd, a.sub), ("spend", "weekly"))

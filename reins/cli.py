@@ -439,6 +439,44 @@ def _run_options(pre: list[str]) -> argparse.Namespace:
     return a
 
 
+# Commands no session ran from 2026-10-09 to 2026-10-23 and no program, unit file or document names (refactor step 2):
+# hidden from help, still working, every use recorded (legacy_use). 14 days without a use and the watchdog opens an
+# issue to remove the command (watchdog._legacy).
+LEGACY_SINCE = "2026-10-23"
+LEGACY = {"batch adopt", "batch close", "batch probe", "batch skip-cases", "bench add-input", "bench add-stage",
+          "bench adopt", "bench holdout", "dev adopt-release", "env check", "env list", "gate record", "issue close",
+          "issue note", "note list", "notify ack", "report revoke", "session conflicts", "session show",
+          "spend balances", "spend weekly"}
+
+
+def _hide_legacy(parser: argparse.ArgumentParser, prefix: str = "") -> None:
+    """Take the legacy commands out of the help listings (they still parse)."""
+    for act in parser._actions:
+        if isinstance(act, argparse._SubParsersAction):
+            act._choices_actions = [c for c in act._choices_actions if f"{prefix}{c.dest}".strip() not in LEGACY]
+            shown = [n for n in act.choices if f"{prefix}{n}".strip() not in LEGACY]
+            act.metavar = "{" + ",".join(shown) + "}"
+            for name, sp in act.choices.items():
+                if not prefix:
+                    _hide_legacy(sp, name + " ")
+
+
+def _note_legacy(args) -> None:
+    key = f"{getattr(args, 'cmd', '')} {getattr(args, 'sub', '') or ''}".strip()
+    if key not in LEGACY:
+        return
+    print(f"reins: '{key}' is a legacy command (unused since {LEGACY_SINCE}); it still works, and this use is recorded "
+          f"so it is kept", file=sys.stderr)
+    try:
+        from contextlib import closing as _closing
+        from .store import now as _now, session as _session
+        with _closing(connect()) as c:
+            c.execute("INSERT INTO legacy_use (at, command, session) VALUES (?,?,?)", (_now(), key, _session()))
+            c.commit()
+    except Exception:                                                            # noqa: BLE001 -- never blocks the command
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     argv, run_cmd = _split_run(argv)
@@ -448,7 +486,10 @@ def main(argv: list[str] | None = None) -> int:
         args = _run_options(argv)
         args.command = ["--"] + run_cmd
     else:
-        args = build_parser().parse_args(argv)
+        parser = build_parser()
+        _hide_legacy(parser)
+        args = parser.parse_args(argv)
+        _note_legacy(args)
     cwd = Path.cwd()
     cfg = project_config(cwd)
     try:

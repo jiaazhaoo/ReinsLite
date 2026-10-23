@@ -469,6 +469,11 @@ CREATE TABLE IF NOT EXISTS invariant_run (     -- reins/invariants.py: one row p
   n     INTEGER NOT NULL,
   items TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS legacy_use (        -- a use of a legacy command (cli.LEGACY): it is still needed
+  at       TEXT NOT NULL,
+  command  TEXT NOT NULL,
+  session  TEXT
+);
 CREATE TABLE IF NOT EXISTS invariant_seen (    -- a violation the repairs could not clear: how long, and its issue
   key       TEXT PRIMARY KEY,
   first_at  TEXT NOT NULL,
