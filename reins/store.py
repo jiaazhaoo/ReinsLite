@@ -469,6 +469,12 @@ CREATE TABLE IF NOT EXISTS invariant_run (     -- reins/invariants.py: one row p
   n     INTEGER NOT NULL,
   items TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS quality_cache (     -- reins/quality.py: each release's real error rate, refreshed daily
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  project  TEXT NOT NULL,
+  at       TEXT NOT NULL,
+  data     TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS legacy_use (        -- a use of a legacy command (cli.LEGACY): it is still needed
   at       TEXT NOT NULL,
   command  TEXT NOT NULL,
