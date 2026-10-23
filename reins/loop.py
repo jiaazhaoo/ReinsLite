@@ -21,6 +21,8 @@ fixes it -> the gate -> resume" waited for someone. Now:
     columns = { case = "case_id", reviewer = "reviewer", verdict = "verdict", error_type = "error_type", note = "note", at = "at" }
     verdicts = { correct = "correct", error = "wrong", query = "unsure" }
     case_pattern = "([0-9]+)$"
+    commands = ["python3 /env/code/ledger/feedback_events.py {scope0}"]   # each prints events as JSON lines:
+                # {"case", "reviewer", "verdict": correct|wrong|unsure, "error_type", "note", "at"} (client feedback)
 """
 from __future__ import annotations
 
@@ -29,6 +31,7 @@ import glob
 import json
 import re
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 
@@ -93,9 +96,38 @@ def import_reviews(con, bid: str) -> int:
             events.append({"case_id": c, "reviewer": str(reviewer), "action": "verdict", "verdict": v, "at": at,
                            "error_type": (et or "unspecified") if v == "wrong" else et,
                            "note": note or (f"({verdict})" if v == "unsure" else None), "client": f"loop:{db}"[:200]})
+    for cmd in spec.get("commands") or []:              # verdicts kept elsewhere (client feedback), as JSON lines
+        try:
+            line_cmd = cmd                               # only the known placeholders: a command may hold JSON braces
+            for k_, v_ in {"work_dir": str(_wd(b)), "scope": b["scope"], "scope0": b["scope"].split("-")[0],
+                           "project": b["project"], "batch": bid}.items():
+                line_cmd = line_cmd.replace("{" + k_ + "}", v_)
+            out = subprocess.run(line_cmd, shell=True, capture_output=True, text=True, timeout=600).stdout
+        except (KeyError, IndexError, subprocess.TimeoutExpired, OSError):
+            continue
+        for line in out.splitlines():
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            c, v, rv, at = str(d.get("case") or ""), d.get("verdict"), str(d.get("reviewer") or ""), d.get("at")
+            if pat:
+                m = pat.search(c)
+                c = m.group(1) if m else c
+            if c not in members or v not in review.VERDICTS or not rv or (c, rv, at, v) in seen:
+                continue
+            seen.add((c, rv, at, v))
+            events.append({"case_id": c, "reviewer": rv, "action": "verdict", "verdict": v, "at": at,
+                           "error_type": (d.get("error_type") or "unspecified") if v == "wrong" else d.get("error_type"),
+                           "note": d.get("note") or (f"({rv})" if v == "unsure" else None), "client": f"loop:{line_cmd}"[:200]})
     if events:
         review.record(con, bid, events, review.taxonomy(None))
     return len(events)
+
+
+def _wd(b):
+    from .paths import work_dir
+    return work_dir(b) or ""
 
 
 def misses(con, bid: str) -> dict[str, list[str]]:

@@ -63,6 +63,14 @@ class Loop(unittest.TestCase):
         n = self.con.execute("SELECT COUNT(*) FROM issue WHERE batch_id=?", (self.b,)).fetchone()[0]
         self.assertEqual(n, 1)
 
+    def test_command_source(self):
+        ev = '{"case": "SHF_102", "reviewer": "client:HMLR", "verdict": "wrong", "error_type": "SA-18", "note": "x", "at": "2026-10-23T02:00:00"}'
+        cfg = {**self.cfg, "review_source": {**self.cfg["review_source"], "databases": [],
+                                             "commands": [f"echo '{ev}'"]}}
+        with mock.patch.object(loop, "_cfg", return_value=cfg):
+            self.assertEqual(loop.import_reviews(self.con, self.b), 1)
+            self.assertEqual(loop.misses(self.con, self.b), {"SA-18": ["102"]})   # auto-passed, the client says wrong
+
     def test_reruns_do_not_reopen(self):
         with mock.patch.object(loop, "_cfg", return_value=self.cfg):
             loop.tend(self.con, force=True)
