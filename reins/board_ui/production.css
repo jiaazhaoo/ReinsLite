@@ -242,3 +242,13 @@ details.parts.flat { border-top: 1px solid var(--border); margin: 16px -20px -18
   .wrow .num { text-align: left; }
   .wrow .k { display: inline; }
 }
+
+/* delivery quality card */
+.qbars { height: 150px; margin-bottom: 12px; }
+.qbars .d.low b { color: var(--faint); }
+.qtbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.qtbl th, .qtbl td { padding: 5px 8px; border-top: 1px solid var(--border); text-align: left; }
+.qtbl th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.qtbl .num { text-align: right; font-variant-numeric: tabular-nums; }
+.qtbl .strong { font-weight: 600; }
+@media (max-width: 640px) { .qtbl th:nth-child(6), .qtbl td:nth-child(6), .qtbl th:nth-child(7), .qtbl td:nth-child(7) { display: none; } }

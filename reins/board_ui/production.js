@@ -3,6 +3,9 @@
 
 const I18N = {
   zh: {
+    q_title: "交付质量：各版本的真实漏判率", q_sub: "自动通过、事后被审核员或客户判错的比例；每个判定算到产出那份结果的版本上",
+    q_miss: "漏判率", q_auto: "自动通过", q_checked: "被核查", q_missed: "漏判", q_flag: "送人工的里真错", q_low: "样本不足 30，仅供参考",
+    q_none: "还没有可归到版本的判定", q_ver: "版本", q_client: "客户核查（全部）", q_unattr: "另有 {n} 条判定针对 reins 之前的交付，未计入",
     title: "生产进度与成本", sub: "{p} 个工作包 · {r} 个在跑 · 更新于 {at}", live: "实时", stale: "连接中断",
     k_cases: "案件总数", k_cases_f: "{n} 个工作包", k_results: "已出结果", k_results_f: "占全部案件", k_good: "自动通过",
     k_good_f: "占已出结果，不需要人看", k_review: "需人工复核", k_review_f: "AI 拿不准或有疑点", k_today: "近 24 小时新出结果",
@@ -47,6 +50,9 @@ const I18N = {
     foot: "只统计生产和返工批次；试跑、实验和评测不在此页。花费含接入 reins 之前导入的历史记录。数据来自 reins 账本和各批次的结果文件，每 30 秒刷新。",
   },
   en: {
+    q_title: "Delivery quality: each version's real miss rate", q_sub: "finished without a person, later marked wrong by a reviewer or the client; every verdict counted against the version that produced what was judged",
+    q_miss: "Miss rate", q_auto: "Automated", q_checked: "Checked", q_missed: "Missed", q_flag: "Sent to a person, really wrong", q_low: "fewer than 30 checked: indicative only",
+    q_none: "no verdict can be tied to a version yet", q_ver: "Version", q_client: "Client-checked (all)", q_unattr: "{n} more verdicts concern deliveries made before reins and are not counted",
     title: "Production and cost", sub: "{p} work packages · {r} running · updated {at}", live: "Live", stale: "Disconnected",
     k_cases: "Cases", k_cases_f: "{n} work packages", k_results: "With a result", k_results_f: "of all cases", k_good: "Auto-passed",
     k_good_f: "of results, no person needed", k_review: "Needs a person", k_review_f: "AI unsure or found a problem", k_today: "Results in the last 24 h",
@@ -204,6 +210,28 @@ function compare() {
       <div class="num strong"><span class="k">${t("h_cost")}</span>${usd(T.spent)}</div>
       <div class="num"><span class="k">${t("h_per")}</span>${per1k(T.per_case)}</div><div class="num"><span class="k">${t("h_run")}</span>${dur(T.run_h)}</div><div></div><div></div>
       <div class="num"><span class="k">${t("h_res")}</span>${pct(T.with_result || T.finished, T.n_cases)}%</div></div></div>`;
+}
+
+function qualityCard() {
+  const Q = (D.quality || [])[0];
+  const R = Q ? Q.releases.filter((r) => r.checked_auto || r.checked_human) : [];
+  if (!R.length) return `<div class="pcard"><h2>${t("q_title")}<small>${t("q_sub")}</small></h2><div class="faint">${t("q_none")}</div></div>`;
+  const max = Math.max(0.02, ...R.filter((r) => !r.low_n).map((r) => r.miss_rate || 0));
+  const short = (v) => { const m = String(v).match(/(\d{4})(\d{2})(\d{2})(?:-(\d+))?/); return m ? `${+m[2]}/${+m[3]}${m[4] ? "·" + m[4] : ""}` : v; };
+  const pctf = (x) => (x == null ? "—" : (100 * x).toFixed(x < 0.1 ? 1 : 0) + "%");
+  const barsHtml = R.map((r) => { const v = r.miss_rate || 0;
+    return `<div class="d ${r.low_n ? "low" : ""}" title="${esc(r.release)}: ${t("q_miss")} ${pctf(r.miss_rate)} (${r.wrong_auto}/${r.checked_auto})${r.low_n ? " · " + t("q_low") : ""}">
+      <b>${r.checked_auto ? pctf(r.miss_rate) + (r.low_n ? "*" : "") : ""}</b>
+      <i class="${r.checked_auto ? "" : "zero"}" style="height:${r.checked_auto ? Math.max(3, Math.min(100, (100 * v) / max)) : 2}%;background:${r.low_n ? "var(--faint)" : "var(--red)"}"></i>
+      <span>${esc(short(r.release))}</span></div>`; }).join("");
+  const rows = R.map((r) => `<tr><td class="mono">${esc(r.release)}</td><td class="num">${pctf(r.auto_share)}</td><td class="num">${num(r.checked_auto)}</td>
+      <td class="num">${num(r.wrong_auto)}</td><td class="num strong">${pctf(r.miss_rate)}${r.low_n ? "*" : ""}</td>
+      <td class="num">${r.checked_human ? `${num(r.wrong_human)} / ${num(r.checked_human)}` : "—"}</td><td class="num">${num(r.client_checked)}</td></tr>`).join("");
+  return `<div class="pcard"><h2>${t("q_title")}<small>${t("q_sub")}</small></h2>
+    <div class="daily qbars">${barsHtml}</div>
+    <table class="qtbl"><thead><tr><th>${t("q_ver")}</th><th class="num">${t("q_auto")}</th><th class="num">${t("q_checked")}</th><th class="num">${t("q_missed")}</th>
+      <th class="num">${t("q_miss")}</th><th class="num">${t("q_flag")}</th><th class="num">${t("q_client")}</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="faint" style="font-size:12px;margin-top:6px">* ${t("q_low")}${Q.unattributed ? " · " + t("q_unattr", { n: num(Q.unattributed) }) : ""}</div></div>`;
 }
 
 function devCard() {
@@ -517,6 +545,7 @@ function render() {
     ${head}
     ${kpis()}
     <section class="prow even">${dailySpend()}${daily()}</section>
+    ${qualityCard()}
     ${packagesTable()}
     ${devCard()}
     <div class="pfoot">${t("foot")}</div>`;
