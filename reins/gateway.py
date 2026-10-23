@@ -12,6 +12,9 @@ instead of a key. For every /chat/completions request the gateway
      provider's reported cost (usage.cost; OpenRouter returns it when usage.include=true), else the price table;
      a model with neither (no price, provider does not report costs) is refused, the batch paused, someone told;
      an identical request already in flight waits for that answer instead of being paid twice,
+     A provider may reroute named models to another provider (config.toml [providers.<name>] reroute, see
+     reins/providers.py): the answer is cached under the request as the client sent it, and the original provider
+     answers when the target's cap is reached or it refuses (unless reroute_fallback = false).
   4. on a cap (the batch's, its stage's, the pools', or the provider's own daily_cap / weekly_cap / hourly_cap in
      config.toml [providers.<name>]): answers 402 with a message naming the reins command to run, pauses the batch,
      notifies.
@@ -333,29 +336,68 @@ class Handler(BaseHTTPRequestHandler):
             if not drift:
                 _done(sha)
 
-    def _forward(self, con, spec, upstream_url, provider, key, batch, stage, body, model, sha, mv, cp, drift):
-        est = spend.estimate(con, batch, stage, model)
-        try:
-            rid = spend.reserve(con, batch, stage, est, provider=provider)
-        except spend.CapReached as e:
-            self._on_cap(con, batch, str(e))
-            self._err(402, cap_message(batch, e))
-            return
-        except ReinsError as e:
-            self._err(409, str(e)); return
-        fwd = {**body, **(spec.get("extra_body") or {})}      # e.g. OpenRouter: usage.include -> it reports the charged cost
+    def _upstream(self, spec, url, key, body, model) -> tuple[bytes | None, int | str]:
+        """One POST to a chat provider: (raw answer, HTTP status), or (None, why) when it could not be reached."""
+        fwd = {**body, "model": model, **(spec.get("extra_body") or {})}   # e.g. OpenRouter: usage.include -> the charged cost
         fwd.pop("timeout", None)
-        req = urllib.request.Request(upstream_url, data=json.dumps(fwd).encode(),
+        req = urllib.request.Request(url, data=json.dumps(fwd).encode(),
                                      headers={"Authorization": "Bearer " + key, "Content-Type": "application/json",
                                               "HTTP-Referer": "reins-gateway", "X-Title": "reins"})
         try:
             with urllib.request.urlopen(req, timeout=float(body.get("timeout", 180))) as r:
-                raw = r.read(); code = 200
+                return r.read(), 200
         except urllib.error.HTTPError as e:
-            raw, code = e.read(), e.code
+            return e.read(), e.code
         except (urllib.error.URLError, TimeoutError) as e:
-            spend.release(con, rid)
-            self._err(504, f"upstream unreachable: {e}"); return
+            return None, str(e)
+
+    def _routes(self, con, spec, upstream_url, provider, key, model) -> list[tuple]:
+        """[(spec, url, ledger, key, model)] to try in order: a reroute target first (providers.reroute), then the
+        provider the client asked for unless reroute_fallback = false. A target without a key or a price is skipped."""
+        own = (spec, upstream_url, provider, key, model)
+        alt = providers.reroute(spec, model)
+        if not alt:
+            return [own]
+        tspec, tmodel = alt
+        tkey = load_key(tspec)
+        why = f"the gateway has no {tspec['name']} key" if not tkey else spend.unpriced(con, tspec, tmodel)
+        if why:
+            notify.send(con, f"reroute:{model}", "warn", f"{model} not rerouted to {tspec['name']}", why, cooldown_min=60)
+            return [own]
+        target = (tspec, tspec["base"].rstrip("/") + "/chat/completions", tspec["ledger"], tkey, tmodel)
+        return [target, own] if spec.get("reroute_fallback", True) else [target]
+
+    def _forward(self, con, spec, upstream_url, provider, key, batch, stage, body, model, sha, mv, cp, drift):
+        est = spend.estimate(con, batch, stage, model)
+        routes = self._routes(con, spec, upstream_url, provider, key, model)
+        for i, (rspec, url, led, rkey, rmodel) in enumerate(routes):
+            last = i == len(routes) - 1
+            try:
+                rid = spend.reserve(con, batch, stage, est, provider=led)
+            except spend.ProviderCapReached as e:
+                if not last:                               # the reroute target's own cap: the original provider takes it
+                    continue
+                self._on_cap(con, batch, str(e)); self._err(402, cap_message(batch, e)); return
+            except spend.CapReached as e:
+                self._on_cap(con, batch, str(e)); self._err(402, cap_message(batch, e)); return
+            except ReinsError as e:
+                self._err(409, str(e)); return
+            raw, code = self._upstream(rspec, url, rkey, body, rmodel)
+            if raw is None:
+                spend.release(con, rid)
+                if not last:
+                    continue
+                self._err(504, f"upstream unreachable: {code}"); return
+            if code != 200 and not last:                   # the target refused (no credits, rate limit, a parameter...)
+                spend.settle(con, rid, provider=led, model=rmodel, amount=0.0, priced="none", tokens_in=None, tokens_out=None,
+                             cache_hit=False, request_sha=sha, http_status=code, module_version=mv)
+                notify.send(con, f"reroute:{model}", "warn", f"{rspec['name']} refused {rmodel} ({code}); {provider} answered",
+                            raw[:300].decode("utf-8", "replace"), cooldown_min=60)
+                continue
+            self._finish(con, rspec, led, rmodel, batch, stage, rid, raw, code, sha, mv, cp, drift)
+            return
+
+    def _finish(self, con, spec, provider, model, batch, stage, rid, raw, code, sha, mv, cp, drift):
         usage = {}
         try:
             d = json.loads(raw); usage = d.get("usage") or {}

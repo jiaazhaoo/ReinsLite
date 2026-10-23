@@ -62,7 +62,8 @@ def set_(con, key: str, raw: str, why: str, by: str = "user", new_key: bool = Fa
         raise ReinsError(f"{key} is a section; set one of its values: " + ", ".join(f"{key}.{k}" for k in cur[name] if not isinstance(cur[name][k], dict)))
     in_pool = bool(section) and section.startswith("pool.") and name in ("hourly_cap", "daily_cap", "weekly_cap", "max_batch_cap",
                                                                          "per_session_daily_cap", "types")
-    in_provider = bool(section) and section.startswith("providers.") and name in ("hourly_cap", "daily_cap", "weekly_cap")
+    in_provider = bool(section) and section.startswith("providers.") and name in ("hourly_cap", "daily_cap", "weekly_cap",
+                                                                                 "reroute", "reroute_fallback")
     in_standing = section == "standing"                             # standing.TYPE = USD: a standing approval
     if in_standing:
         from . import names as _names
@@ -75,8 +76,12 @@ def set_(con, key: str, raw: str, why: str, by: str = "user", new_key: bool = Fa
         top = min(caps) if caps else None
         if top is not None and value > top:
             raise ReinsError(f"standing.{name} ${value} exceeds max_batch_cap ${top}")
-    if in_provider and (not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0):
+    if in_provider and name.endswith("_cap") and (not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0):
         raise ReinsError(f"{key} is a cap in USD (a number >= 0)")
+    if in_provider and name == "reroute" and not (isinstance(value, list) and all(isinstance(r, str) and "->" in r for r in value)):
+        raise ReinsError(f'{key} is a list like ["google/gemini-3.8-flash -> gemini/gemini-3.8-flash"]')
+    if in_provider and name == "reroute_fallback" and not isinstance(value, bool):
+        raise ReinsError(f"{key} is true or false")
     if in_provider:
         from . import providers as _providers
         if section.split(".", 1)[1] not in _providers.all_():
