@@ -123,3 +123,44 @@ class InheritAndInbox(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GuardBatchDirs(unittest.TestCase):
+    """2026-10-25: a session wrote into another session's live experiment dir before opening its own batch."""
+
+    def setUp(self):
+        self._env = {k: os.environ.get(k) for k in ("REINS_HOME", "REINS_SESSION")}
+        self.tmp = Path(tempfile.mkdtemp(prefix="reins-gbd-"))
+        os.environ["REINS_HOME"] = str(self.tmp / "home")
+        (self.tmp / "home").mkdir()
+        self.con = connect(self.tmp / "home")
+        (self.tmp / "cases.txt").write_text("101\n")
+        self.wd = self.tmp / "exp" / "x-wp1-experiment-1"
+        self.wd.mkdir(parents=True)
+        os.environ["REINS_SESSION"] = "owner-A"
+        batches.open_(self.con, project="p", scope="x-wp1", type_="experiment", purpose="t", case_file=self.tmp / "cases.txt",
+                      stages=[{"stage": "s", "module_version": None, "paid": 0, "spend_cap": None, "time_limit_s": None}],
+                      work_dir=str(self.wd))
+        import guard
+        importlib.reload(guard)
+        self.g = guard
+
+    def tearDown(self):
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_other_session_cannot_write_but_can_read(self):
+        os.environ["REINS_SESSION"] = "other-B"
+        self.assertIsNotNone(self.g.check_bash(f"cp config.json {self.wd}/config.json"))
+        self.assertIsNotNone(self.g.check_bash(f"python3 -c \"open('{self.wd}/config.json','w').write('x')\""))
+        self.assertIsNotNone(self.g.check_edit(str(self.wd / "config.json")))
+        self.assertIsNone(self.g.check_bash(f"cat {self.wd}/config.json"))
+        self.assertIsNone(self.g.check_bash(f"python3 -c \"print(open('{self.wd}/config.json').read())\""))
+
+    def test_owner_may_write(self):
+        os.environ["REINS_SESSION"] = "owner-A"
+        self.assertIsNone(self.g.check_bash(f"cp config.json {self.wd}/config.json"))
+        self.assertIsNone(self.g.check_edit(str(self.wd / "config.json")))

@@ -5,7 +5,9 @@ Blocks, with the reins command to use instead:
   Bash   setsid / nohup / disown / trailing &  on a pipeline command  -> reins run BATCH STAGE -- CMD
          git merge|push into main, git checkout/switch inside another session's worktree -> reins dev finish
          writes (> >> tee cp mv rm chmod) into frozen paths: the bench root, release worktrees, config frozen_paths
-  Edit/Write/MultiEdit   files in frozen paths or in a worktree leased by another session
+         writes into another session's live batch work dir (shell targets, and script bodies that name it and write)
+  Edit/Write/MultiEdit   files in frozen paths, in a worktree leased by another session, or in another session's
+                         live batch work dir
 
 Install (in ~/.claude/settings.json):
   "hooks": {"PreToolUse": [{"matcher": "Bash|Edit|Write|MultiEdit",
@@ -109,6 +111,64 @@ def other_sessions_worktree(path: str) -> str | None:
         if (path == wt or path.startswith(wt.rstrip("/") + "/")) and holder != me:
             return f"{wt} (session {holder})"
     return None
+
+
+def _my_line() -> set[str]:
+    """This session and the sessions it continues (fork or context continuation): their batches are its own."""
+    me = os.environ.get("REINS_SESSION") or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    out = {me} if me else set()
+    try:
+        con = sqlite3.connect(f"file:{HOME / 'reins.db'}?mode=ro", uri=True, timeout=5)
+        cur = me
+        for _ in range(20):
+            row = con.execute("SELECT parent FROM session WHERE id=?", (cur,)).fetchone() if cur else None
+            if not row or not row[0] or row[0] in out:
+                break
+            out.add(row[0]); cur = row[0]
+    except sqlite3.Error:
+        pass
+    return out
+
+
+def _live_batch_dirs() -> list[tuple[str, str, str]]:
+    """(work dir, batch, owner) of live batches of other sessions."""
+    db = HOME / "reins.db"
+    if not db.exists():
+        return []
+    mine = _my_line()
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        rows = con.execute("SELECT work_dir, batch_id, owner_session FROM batch WHERE status IN ('open','running','paused')"
+                           " AND work_dir IS NOT NULL AND work_dir<>'' AND owner_session IS NOT NULL").fetchall()
+    except sqlite3.Error:
+        return []
+    return [(w.rstrip("/"), b, o) for w, b, o in rows if o not in mine]
+
+
+def other_sessions_batch_dir(path: str) -> str | None:
+    """2026-10-25: a session guessed its next batch id and wrote into another session's experiment dir."""
+    for wd, b, o in _live_batch_dirs():
+        if path == wd or path.startswith(wd + "/"):
+            return f"{wd} is the work dir of {b} (session {o[:8]})"
+    return None
+
+
+SCRIPT_WRITE = re.compile(r"""open\([^)]*['"][wa]b?['"]|write_text|write_bytes|to_csv|to_parquet|to_json|json\.dump\(|"""
+                          r"""shutil\.|\.save\(|os\.(makedirs|mkdir|rename|replace|remove)|\.mkdir\(|\.unlink\(|\.touch\(""")
+
+
+def script_writes_other_batch_dir(cmd: str) -> str | None:
+    """A python -c / heredoc body that names another session's live batch dir and writes something."""
+    if not SCRIPT_WRITE.search(cmd):
+        return None
+    for wd, b, o in _live_batch_dirs():
+        if re.search(re.escape(wd) + r"(?=[/'\"\s]|$)", cmd):
+            return f"{wd} is the work dir of {b} (session {o[:8]})"
+    return None
+
+
+BATCH_DIR_HINT = ("write only into your own batch's work dir: reins batch open ... --work-dir .../{batch} (reins names and "
+                  "makes the folder; never guess it before opening); reading another batch's dir is fine")
 
 
 GIT_C = re.compile(r"git\s+-C\s+(\S+)")
@@ -285,6 +345,9 @@ def check_bash(cmd: str) -> str | None:
         o = other_sessions_worktree(cwd)
         if o or frozen(cwd + "/"):
             return f"no branch switching inside {o or cwd}: it is a release/batch tree or another session's worktree"
+    ob = script_writes_other_batch_dir(cmd)
+    if ob:
+        return f"this script writes and names {ob}. {BATCH_DIR_HINT}"
     names = _assignments(cmd)
     for raw in write_targets(cmd):
         target = _expand(raw, names)
@@ -295,6 +358,9 @@ def check_bash(cmd: str) -> str | None:
             why = frozen_reason(target)
             if why:
                 return f"writing {target}: {why}"
+            ob = other_sessions_batch_dir(target)
+            if ob:
+                return f"writing {target}: {ob}. {BATCH_DIR_HINT}"
             o = other_sessions_worktree(target)
         except (OSError, ValueError):
             continue
@@ -361,6 +427,9 @@ def check_edit(path: str) -> str | None:
     why = frozen_reason(p)
     if why:
         return f"editing {p}: {why}"
+    ob = other_sessions_batch_dir(p)
+    if ob:
+        return f"editing {p}: {ob}. {BATCH_DIR_HINT}"
     o = other_sessions_worktree(p)
     if o:
         return (f"{p} is inside {o}. Start your own (reins dev start MODULE SUFFIX --about ...), or, if this session "
