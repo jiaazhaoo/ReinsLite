@@ -34,7 +34,7 @@ class Quality(unittest.TestCase):
         wd = self.tmp / release
         (wd / "lab").mkdir(parents=True)
         (wd / "lab" / "qa_final.csv").write_text("case,lane\n" + "".join(f"SHF_{c},{l}\n" for c, l in lanes.items()))
-        b = batches.open_(self.con, project="p", scope="x-wp1", type_="experiment", purpose="t", case_file=self.tmp / "cases.txt",
+        b = batches.open_(self.con, adopt_dir='test fixture: results written first', project="p", scope="x-wp1", type_="experiment", purpose="t", case_file=self.tmp / "cases.txt",
                           work_dir=str(wd), day=created.replace("-", "")[:8],
                           stages=[{"stage": "check", "module_version": None, "paid": 0, "spend_cap": None, "time_limit_s": None}])
         with tx(self.con):

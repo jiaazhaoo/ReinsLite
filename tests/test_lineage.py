@@ -40,7 +40,7 @@ class Lineage(unittest.TestCase):
         f = self.tmp / f"c{self.n}.txt"; f.write_text("\n".join(cases) + "\n")
         wd = self.tmp / f"wd{self.n}"; wd.mkdir()
         (wd / "res.csv").write_text("case,lane\n" + "".join(f"{c},auto\n" for c in results))
-        b = batches.open_(self.con, project="p", scope="town-wp1", type_="experiment", purpose=f"run {self.n}", case_file=f,
+        b = batches.open_(self.con, adopt_dir='test fixture: results written first', project="p", scope="town-wp1", type_="experiment", purpose=f"run {self.n}", case_file=f,
                           stages=[{"stage": "s", "module_version": None, "paid": 0, "spend_cap": None, "time_limit_s": None}],
                           work_dir=str(wd))
         at = (dt.datetime(2026, 10, 1) + dt.timedelta(minutes=self.n * 10 + minutes)).isoformat(timespec="seconds")

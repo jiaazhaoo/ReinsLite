@@ -13,6 +13,7 @@ paused (first, so they raise no stall notices), leases nobody can need, an early
 from __future__ import annotations
 
 import datetime as dt
+import re
 import os
 import shutil
 import subprocess
@@ -181,7 +182,47 @@ def once(con=None) -> list[str]:
     return ([f"released {n} resource claim(s) of ended processes"] if n else []) + upkeep.reconcile(con) + check_batches(con, cfg) + \
         check_machine(con, cfg) + poll_balances_due(con, cfg) + release_stale_reservations(con, cfg) + sentinel.watch_running(con) + \
         _lifecycle(con) + upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _services(con) + check_gateway(con, cfg) + _sync(con) + \
-        (check_code_fresh(con, cfg) if os.environ.get("INVOCATION_ID") else []) + _invariants(con) + _legacy(con) + _loop(con) + _quality(con)   # only the systemd watchdog restarts units
+        (check_code_fresh(con, cfg) if os.environ.get("INVOCATION_ID") else []) + _invariants(con) + _legacy(con) + _loop(con) + _quality(con) + _foreign_touch(con)   # only the systemd watchdog restarts units
+
+
+WRITEISH = re.compile(r"(>|\btee\b|\bcp\b|\bmv\b|\brm\b|\bmkdir\b|\btouch\b|\brsync\b|write_text|to_csv|to_parquet|"
+                      r"json\.dump|shutil\.|\.save\(|open\([^)]*['\"][wa]['\"]|\bsed\s+-i)")
+
+
+def _foreign_touch(con) -> list[str]:
+    """After the fact, what the guard cannot see in advance (a path built inside a script): a session's recorded
+    commands that name another session's live batch work dir. The owner is told once per session (inbox), the batch
+    records it; nothing goes to the user's board. 2026-10-25: f88bab85 wrote into 7defec85's experiment dir."""
+    from . import inbox, sessions
+    from .store import tx
+    out = []
+    try:
+        since = (dt.datetime.now() - dt.timedelta(minutes=30)).isoformat(timespec="seconds")
+        live = con.execute("SELECT batch_id, work_dir, owner_session FROM batch WHERE status IN ('open','running','paused')"
+                           " AND work_dir IS NOT NULL AND work_dir<>'' AND owner_session IS NOT NULL").fetchall()
+        for b in live:
+            wd = b["work_dir"].rstrip("/")
+            mine = {b["owner_session"], *sessions.ancestors(con, b["owner_session"])}
+            for sid, at, detail in con.execute("SELECT session_id, at, detail FROM session_event WHERE at>? AND detail LIKE ?",
+                                               (since, f"%{wd}%")).fetchall():
+                if sid in mine or b["owner_session"] in sessions.ancestors(con, sid):
+                    continue
+                if not re.search(re.escape(wd) + r"(?=[/\s'\"]|$)", detail or "") or not WRITEISH.search(detail or ""):
+                    continue                             # another folder with the same prefix, or only read
+                if con.execute("SELECT 1 FROM batch_event WHERE batch_id=? AND event='foreign_touch' AND detail LIKE ?",
+                               (b["batch_id"], f"{sid[:8]}%")).fetchone():
+                    continue
+                with tx(con):
+                    con.execute("INSERT INTO batch_event (at, batch_id, event, detail) VALUES (?,?, 'foreign_touch', ?)",
+                                (dt.datetime.now().isoformat(timespec="seconds"), b["batch_id"],
+                                 f"{sid[:8]} at {at}: {(detail or '')[:300]}"))
+                inbox.send(con, inbox.owner_of(con, b["batch_id"]) or b["owner_session"], f"session {sid[:8]} touched your batch dir",
+                           f"{b['batch_id']} ({wd}) was named by a command of session {sid[:8]} at {at}:\n{(detail or '')[:400]}\n"
+                           f"Check the dir; reins batch status {b['batch_id']}", batch=b["batch_id"])
+                out.append(f"{b['batch_id']}: session {sid[:8]} touched its dir; owner told")
+    except Exception as e:                                                      # noqa: BLE001 -- never stop the watchdog
+        return [f"foreign touch check skipped: {e}"]
+    return out
 
 
 def _quality(con) -> list[str]:

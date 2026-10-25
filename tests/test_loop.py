@@ -33,7 +33,7 @@ class Loop(unittest.TestCase):
             ("2026-10-23T01:02:00", "maggie", "SHF_103", "verdict", "error", "location", None),        # flagged already
             ("2026-10-23T01:03:00", "maggie", "SHF_102", "view", None, None, None)])
         db.commit(); db.close()
-        self.b = batches.open_(self.con, project="p", scope="sheffield-wp3", type_="experiment", purpose="t",
+        self.b = batches.open_(self.con, adopt_dir='test fixture: results written first', project="p", scope="sheffield-wp3", type_="experiment", purpose="t",
                                case_file=self.tmp / "cases.txt", work_dir=str(self.wd),
                                stages=[{"stage": "check", "module_version": None, "paid": 0, "spend_cap": None, "time_limit_s": None}])
         self.cfg = {"review_source": {"databases": ["{work_dir}/lab/review/review.db"], "where": "action = 'verdict'",
@@ -77,7 +77,7 @@ class Loop(unittest.TestCase):
     def test_reruns_do_not_reopen(self):
         with mock.patch.object(loop, "_cfg", return_value=self.cfg):
             loop.tend(self.con, force=True)
-            b2 = batches.open_(self.con, project="p", scope="sheffield-wp3", type_="experiment", purpose="rerun", day="20990101",
+            b2 = batches.open_(self.con, adopt_dir='test fixture: results written first', project="p", scope="sheffield-wp3", type_="experiment", purpose="rerun", day="20990101",
                                case_file=self.tmp / "cases.txt", work_dir=str(self.wd),
                                stages=[{"stage": "check", "module_version": None, "paid": 0, "spend_cap": None, "time_limit_s": None}])
             with tx(self.con):
