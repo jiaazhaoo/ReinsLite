@@ -196,6 +196,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="NAME[=MODULE_VERSION][:paid][:cap=USD][:limit=SECONDS], in run order (or --workflow)")
     x.add_argument("--parent"); x.add_argument("--release"); x.add_argument("--alias", action="append")
     x.add_argument("--project"); x.add_argument("--work-dir"); x.add_argument("--cap", type=float, default=0.0)
+    x.add_argument("--adopt-dir", help="take a work dir that already holds files on purpose (one line why)")
     x.add_argument("--ruleset"); x.add_argument("--env"); x.add_argument("--config", action="append", type=Path)
     x.add_argument("--input", action="append", type=Path, help="mapping tables and other inputs to hash into provenance")
     x.add_argument("--time-budget", type=float, help="hours for the whole batch; the watchdog reports overruns")
@@ -1030,7 +1031,7 @@ def _batch(con, args, cfg) -> int:
                             case_pattern=cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN), case_key=_key(cfg),
                             work_dir=args.work_dir, spend_cap=args.cap, ruleset=args.ruleset, env_name=args.env,
                             config_files=args.config, input_files=args.input, workflow=args.workflow,
-                            work_dir_patterns=cfg.get("run", {}).get("work_dirs"))
+                            work_dir_patterns=cfg.get("run", {}).get("work_dirs"), adopt_dir=args.adopt_dir)
         probe = cfg.get("run", {}).get("probe")
         if probe:
             batches.set_probe(con, bid, probe)

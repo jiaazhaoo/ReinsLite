@@ -76,13 +76,50 @@ def check_work_dir(work_dir: str, patterns: list[str] | None, *, batch: str, sco
     return wd
 
 
+MARKER = ".reins-batch"
+
+
+def _claim_dir(con, work_dir: str, adopt_dir: str | None) -> None:
+    """A work dir belongs to its batch. 2026-10-25 session f88bab85 guessed its next batch would be '-5' and wrote into
+    the dir session 7defec85 had just made for sheffield-wp3-experiment-20261025-5. Refused here: a dir a live batch of
+    another session uses, and a dir that already holds files no batch of this session made (someone else's guess, or
+    leftovers) -- unless --adopt-dir says why it is taken on purpose."""
+    from . import sessions
+    me = session()
+    mine = {me, *(sessions.ancestors(con, me) if me else [])}
+    for b in con.execute("SELECT batch_id, owner_session FROM batch WHERE work_dir=? AND status<>'closed'", (work_dir,)):
+        if b["owner_session"] and b["owner_session"] not in mine:
+            raise ReinsError(f"work dir {work_dir} belongs to {b['batch_id']} of session {str(b['owner_session'])[:8]}; "
+                             f"give this batch its own: --work-dir .../{{batch}} (reins names the folder after the batch id)")
+    d = Path(work_dir)
+    held = [p.name for p in d.iterdir() if p.name != MARKER] if d.is_dir() else []
+    if held and not adopt_dir:
+        ours = con.execute("SELECT 1 FROM batch WHERE work_dir=? AND owner_session IN (%s) LIMIT 1" % ",".join("?" * len(mine)),
+                           (work_dir, *mine)).fetchone()
+        if not ours:
+            raise ReinsError(f"work dir {work_dir} already holds {len(held)} entries ({', '.join(sorted(held)[:5])}) that no "
+                             f"batch of this session made. Use --work-dir .../{{batch}} (a fresh folder named after the batch; "
+                             f"never make or guess it before `batch open`), or take it on purpose: --adopt-dir 'why'")
+
+
+def _mark_dir(work_dir: str, bid: str) -> None:
+    """A line per batch in <work dir>/.reins-batch: which batch and session the folder belongs to."""
+    try:
+        d = Path(work_dir)
+        if d.is_dir():
+            with open(d / MARKER, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"batch": bid, "session": session(), "at": now()}) + "\n")
+    except OSError:
+        pass
+
+
 def open_(con, *, project: str, scope: str, type_: str, purpose: str, case_file: Path | None,
           stages: list[dict], parent: str | None = None, release_name: str | None = None,
           aliases: list[str] | None = None, case_pattern: str = names.DEFAULT_CASE_PATTERN, case_key: str | None = None,
           work_dir: str | None = None, spend_cap: float = 0.0, day: str | None = None,
           ruleset: str | None = None, env_name: str | None = None, config_files: list[Path] | None = None,
           input_files: list[Path] | None = None, workflow: str | None = None,
-          work_dir_patterns: list[str] | None = None) -> str:
+          work_dir_patterns: list[str] | None = None, adopt_dir: str | None = None) -> str:
     if not purpose.strip():
         raise ReinsError("a batch needs a purpose (one sentence: why it runs)")
     if workflow:
@@ -138,6 +175,8 @@ def open_(con, *, project: str, scope: str, type_: str, purpose: str, case_file:
         if work_dir:
             work_dir = check_work_dir(work_dir.replace("{batch}", bid), work_dir_patterns,
                                       batch=bid, scope=scope, type_=type_, project=project)
+        if work_dir:
+            _claim_dir(con, work_dir, adopt_dir)
         con.execute("INSERT INTO batch (batch_id, project, scope, type, day, seq, purpose, parent, case_set_path,"
                     " case_set_sha, n_cases, release_name, aliases, status, spend_cap, work_dir, ruleset, env_name,"
                     " config_sha, input_shas, owner_session, created)"
@@ -151,10 +190,14 @@ def open_(con, *, project: str, scope: str, type_: str, purpose: str, case_file:
                         [(bid, s["stage"], k, s["module_version"], s["paid"], s["spend_cap"], s["time_limit_s"])
                          for k, s in enumerate(stages)])
         _event(con, bid, "opened", purpose)
+        if adopt_dir:
+            _event(con, bid, "adopted_dir", f"{work_dir}: {adopt_dir}")
         if workflow:
             con.execute("UPDATE batch SET workflow=? WHERE batch_id=?", (workflow, bid))
     if session():
         leases.acquire(con, f"batch:{bid}", "owner")
+    if work_dir:
+        _mark_dir(work_dir, bid)
     if not parent:                                         # which earlier run of this work it repeats, splits or extends
         from . import lineage
         lineage.relate(con, bid)
