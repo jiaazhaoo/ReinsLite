@@ -44,7 +44,7 @@ class PushSkipsUnchanged(unittest.TestCase):
 
     def test_only_timestamp_changed_is_skipped(self):
         report.push()
-        self.tick(300, "2026-10-26T09:05:00")
+        self.tick(report.PUSH_MIN_SECONDS, "2026-10-26T09:10:00")
         r = report.push()
         self.assertEqual(r.get("skipped"), "unchanged")
         self.assertEqual(len(self.writes), 2)
