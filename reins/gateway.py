@@ -35,7 +35,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import batches, notify, providers, spend
+from . import batches, notify, provider_batch, providers, spend
 from .store import ReinsError, config, connect, home
 
 KEYS: dict[str, str] = {}
@@ -255,6 +255,9 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, raw)
 
     def do_GET(self):
+        bs = self._batch_spec()
+        if bs and bs[1]:
+            self._batch_poll(*bs); return
         spec = get_route(self.path)
         if spec:
             self._metered_get(spec); return
@@ -287,7 +290,113 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._err(404, "gateway serves POST /p/<provider>/v1/chat/completions and GET /p/<provider>/... (reins/providers.py)")
 
+    def _batch_spec(self) -> tuple[dict, str] | None:
+        """/p/<name>/v1/batch[/<job>] of a provider with a batch adapter -> (spec, job id or '')."""
+        for spec in providers.all_().values():
+            pre = f"/p/{spec['name']}/v1/batch"
+            if spec.get("batch") in provider_batch.ADAPTERS and (self.path.rstrip("/") == pre or self.path.startswith(pre + "/")):
+                return spec, self.path[len(pre):].strip("/")
+        return None
+
+    def _batch_submit(self, spec: dict):
+        """POST /p/<name>/v1/batch {"model", "requests": [chat body...]}: cached answers at once, the rest as one job."""
+        key = load_key(spec)
+        if not key:
+            self._err(503, f"the gateway has no {spec['name']} key"); return
+        auth = self._auth()
+        if not auth:
+            return
+        batch, stage = auth
+        con = _con()
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        except json.JSONDecodeError:
+            self._err(400, "body is not JSON"); return
+        model, reqs = body.get("model", ""), body.get("requests") or []
+        why = spend.unpriced(con, spec, model)
+        if why:
+            self._on_unpriced(con, batch, model, why); self._err(409, why); return
+        mv = con.execute("SELECT module_version FROM batch_stage WHERE batch_id=? AND stage=?", (batch, stage)).fetchone()[0]
+        drift = batches.get(con, batch)["type"] == "drift"
+        cached, todo = {}, []
+        for i, rb in enumerate(reqs):
+            rb = {**rb, "model": model}
+            sha = canonical_sha({**rb, "_provider": spec["ledger"]})
+            cp = cache_path(sha)
+            if cp.is_file() and not drift:
+                spend.record_free(con, batch, stage, provider=spec["ledger"], model=model, request_sha=sha, module_version=mv)
+                cached[str(i)] = json.loads(cp.read_bytes())
+            else:
+                todo.append((i, sha, rb))
+        if not todo:
+            self._send(200, {"job": None, "cached": cached, "submitted": 0}); return
+        disc = float(spec.get("batch_discount", 1.0))
+        est = spend.estimate(con, batch, stage, model) * disc
+        rids = []
+        try:
+            for _ in todo:
+                rids.append(spend.reserve(con, batch, stage, est, provider=spec["ledger"]))
+        except (spend.CapReached, ReinsError) as e:
+            for r in rids:
+                spend.release(con, r)
+            if isinstance(e, spend.CapReached):
+                self._on_cap(con, batch, str(e)); self._err(402, cap_message(batch, e))
+            else:
+                self._err(409, str(e))
+            return
+        sub, _ = provider_batch.ADAPTERS[spec["batch"]]
+        code, op = sub(spec, key, model, [(sha, rb) for _, sha, rb in todo])
+        if code != 200 or not op.get("name"):
+            for r in rids:
+                spend.release(con, r)
+            self._send(code if code != 200 else 502, {"error": {"message": f"batch submit refused: {json.dumps(op)[:400]}",
+                                                                  "code": code, "source": "reins-gateway"}}); return
+        jid = provider_batch.new_job({"provider": spec["name"], "name": op["name"], "batch": batch, "stage": stage,
+                                      "model": model, "mv": mv, "drift": drift, "discount": disc,
+                                      "items": [[i, sha, rid] for (i, sha, _), rid in zip(todo, rids)]})
+        self._send(200, {"job": jid, "cached": cached, "submitted": len(todo)})
+
+    def _batch_poll(self, spec: dict, jid: str):
+        """GET /p/<name>/v1/batch/<job>: pending, or the answers (settled and cached once, on the first collection)."""
+        auth = self._auth()
+        if not auth:
+            return
+        job = provider_batch.load_job(jid)
+        if not job or job["batch"] != auth[0]:
+            self._err(404, f"no batch job {jid} of {auth[0]}"); return
+        if job.get("answers") is not None:
+            self._send(200, {"state": "done", "answers": job["answers"]}); return
+        con = _con()
+        _, pol = provider_batch.ADAPTERS[spec["batch"]]
+        state, got, pstate = pol(spec, load_key(spec), job["name"])
+        if state == "pending":
+            self._send(200, {"state": "pending", "provider_state": pstate}); return
+        answers = {}
+        for i, sha, rid in job["items"]:
+            nat = (got or {}).get(sha)
+            if state != "done" or not nat or "error" in nat and "candidates" not in nat:
+                spend.release(con, rid); continue
+            ans = provider_batch.from_native(nat, job["model"])
+            amount, priced = cost_of(con, job["model"], ans["usage"])
+            kw = dict(provider=spec["ledger"], model=job["model"], amount=amount * job["discount"], priced=priced,
+                      tokens_in=ans["usage"]["prompt_tokens"], tokens_out=ans["usage"]["completion_tokens"],
+                      cache_hit=False, request_sha=sha, http_status=200, module_version=job["mv"])
+            try:
+                spend.settle(con, rid, **kw)
+            except ReinsError:                        # the watchdog released a hold older than stale_reserve_min: the
+                spend.settle(con, spend.reserve(con, job["batch"], job["stage"], 0.0, provider=spec["ledger"]), **kw)  # money was spent
+            raw = json.dumps(ans).encode()
+            if not job["drift"]:
+                cp = cache_path(sha); cp.parent.mkdir(parents=True, exist_ok=True); cp.write_bytes(raw)
+            answers[str(i)] = ans
+        job["answers"], job["state"] = answers, state
+        provider_batch.save_job(jid, job)
+        self._send(200, {"state": state, "provider_state": pstate, "answers": answers})
+
     def do_POST(self):
+        bs = self._batch_spec()
+        if bs:
+            self._batch_submit(bs[0]); return
         rt = route(self.path)
         if not rt:
             self._err(404, "POST /p/<provider>/v1/chat/completions (or /api/v1/chat/completions for the default)"); return

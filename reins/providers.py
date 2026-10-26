@@ -31,6 +31,8 @@ Fields:
                unless named), e.g. reroute = ["google/gemini-3.8-flash -> gemini/gemini-3.8-flash"] on openrouter.
                Skipped when the target has no key or no price; on the target's cap or a refusal the original answers
   reroute_fallback  false: no fallback (the target's cap or refusal stops the call like any cap)
+  batch        provider batch mode adapter (reins/provider_batch.py; gemini_native): POST <gateway>/p/<name>/v1/batch
+  batch_discount  the batch price as a fraction of the chat price (Gemini batch mode: 0.5)
   hourly_cap, daily_cap, weekly_cap   USD this provider may cost across all batches (spent + held; the windows of the
                pools in reins/spend.py). A call that would cross one gets 402 and its batch is paused, like any cap
 """
@@ -47,7 +49,8 @@ PRESETS: dict[str, dict] = {
     "deepseek": {"kind": "chat", "base": "https://api.deepseek.com/v1", "env": "DEEPSEEK",
                  "balance": {"url": "https://api.deepseek.com/user/balance", "parse": "deepseek"}},
     "openai": {"kind": "chat", "base": "https://api.openai.com/v1", "env": "OPENAI"},
-    "gemini": {"kind": "chat", "base": "https://generativelanguage.googleapis.com/v1beta/openai", "env": "GEMINI"},
+    "gemini": {"kind": "chat", "base": "https://generativelanguage.googleapis.com/v1beta/openai", "env": "GEMINI",
+               "batch": "gemini_native", "batch_discount": 0.5},
     "google_maps": {"kind": "get", "base": "https://maps.googleapis.com", "env": "GOOGLE_MAPS", "key_file": "google",
                     "ledger": "google", "key_param": "key", "path_prefix": "/maps/api/", "default_call": 0.005,
                     "per_call": {"geocode": 0.005, "place/findplacefromtext": 0.017, "place/details": 0.017,
