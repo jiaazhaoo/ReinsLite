@@ -511,6 +511,7 @@ def deploy() -> dict:
 
 
 PUSH_REFRESH_SECONDS = 3600  # push unchanged data at least this often, so the page's "as of" time stays fresh
+PUSH_MIN_SECONDS = 600       # and changed data at most this often: <= 144 pushes x 2 keys = 288 KV writes/day (29%)
 
 
 def _fingerprint(text: str, at: str) -> str:
@@ -522,8 +523,9 @@ def _fingerprint(text: str, at: str) -> str:
 def push(force: bool = False) -> dict:
     """The newest data (the board's /api/production) and the workbook, into the Worker's KV store.
 
-    Skipped when nothing but the timestamp changed since the last push (unless that push is over an hour old):
-    every KV write counts against Cloudflare's 1,000/day free tier, and the timer runs every 5 minutes."""
+    Skipped when the last push is under 10 minutes old, or when nothing but the timestamp changed since it (unless
+    it is over an hour old): every KV write counts against Cloudflare's 1,000/day free tier, the timer runs every
+    5 minutes, and while pipelines run the data changes every few minutes."""
     import time as _time
     from . import production
     cf, st = _cf(), _state()
@@ -540,8 +542,10 @@ def push(force: bool = False) -> dict:
                 if n not in names:
                     names.append(n)
             text = _hide_sites(text, names)
-        fp = _fingerprint(text, v["at"])
-        if not force and st.get("fingerprint") == fp and _time.time() - st.get("pushed_epoch", 0) < PUSH_REFRESH_SECONDS:
+        fp, age = _fingerprint(text, v["at"]), _time.time() - st.get("pushed_epoch", 0)
+        if not force and age < PUSH_MIN_SECONDS:
+            return {"skipped": "too soon", "packages": len(v["packages"]), "remote": st.get("url") or "cloudflare"}
+        if not force and st.get("fingerprint") == fp and age < PUSH_REFRESH_SECONDS:
             return {"skipped": "unchanged", "packages": len(v["packages"]), "remote": st.get("url") or "cloudflare"}
         d = _dir()
         (d / "production.json").write_text(text, encoding="utf-8")
