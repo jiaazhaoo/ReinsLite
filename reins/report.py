@@ -510,8 +510,21 @@ def deploy() -> dict:
     return {**r, "url": st.get("url"), "kv_id": st["kv_id"]}
 
 
-def push() -> dict:
-    """The newest data (the board's /api/production) and the workbook, into the Worker's KV store."""
+PUSH_REFRESH_SECONDS = 3600  # push unchanged data at least this often, so the page's "as of" time stays fresh
+
+
+def _fingerprint(text: str, at: str) -> str:
+    """The data without its timestamp: `at`, and the `end` of a package still running (which equals `at`)."""
+    import hashlib
+    return hashlib.sha256(text.replace(at, "").encode("utf-8")).hexdigest()
+
+
+def push(force: bool = False) -> dict:
+    """The newest data (the board's /api/production) and the workbook, into the Worker's KV store.
+
+    Skipped when nothing but the timestamp changed since the last push (unless that push is over an hour old):
+    every KV write counts against Cloudflare's 1,000/day free tier, and the timer runs every 5 minutes."""
+    import time as _time
     from . import production
     cf, st = _cf(), _state()
     if not st.get("kv_id"):
@@ -527,12 +540,16 @@ def push() -> dict:
                 if n not in names:
                     names.append(n)
             text = _hide_sites(text, names)
+        fp = _fingerprint(text, v["at"])
+        if not force and st.get("fingerprint") == fp and _time.time() - st.get("pushed_epoch", 0) < PUSH_REFRESH_SECONDS:
+            return {"skipped": "unchanged", "packages": len(v["packages"]), "remote": st.get("url") or "cloudflare"}
         d = _dir()
         (d / "production.json").write_text(text, encoding="utf-8")
         build(d / "production.xlsx", cf["lang"], hide, con=con)
     _wrangler("kv", "key", "put", "production", "--path", str(d / "production.json"), "--namespace-id", st["kv_id"], "--remote")
     _wrangler("kv", "key", "put", "xlsx", "--path", str(d / "production.xlsx"), "--namespace-id", st["kv_id"], "--remote")
     st["pushed"] = v["at"]
+    st["fingerprint"], st["pushed_epoch"] = fp, _time.time()
     _save(st)
     return {"path": str(d / "production.xlsx"), "sheets": [], "packages": len(v["packages"]), "batches": 0,
             "remote": st.get("url") or "cloudflare"}
