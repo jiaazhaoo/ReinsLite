@@ -358,7 +358,29 @@ def release(con, repo: Path, note: str = "") -> dict:
                     " VALUES (?,?,?,?,?,?,?,?)", (name, project, git(repo, "rev-parse", name), str(wt), note,
                                                   json.dumps(versions), now(), session()))
     pushed = sync(con, repo, cfg)
-    return {"name": name, "worktree": str(wt), "versions": versions, "pushed": pushed}
+    return {"name": name, "worktree": str(wt), "versions": versions, "pushed": pushed,
+            "post_release": post_release(con, cfg, name, wt) if pushed.get("ok") else None}
+
+
+def post_release(con, cfg: dict, name: str, wt: Path) -> dict | None:
+    """reins.toml [dev] post_release = "CMD": run in the new release tree after the push (e.g. publish the release's
+    assets, so other machines can install it). REINS_RELEASE / REINS_RELEASE_TREE name it. A failure never undoes the
+    release; it is an action notice with the command to run again."""
+    cmd = (cfg.get("dev") or {}).get("post_release")
+    if not cmd:
+        return None
+    env = {**os.environ, "REINS_RELEASE": name, "REINS_RELEASE_TREE": str(wt)}
+    try:
+        r = subprocess.run(cmd, shell=True, cwd=str(wt), env=env, capture_output=True, text=True,
+                           timeout=int((cfg.get("dev") or {}).get("post_release_timeout_s", 3600)))
+        out = {"cmd": cmd, "ok": r.returncode == 0, "tail": (r.stdout + r.stderr).strip()[-600:]}
+    except subprocess.TimeoutExpired:
+        out = {"cmd": cmd, "ok": False, "tail": "timed out"}
+    if not out["ok"]:
+        from . import notify
+        notify.send(con, f"post_release:{name}", "action", f"{name}: post-release step failed",
+                    f"{out['tail']}\nagain: cd {wt} && REINS_RELEASE={name} REINS_RELEASE_TREE={wt} {cmd}", cooldown_min=0)
+    return out
 
 
 def sync(con, repo: Path, cfg: dict | None = None) -> dict:

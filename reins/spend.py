@@ -290,6 +290,58 @@ def reserve(con, batch: str, stage: str, amount: float, provider: str | None = N
         return cur.lastrowid
 
 
+REMOTE = "remote:"                 # spend of a remote client: batch_id = remote:<client>:<its batch> (no batch row here)
+
+
+def remote_id(client: str, batch: str) -> str:
+    return f"{REMOTE}{client}:{batch}"
+
+
+def client_limits(client: str) -> dict:
+    """config.toml [remote_clients.<name>] hourly_cap / daily_cap / weekly_cap (USD). A client with no section is
+    unknown: the gateway refuses it, so a token file alone never grants spending."""
+    sec = (config().get("remote_clients") or {}).get(client)
+    if not isinstance(sec, dict):
+        raise ReinsError(f"remote client {client!r} is not configured ([remote_clients.{client}] in config.toml)")
+    return {k: float(sec[k]) for k in PROVIDER_LIMITS if sec.get(k) is not None}
+
+
+def client_usage(con, client: str) -> dict:
+    """Spent + held by one remote client, every one of its batches: last hour, today, last 7 days."""
+    import datetime as _dt
+    n = _dt.datetime.now()
+    like = remote_id(client, "%")
+    out = {}
+    for k, ts in (("hour", (n - _dt.timedelta(hours=1)).isoformat(timespec="seconds")), ("today", n.date().isoformat()),
+                  ("week", (n.date() - _dt.timedelta(days=7)).isoformat())):
+        s = con.execute("SELECT COALESCE(SUM(amount),0) FROM spend WHERE batch_id LIKE ? AND at>=?", (like, ts)).fetchone()[0]
+        r = con.execute("SELECT COALESCE(SUM(amount),0) FROM spend_reserve WHERE state='open' AND batch_id LIKE ? AND at>=?",
+                        (like, ts)).fetchone()[0]
+        out[k] = s + r
+    return out
+
+
+def reserve_remote(con, client: str, batch: str, stage: str, amount: float, provider: str | None = None) -> int:
+    """reserve() for a remote client's call: its own caps (it has no batch row on this machine; its batch caps are
+    checked by its own reins before the call reaches here) and the provider's, which every machine shares."""
+    with tx(con):
+        lim = client_limits(client)
+        if not lim:
+            raise CapReached(f"remote client {client}: no cap set (reins config set remote_clients.{client}.daily_cap USD)")
+        u = client_usage(con, client)
+        for k, window in (("hourly_cap", "hour"), ("daily_cap", "today"), ("weekly_cap", "week")):
+            if k in lim and u[window] + amount > lim[k]:
+                when = {"hour": "in the last hour", "today": "today", "week": "this week"}[window]
+                raise CapReached(f"remote client {client}: ${u[window]:.2f} spent {when} + ${amount:.3f} > "
+                                 f"{k.replace('_', ' ')} ${lim[k]:.2f} (on the shared gateway: reins config set "
+                                 f"remote_clients.{client}.{k} USD --why '...')")
+        if provider:
+            provider_check(con, provider, amount)
+        cur = con.execute("INSERT INTO spend_reserve (at, batch_id, stage, amount, state, provider) VALUES (?,?,?,?, 'open', ?)",
+                          (now(), remote_id(client, batch), stage, amount, provider))
+        return cur.lastrowid
+
+
 def settle(con, reserve_id: int, *, provider: str, model: str, amount: float, priced: str, tokens_in: int | None,
            tokens_out: int | None, cache_hit: bool, request_sha: str, http_status: int | None,
            module_version: str | None = None) -> None:

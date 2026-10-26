@@ -10,7 +10,7 @@
   config    check                                                         the project's reins.toml is consistent
   case      CASE_ID                                                       C1 one case's whole history
   spend     summary | price | unpriced | reprice MODEL --why | weekly | all  C9
-  gateway   serve                                                         C9 paid-call proxy (holds the key)
+  gateway   serve | client add|list|remove | join                          C9 paid-call proxy (holds the key; shared: reins/remote.py)
   watchdog  once | run                                                    C8
   board     serve                                                         C14
   rules     list [rules.toml] | diff OLD NEW                              C7b
@@ -262,7 +262,17 @@ def build_parser() -> argparse.ArgumentParser:
                                                                                   help="how the rows were made")
     x = s.add_parser("all", help="everything spent: ledger + imported history, reconciled with provider usage")
     x.add_argument("--json", action="store_true")
-    x = sub.add_parser("gateway").add_subparsers(dest="sub", required=True).add_parser("serve"); x.add_argument("--port", type=int)
+    g = sub.add_parser("gateway").add_subparsers(dest="sub", required=True)
+    x = g.add_parser("serve"); x.add_argument("--port", type=int)
+    gc = g.add_parser("client", help="remote clients of this shared gateway (reins/remote.py)").add_subparsers(dest="csub", required=True)
+    x = gc.add_parser("add", help="let another machine spend through this gateway, within its own caps")
+    x.add_argument("name"); x.add_argument("--daily-cap", type=float); x.add_argument("--weekly-cap", type=float)
+    x.add_argument("--hourly-cap", type=float); x.add_argument("--why", required=True)
+    gc.add_parser("list")
+    x = gc.add_parser("remove"); x.add_argument("name"); x.add_argument("--why", required=True)
+    x = g.add_parser("join", help="send this machine's paid calls to a shared gateway (no keys here)")
+    x.add_argument("url"); x.add_argument("--client", required=True); x.add_argument("--token-file", required=True, type=Path)
+    x.add_argument("--why", required=True)
     w = sub.add_parser("watchdog").add_subparsers(dest="sub", required=True)
     w.add_parser("once"); x = w.add_parser("run"); x.add_argument("--interval", type=int, default=60)
     x = sub.add_parser("board").add_subparsers(dest="sub", required=True).add_parser("serve"); x.add_argument("--port", type=int)
@@ -532,9 +542,35 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{project_root(cwd) / 'reins.toml' if project_root(cwd) else 'no reins.toml'}: "
                   f"{'ok' if not probs else str(len(probs)) + ' problems'}")
             return 1 if probs else 0
-        if args.cmd == "gateway":
+        if args.cmd == "gateway" and args.sub == "serve":
             from . import gateway
             gateway.serve(args.port); return 0
+        if args.cmd == "gateway":
+            from . import remote
+            from .store import config as _cfg
+            from contextlib import closing as _closing
+            with _closing(connect()) as c:
+                if args.sub == "join":
+                    r = remote.join(c, args.url, args.client, args.token_file, args.why)
+                    print(f"paid calls now go to {r['gateway']} as {r['client']} (token {r['token_file']}); "
+                          f"restart this machine's gateway: systemctl --user restart reins-gateway")
+                elif args.csub == "add":
+                    r = remote.add_client(c, args.name, {"hourly_cap": args.hourly_cap, "daily_cap": args.daily_cap,
+                                                         "weekly_cap": args.weekly_cap}, args.why)
+                    print(f"remote client {r['client']}: caps {r['caps']}; token {'made' if r['new_token'] else 'kept'} in "
+                          f"{r['token_file']} -- copy that file to the client machine (never by chat or git), then there: "
+                          f"reins gateway join http://<this host>:{_cfg()['gateway_port']} --client {r['client']} "
+                          f"--token-file FILE --why '...'")
+                elif args.csub == "remove":
+                    remote.remove_client(c, args.name, args.why); print(f"remote client {args.name}: token removed, caps 0")
+                else:
+                    rows = remote.clients(c)
+                    for r in rows:
+                        print(f"{r['client']:20s} token={'yes' if r['token'] else 'NO'}  caps {r['caps']}  spent {r['spent']}  "
+                              f"calls {r['calls']} ({r['cache_hits']} cached)  last {r['last'] or '-'}")
+                    if not rows:
+                        print("no remote clients")
+            return 0
         if args.cmd == "backup":
             from . import upkeep
             from contextlib import closing as _closing
@@ -992,6 +1028,9 @@ def _dev(con, args, cfg, cwd) -> int:
         print(f"{r['name']} -> {r['worktree']} (read-only)\n  contains: {', '.join(r['versions']) or 'no released module versions'}")
         if r["pushed"].get("remote"):
             print(f"  pushed to {r['pushed']['remote']}: " + ("ok" if r["pushed"]["ok"] else f"FAILED {r['pushed']['error']}"))
+        if r.get("post_release"):
+            pr = r["post_release"]
+            print(f"  post-release ({pr['cmd']}): " + ("ok" if pr["ok"] else f"FAILED -- {pr['tail'][-300:]}"))
     elif args.sub == "sync":
         r = dev.sync(con, repo)
         if not r.get("remote"):
