@@ -71,8 +71,38 @@ def all_() -> dict[str, dict]:
         spec.setdefault("ledger", name)
         spec["name"] = name
         spec["configured"] = name in cfg
-        out[name] = spec
+        out[name] = _via_remote(spec)
     return out
+
+
+def remote() -> dict | None:
+    """config.toml [remote]: this machine holds no provider keys; its own gateway forwards every call to a shared
+    gateway on another machine (gateway = "http://HOST:8790", client = "<name>", optional providers = [...]), with
+    $REINS_HOME/secrets/remote.token as the credential. Batches, caps, cache and the ledger stay local as before; the
+    shared gateway adds its cache, its keys and this client's own caps ([remote_clients.<name>] over there)."""
+    r = config().get("remote") or {}
+    return r if r.get("gateway") and r.get("client") else None
+
+
+def _via_remote(spec: dict) -> dict:
+    r = remote()
+    if not r or (r.get("providers") and spec["name"] not in r["providers"]):
+        return spec
+    spec = {k: v for k, v in spec.items() if k not in ("reroute", "balance", "extra_body")}   # the shared gateway does these
+    spec["upstream_base"] = spec["base"]
+    spec["base"] = str(r["gateway"]).rstrip("/") + f"/p/{spec['name']}" + ("/v1" if spec["kind"] == "chat" else "")
+    spec["via"] = "remote"
+    spec["reports_cost"] = True              # the shared gateway answers X-Reins-Cost: what it booked (0 on its cache)
+    return spec
+
+
+REMOTE_TOKEN = "rc"
+
+
+def remote_token(batch: str, stage: str, drift: bool, base: str) -> str:
+    """The credential a client gateway sends upstream: rc|<client>|<secret>|<batch>|<stage>|<d = drift, ask live>.
+    `base` is key(spec) of a remote spec (rc|<client>|<secret>)."""
+    return f"{base}|{batch}|{stage}|{'d' if drift else ''}"
 
 
 def get(name: str) -> dict | None:
@@ -102,6 +132,9 @@ def default_chat() -> dict | None:
 
 
 def key(spec: dict) -> str:
+    if spec.get("via") == "remote":
+        f = home() / "secrets" / "remote.token"
+        return f"{REMOTE_TOKEN}|{remote()['client']}|{f.read_text().strip()}" if f.is_file() else ""
     f = home() / "secrets" / f"{spec['key_file']}.key"
     if f.is_file():
         return f.read_text().strip()
@@ -110,7 +143,8 @@ def key(spec: dict) -> str:
 
 def in_use() -> list[dict]:
     """The providers worth a card: a key is present, or the installation configured it explicitly."""
-    return [p for p in all_().values() if p["configured"] or (home() / "secrets" / f"{p['key_file']}.key").is_file()]
+    return [p for p in all_().values() if p["configured"] or p.get("via") == "remote"
+            or (home() / "secrets" / f"{p['key_file']}.key").is_file()]
 
 
 def client_env(port: int, token: str) -> dict[str, str]:

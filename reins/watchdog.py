@@ -442,6 +442,7 @@ def release_stale_reservations(con, cfg) -> list[str]:
     """Holds no gateway call will settle: older than `stale_reserve_min` (a call that crashed mid-flight, a gateway
     restart). Left open they count against the batch cap and the pool forever."""
     from .store import tx
+    from .spend import REMOTE as spend_remote
     import datetime as _dt
     cutoff = (_dt.datetime.now() - _dt.timedelta(minutes=cfg.get("stale_reserve_min", 30))).isoformat(timespec="seconds")
     rows = con.execute("SELECT id, batch_id, amount FROM spend_reserve WHERE state='open' AND at<?", (cutoff,)).fetchall()
@@ -449,7 +450,7 @@ def release_stale_reservations(con, cfg) -> list[str]:
         return []
     with tx(con):
         con.executemany("UPDATE spend_reserve SET state='released' WHERE id=? AND state='open'", [(r["id"],) for r in rows])
-        for b in {r["batch_id"] for r in rows}:
+        for b in {r["batch_id"] for r in rows if not r["batch_id"].startswith(spend_remote)}:   # a remote client's: no row here
             amt = sum(r["amount"] for r in rows if r["batch_id"] == b)
             con.execute("INSERT INTO batch_event (at, batch_id, event, detail) VALUES (?,?, 'reserve_released', ?)",
                         (_dt.datetime.now().isoformat(timespec="seconds"), b, f"{sum(1 for r in rows if r['batch_id'] == b)} "

@@ -21,12 +21,21 @@ instead of a key. For every /chat/completions request the gateway
 Streaming is refused (the cost is only known at the end; reserve/settle needs the whole answer).
 
 Keys: $REINS_HOME/secrets/<key_file>.key (one line, chmod 600) or <ENV>_API_KEY in the gateway's own environment.
+
+Shared gateway (reins/remote.py): with gateway_host = "0.0.0.0" other machines' gateways call this one with a remote
+client token rc|<client>|<secret>|<batch>|<stage>|<flags>; such a call is held against that client's own caps
+([remote_clients.<client>]) and the providers' caps, shares the cache, is booked as remote:<client>:<batch>, and its
+answer carries X-Reins-Cost (what was booked; 0 from the cache). From another machine nothing else is accepted.
+A machine with [remote] in its config.toml is such a client: its gateway forwards to the shared one instead of to
+the providers, keeping its own batches, caps, cache and ledger.
 """
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -91,6 +100,32 @@ def load_key(spec: dict) -> str:
     return KEYS.get(spec["name"]) or providers.key(spec)
 
 
+CLIENT_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
+
+
+def client_token_path(client: str):
+    return home() / "secrets" / "clients" / f"{client}.token"
+
+
+def remote_caller(tok: str) -> dict | str:
+    """A remote client's credential rc|<client>|<secret>|<batch>|<stage>|<flags> -> who it is, or why it is refused.
+    The client must have a token file (secrets/clients/<client>.token) and a [remote_clients.<client>] section."""
+    parts = tok.split("|")
+    if len(parts) != 6 or parts[0] != providers.REMOTE_TOKEN:
+        return "a remote token is rc|<client>|<secret>|<batch>|<stage>|<flags>"
+    _, client, secret, batch, stage, flags = parts
+    if not CLIENT_NAME.fullmatch(client) or not batch or not stage:
+        return "remote token: bad client name, batch or stage"
+    f = client_token_path(client)
+    if not f.is_file() or not hmac.compare_digest(f.read_text().strip(), secret):
+        return f"remote client {client}: unknown client or wrong token"
+    try:
+        spend.client_limits(client)
+    except ReinsError as e:
+        return str(e)
+    return {"client": client, "batch": batch, "stage": stage, "drift": "d" in flags, "id": spend.remote_id(client, batch)}
+
+
 def route(path: str) -> tuple[dict, str] | None:
     """URL path -> (chat provider, upstream chat-completions URL). /api/v1 is the default chat provider (older clients)."""
     p = path.rstrip("/")
@@ -145,6 +180,30 @@ def cap_message(batch: str, e: spend.CapReached) -> str:
 class Handler(BaseHTTPRequestHandler):
     key = ""
     server_version = "reins-gateway/0.1"
+    _rc: dict | None = None                       # the remote client of the request being handled (remote_caller)
+
+    # a remote client's batch has no row here: its drift flag comes with the token, it has no module version, its
+    # spend is held against its own caps (spend.reserve_remote) and every answer says what was booked (X-Reins-Cost)
+    def _drift(self, con, batch) -> bool:
+        return self._rc["drift"] if self._rc else batches.get(con, batch)["type"] == "drift"
+
+    def _mv(self, con, batch, stage):
+        if self._rc:
+            return None
+        return con.execute("SELECT module_version FROM batch_stage WHERE batch_id=? AND stage=?", (batch, stage)).fetchone()[0]
+
+    def _reserve(self, con, batch, stage, amount, provider):
+        if self._rc:
+            return spend.reserve_remote(con, self._rc["client"], self._rc["batch"], stage, amount, provider=provider)
+        return spend.reserve(con, batch, stage, amount, provider=provider)
+
+    def _local_peer(self) -> bool:
+        """A caller on this machine. Batch tokens are batch ids anyone can read off the board: from another machine
+        only a remote client's token (rc|...) is accepted (config gateway_host opens the gateway to the network)."""
+        return self.client_address[0] in ("127.0.0.1", "::1") or self.client_address[0].startswith("127.")
+
+    def _cost(self, amount) -> dict | None:
+        return {"X-Reins-Cost": repr(float(amount or 0))} if self._rc else None
 
     def log_message(self, fmt, *args):                                          # quiet; the ledger is the log
         pass
@@ -165,10 +224,12 @@ class Handler(BaseHTTPRequestHandler):
             _ACTIVE.release()
             _close_con()
 
-    def _send(self, code: int, payload: dict | bytes, ctype="application/json"):
+    def _send(self, code: int, payload: dict | bytes, ctype="application/json", headers: dict | None = None):
         data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -179,6 +240,16 @@ class Handler(BaseHTTPRequestHandler):
     def _auth(self) -> tuple[str, str] | None:
         h = self.headers.get("Authorization", "")
         tok = h.removeprefix("Bearer ").strip()
+        self._rc = None
+        if tok.startswith(providers.REMOTE_TOKEN + "|"):
+            rc = remote_caller(tok)
+            if isinstance(rc, str):
+                self._err(401, rc); return None
+            self._rc = rc
+            return rc["id"], rc["stage"]
+        if not self._local_peer():
+            self._err(401, "from another machine the gateway takes only a remote client token (reins gateway client add)")
+            return None
         batch, _, stage = tok.partition(":")
         try:
             b = batches.get(_con(), batch)
@@ -205,19 +276,30 @@ class Handler(BaseHTTPRequestHandler):
         q = dict(parse_qsl(u.query, keep_blank_values=True))
         kp = spec.get("key_param", "key")
         tok = q.pop(kp, "") or self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-        batch, _, stage = tok.partition(":")
         con = _con()
-        try:
-            b = batches.get(con, batch)
-        except ReinsError:
-            self._err(401, f"{kp} must be the batch token <batch_id>[:<stage>] (the gateway holds the {spec['name']} key)"); return
-        if not stage:
-            r = con.execute("SELECT stage FROM batch_stage WHERE batch_id=? AND status='running' ORDER BY ord", (batch,)).fetchall()
-            if len(r) != 1:
-                self._err(409, f"{batch}: token names no stage and {len(r)} stages are running"); return
-            stage = r[0][0]
-        if b["status"] != "running":
-            self._err(409, f"{batch} is {b['status']}: paid calls run only while it is running"); return
+        self._rc = None
+        if tok.startswith(providers.REMOTE_TOKEN + "|"):
+            rc = remote_caller(tok)
+            if isinstance(rc, str):
+                self._err(401, rc); return
+            self._rc = rc
+            batch, stage = rc["id"], rc["stage"]
+        elif not self._local_peer():
+            self._err(401, "from another machine the gateway takes only a remote client token (reins gateway client add)"); return
+        else:
+            batch, _, stage = tok.partition(":")
+            try:
+                b = batches.get(con, batch)
+            except ReinsError:
+                self._err(401, f"{kp} must be the batch token <batch_id>[:<stage>] (the gateway holds the {spec['name']} key)"); return
+            if not stage:
+                r = con.execute("SELECT stage FROM batch_stage WHERE batch_id=? AND status='running' ORDER BY ord", (batch,)).fetchall()
+                if len(r) != 1:
+                    self._err(409, f"{batch}: token names no stage and {len(r)} stages are running"); return
+                stage = r[0][0]
+            if b["status"] != "running":
+                self._err(409, f"{batch} is {b['status']}: paid calls run only while it is running"); return
+        drift = self._drift(con, batch)
         key = load_key(spec)
         led = spec["ledger"]
         if not key:
@@ -226,33 +308,36 @@ class Handler(BaseHTTPRequestHandler):
         api = rest.removeprefix(spec.get("path_prefix", "/")).removesuffix("/json").strip("/")
         price = next((p for k, p in (spec.get("per_call") or {}).items() if api.startswith(k)), float(spec.get("default_call", 0)))
         sha = hashlib.sha256((spec["name"] + "|" + api + "|" + urlencode(sorted(q.items()))).encode()).hexdigest()
-        mv = con.execute("SELECT module_version FROM batch_stage WHERE batch_id=? AND stage=?", (batch, stage)).fetchone()[0]
+        mv = self._mv(con, batch, stage)
         cp = cache_path(sha)
-        if cp.is_file() and b["type"] != "drift":
+        if cp.is_file() and not drift:
             spend.record_free(con, batch, stage, provider=led, model=api, request_sha=sha, module_version=mv)
-            self._send(200, cp.read_bytes()); return
+            self._send(200, cp.read_bytes(), headers=self._cost(0)); return
         try:
-            rid = spend.reserve(con, batch, stage, price, provider=led)
+            rid = self._reserve(con, batch, stage, price, led)
         except spend.CapReached as e:
             self._on_cap(con, batch, str(e))
             self._err(402, cap_message(batch, e)); return
         except ReinsError as e:
             self._err(409, str(e)); return
+        if spec.get("via") == "remote":                    # this machine has no key: the shared gateway's credential
+            key = providers.remote_token(batch, stage, drift, key)
         url = spec["base"].rstrip("/") + rest + "?" + urlencode({**q, kp: key})
         try:
             with urllib.request.urlopen(url, timeout=30) as r:
-                raw, code = r.read(), 200
+                raw, code, hc = r.read(), 200, r.headers.get("X-Reins-Cost")
         except urllib.error.HTTPError as e:
-            raw, code = e.read(), e.code
+            raw, code, hc = e.read(), e.code, e.headers.get("X-Reins-Cost")
         except (urllib.error.URLError, TimeoutError) as e:
             spend.release(con, rid); self._err(504, f"upstream unreachable: {e}"); return
         # a metered GET is billed whatever the answer says (a geocode with ZERO_RESULTS is still a call)
-        spend.settle(con, rid, provider=led, model=api, amount=price if code == 200 else 0.0, priced="table",
+        amount, priced = (float(hc), "remote") if hc is not None else (price if code == 200 else 0.0, "table")
+        spend.settle(con, rid, provider=led, model=api, amount=amount, priced=priced,
                      tokens_in=None, tokens_out=None, cache_hit=False, request_sha=sha, http_status=code, module_version=mv)
-        if code == 200 and b["type"] != "drift":
+        if code == 200 and not drift:
             cp.parent.mkdir(parents=True, exist_ok=True); cp.write_bytes(raw)
             self._warn_near_cap(con, batch)
-        self._send(code, raw)
+        self._send(code, raw, headers=self._cost(amount))
 
     def do_GET(self):
         bs = self._batch_spec()
@@ -262,7 +347,7 @@ class Handler(BaseHTTPRequestHandler):
         if spec:
             self._metered_get(spec); return
         d = providers.default_chat()
-        if self.path.rstrip("/") == "/api/v1/credits" and d and d.get("balance"):
+        if self.path.rstrip("/") == "/api/v1/credits" and d and d.get("balance") and self._local_peer():
             req = urllib.request.Request(d["balance"]["url"], headers={"Authorization": "Bearer " + load_key(d)})
             try:
                 with urllib.request.urlopen(req, timeout=30) as r:
@@ -316,8 +401,8 @@ class Handler(BaseHTTPRequestHandler):
         why = spend.unpriced(con, spec, model)
         if why:
             self._on_unpriced(con, batch, model, why); self._err(409, why); return
-        mv = con.execute("SELECT module_version FROM batch_stage WHERE batch_id=? AND stage=?", (batch, stage)).fetchone()[0]
-        drift = batches.get(con, batch)["type"] == "drift"
+        mv = self._mv(con, batch, stage)
+        drift = self._drift(con, batch)
         cached, todo = {}, []
         for i, rb in enumerate(reqs):
             rb = {**rb, "model": model}
@@ -335,7 +420,7 @@ class Handler(BaseHTTPRequestHandler):
         rids = []
         try:
             for _ in todo:
-                rids.append(spend.reserve(con, batch, stage, est, provider=spec["ledger"]))
+                rids.append(self._reserve(con, batch, stage, est, spec["ledger"]))
         except (spend.CapReached, ReinsError) as e:
             for r in rids:
                 spend.release(con, r)
@@ -344,17 +429,69 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._err(409, str(e))
             return
-        sub, _ = provider_batch.ADAPTERS[spec["batch"]]
-        code, op = sub(spec, key, model, [(sha, rb) for _, sha, rb in todo])
+        if spec.get("via") == "remote":
+            code, op = self._remote_batch(spec, key, batch, stage, drift, data={"model": model, "requests": [rb for _, _, rb in todo]})
+            if code == 200 and isinstance(op.get("cached"), dict):     # answered from the shared gateway's cache: booked 0 there
+                left = []
+                for j, ((i, sha, _), rid) in enumerate(zip(todo, rids)):
+                    ans = op["cached"].get(str(j))
+                    if ans is None:
+                        left.append((i, sha, rid, j)); continue
+                    self._settle_answer(con, spec, model, rid, sha, mv, ans, 0.0, "remote", drift)
+                    cached[str(i)] = ans
+                if not op.get("job"):
+                    self._send(200, {"job": None, "cached": cached, "submitted": 0}); return
+                op = {"name": op["job"], "items": left}
+        else:
+            sub, _ = provider_batch.ADAPTERS[spec["batch"]]
+            code, op = sub(spec, key, model, [(sha, rb) for _, sha, rb in todo])
         if code != 200 or not op.get("name"):
             for r in rids:
                 spend.release(con, r)
+            if code == 402:                                # the shared gateway's cap for this client, or its provider's
+                self._on_cap(con, batch, f"shared gateway: {json.dumps(op)[:300]}")
             self._send(code if code != 200 else 502, {"error": {"message": f"batch submit refused: {json.dumps(op)[:400]}",
                                                                   "code": code, "source": "reins-gateway"}}); return
+        items = op.get("items") or [[i, sha, rid, j] for j, ((i, sha, _), rid) in enumerate(zip(todo, rids))]
         jid = provider_batch.new_job({"provider": spec["name"], "name": op["name"], "batch": batch, "stage": stage,
-                                      "model": model, "mv": mv, "drift": drift, "discount": disc,
-                                      "items": [[i, sha, rid] for (i, sha, _), rid in zip(todo, rids)]})
-        self._send(200, {"job": jid, "cached": cached, "submitted": len(todo)})
+                                      "model": model, "mv": mv, "drift": drift, "discount": disc, "via": spec.get("via"),
+                                      "rc": {"client": self._rc["client"], "batch": self._rc["batch"]} if self._rc else None,
+                                      "items": [list(x) for x in items]})
+        self._send(200, {"job": jid, "cached": cached, "submitted": len(items)})
+
+    def _remote_batch(self, spec, key, batch, stage, drift, data=None, job=""):
+        """Submit to / poll the shared gateway's batch endpoint (this machine has no key): (HTTP status, its answer)."""
+        url = spec["base"].rstrip("/") + "/batch" + (f"/{job}" if job else "")
+        req = urllib.request.Request(url, data=json.dumps(data).encode() if data is not None else None,
+                                     headers={"Authorization": "Bearer " + providers.remote_token(batch, stage, drift, key),
+                                              "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=300) as r:
+                return 200, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read())
+            except json.JSONDecodeError:
+                return e.code, {"error": f"HTTP {e.code}"}
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+            return 504, {"error": f"shared gateway unreachable: {e}"}
+
+    def _settle_answer(self, con, spec, model, rid, sha, mv, ans, amount, priced, drift, job=None):
+        """Book one batch answer on its hold (a new $0 hold when the watchdog released the old one: the money was spent)
+        and cache it."""
+        u = ans.get("usage") or {}
+        kw = dict(provider=spec["ledger"], model=model, amount=amount, priced=priced, tokens_in=u.get("prompt_tokens"),
+                  tokens_out=u.get("completion_tokens"), cache_hit=False, request_sha=sha, http_status=200, module_version=mv)
+        try:
+            spend.settle(con, rid, **kw)
+        except ReinsError:
+            rc = (job or {}).get("rc")
+            b, st = ((job or {}).get("batch"), (job or {}).get("stage")) if job else (None, None)
+            hold = (spend.reserve_remote(con, rc["client"], rc["batch"], st, 0.0, provider=spec["ledger"]) if rc
+                    else spend.reserve(con, b, st, 0.0, provider=spec["ledger"]))
+            spend.settle(con, hold, **kw)
+        if not drift:
+            cp = cache_path(sha); cp.parent.mkdir(parents=True, exist_ok=True); cp.write_bytes(json.dumps(ans).encode())
 
     def _batch_poll(self, spec: dict, jid: str):
         """GET /p/<name>/v1/batch/<job>: pending, or the answers (settled and cached once, on the first collection)."""
@@ -365,33 +502,39 @@ class Handler(BaseHTTPRequestHandler):
         if not job or job["batch"] != auth[0]:
             self._err(404, f"no batch job {jid} of {auth[0]}"); return
         if job.get("answers") is not None:
-            self._send(200, {"state": "done", "answers": job["answers"]}); return
+            self._send(200, {"state": "done", "answers": job["answers"], "costs": job.get("costs") or {}}); return
         con = _con()
-        _, pol = provider_batch.ADAPTERS[spec["batch"]]
-        state, got, pstate = pol(spec, load_key(spec), job["name"])
-        if state == "pending":
-            self._send(200, {"state": "pending", "provider_state": pstate}); return
-        answers = {}
-        for i, sha, rid in job["items"]:
-            nat = (got or {}).get(sha)
-            if state != "done" or not nat or "error" in nat and "candidates" not in nat:
-                spend.release(con, rid); continue
-            ans = provider_batch.from_native(nat, job["model"])
-            amount, priced = cost_of(con, job["model"], ans["usage"])
-            kw = dict(provider=spec["ledger"], model=job["model"], amount=amount * job["discount"], priced=priced,
-                      tokens_in=ans["usage"]["prompt_tokens"], tokens_out=ans["usage"]["completion_tokens"],
-                      cache_hit=False, request_sha=sha, http_status=200, module_version=job["mv"])
-            try:
-                spend.settle(con, rid, **kw)
-            except ReinsError:                        # the watchdog released a hold older than stale_reserve_min: the
-                spend.settle(con, spend.reserve(con, job["batch"], job["stage"], 0.0, provider=spec["ledger"]), **kw)  # money was spent
-            raw = json.dumps(ans).encode()
-            if not job["drift"]:
-                cp = cache_path(sha); cp.parent.mkdir(parents=True, exist_ok=True); cp.write_bytes(raw)
-            answers[str(i)] = ans
-        job["answers"], job["state"] = answers, state
+        answers, costs = {}, {}
+        if job.get("via") == "remote":
+            code, got = self._remote_batch(spec, load_key(spec), job["batch"], job["stage"], job["drift"], job=job["name"])
+            state = got.get("state") if code == 200 else "pending"     # unreachable for now: ask again later
+            if state == "pending":
+                self._send(200, {"state": "pending", "provider_state": got.get("provider_state") or got.get("error")}); return
+            pstate = got.get("provider_state")
+            for i, sha, rid, j in job["items"]:
+                ans = (got.get("answers") or {}).get(str(j))
+                if state != "done" or ans is None:
+                    spend.release(con, rid); continue
+                c = float((got.get("costs") or {}).get(str(j), 0.0))
+                self._settle_answer(con, spec, job["model"], rid, sha, job["mv"], ans, c, "remote", job["drift"], job)
+                answers[str(i)], costs[str(i)] = ans, c
+        else:
+            _, pol = provider_batch.ADAPTERS[spec["batch"]]
+            state, got, pstate = pol(spec, load_key(spec), job["name"])
+            if state == "pending":
+                self._send(200, {"state": "pending", "provider_state": pstate}); return
+            for i, sha, rid, *_ in job["items"]:
+                nat = (got or {}).get(sha)
+                if state != "done" or not nat or "error" in nat and "candidates" not in nat:
+                    spend.release(con, rid); continue
+                ans = provider_batch.from_native(nat, job["model"])
+                amount, priced = cost_of(con, job["model"], ans["usage"])
+                self._settle_answer(con, spec, job["model"], rid, sha, job["mv"], ans, amount * job["discount"], priced,
+                                    job["drift"], job)
+                answers[str(i)], costs[str(i)] = ans, amount * job["discount"]
+        job["answers"], job["costs"], job["state"] = answers, costs, state
         provider_batch.save_job(jid, job)
-        self._send(200, {"state": state, "provider_state": pstate, "answers": answers})
+        self._send(200, {"state": state, "provider_state": pstate, "answers": answers, "costs": costs})
 
     def do_POST(self):
         bs = self._batch_spec()
@@ -419,12 +562,12 @@ class Handler(BaseHTTPRequestHandler):
             self._err(400, "streaming is not supported through the gateway (cost is settled per whole answer)"); return
         model = body.get("model", "")
         sha = canonical_sha({**body, "_provider": provider})
-        mv = con.execute("SELECT module_version FROM batch_stage WHERE batch_id=? AND stage=?", (batch, stage)).fetchone()[0]
+        mv = self._mv(con, batch, stage)
         cp = cache_path(sha)
-        drift = con.execute("SELECT type FROM batch WHERE batch_id=?", (batch,)).fetchone()[0] == "drift"
+        drift = self._drift(con, batch)
         if cp.is_file() and not drift:                     # a drift batch asks the live model on purpose
             spend.record_free(con, batch, stage, provider=provider, model=model, request_sha=sha, module_version=mv)
-            self._send(200, cp.read_bytes()); return
+            self._send(200, cp.read_bytes(), headers=self._cost(0)); return
         why = spend.unpriced(con, spec, model)
         if why:                                            # never book a guess: refuse, pause, tell someone
             self._on_unpriced(con, batch, model, why)
@@ -435,7 +578,7 @@ class Handler(BaseHTTPRequestHandler):
                 ev.wait(float(body.get("timeout", 180)) + 10)
                 if cp.is_file():
                     spend.record_free(con, batch, stage, provider=provider, model=model, request_sha=sha, module_version=mv)
-                    self._send(200, cp.read_bytes()); return
+                    self._send(200, cp.read_bytes(), headers=self._cost(0)); return
                 ev = _claim(sha)                           # it failed: ask again, owning the call this time
                 if ev is not None:
                     self._err(503, "the same request is still in flight; retry"); return
@@ -445,20 +588,24 @@ class Handler(BaseHTTPRequestHandler):
             if not drift:
                 _done(sha)
 
-    def _upstream(self, spec, url, key, body, model) -> tuple[bytes | None, int | str]:
-        """One POST to a chat provider: (raw answer, HTTP status), or (None, why) when it could not be reached."""
+    def _upstream(self, spec, url, key, body, model, batch="", stage="", drift=False) -> tuple[bytes | None, int | str, str | None]:
+        """One POST to a chat provider: (raw answer, HTTP status, X-Reins-Cost of a shared gateway), or (None, why, None)
+        when it could not be reached."""
         fwd = {**body, "model": model, **(spec.get("extra_body") or {})}   # e.g. OpenRouter: usage.include -> the charged cost
-        fwd.pop("timeout", None)
+        if spec.get("via") != "remote":
+            fwd.pop("timeout", None)                       # the shared gateway reads it too
+        else:
+            key = providers.remote_token(batch, stage, drift, key)
         req = urllib.request.Request(url, data=json.dumps(fwd).encode(),
                                      headers={"Authorization": "Bearer " + key, "Content-Type": "application/json",
                                               "HTTP-Referer": "reins-gateway", "X-Title": "reins"})
         try:
-            with urllib.request.urlopen(req, timeout=float(body.get("timeout", 180))) as r:
-                return r.read(), 200
+            with urllib.request.urlopen(req, timeout=float(body.get("timeout", 180)) + (15 if spec.get("via") == "remote" else 0)) as r:
+                return r.read(), 200, r.headers.get("X-Reins-Cost")
         except urllib.error.HTTPError as e:
-            return e.read(), e.code
+            return e.read(), e.code, e.headers.get("X-Reins-Cost")
         except (urllib.error.URLError, TimeoutError) as e:
-            return None, str(e)
+            return None, str(e), None
 
     def _routes(self, con, spec, upstream_url, provider, key, model) -> list[tuple]:
         """[(spec, url, ledger, key, model)] to try in order: a reroute target first (providers.reroute), then the
@@ -482,7 +629,7 @@ class Handler(BaseHTTPRequestHandler):
         for i, (rspec, url, led, rkey, rmodel) in enumerate(routes):
             last = i == len(routes) - 1
             try:
-                rid = spend.reserve(con, batch, stage, est, provider=led)
+                rid = self._reserve(con, batch, stage, est, led)
             except spend.ProviderCapReached as e:
                 if not last:                               # the reroute target's own cap: the original provider takes it
                     continue
@@ -491,7 +638,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._on_cap(con, batch, str(e)); self._err(402, cap_message(batch, e)); return
             except ReinsError as e:
                 self._err(409, str(e)); return
-            raw, code = self._upstream(rspec, url, rkey, body, rmodel)
+            raw, code, hc = self._upstream(rspec, url, rkey, body, rmodel, batch, stage, drift)
             if raw is None:
                 spend.release(con, rid)
                 if not last:
@@ -503,16 +650,19 @@ class Handler(BaseHTTPRequestHandler):
                 notify.send(con, f"reroute:{model}", "warn", f"{rspec['name']} refused {rmodel} ({code}); {provider} answered",
                             raw[:300].decode("utf-8", "replace"), cooldown_min=60)
                 continue
-            self._finish(con, rspec, led, rmodel, batch, stage, rid, raw, code, sha, mv, cp, drift)
+            self._finish(con, rspec, led, rmodel, batch, stage, rid, raw, code, sha, mv, cp, drift, hc)
             return
 
-    def _finish(self, con, spec, provider, model, batch, stage, rid, raw, code, sha, mv, cp, drift):
+    def _finish(self, con, spec, provider, model, batch, stage, rid, raw, code, sha, mv, cp, drift, hc=None):
         usage = {}
         try:
             d = json.loads(raw); usage = d.get("usage") or {}
         except json.JSONDecodeError:
             d = None
-        amount, priced = cost_of(con, model, usage) if code == 200 else (0.0, "none")
+        if hc is not None:                                  # a shared gateway booked it: its amount, 0 on its cache
+            amount, priced = float(hc), "remote"
+        else:
+            amount, priced = cost_of(con, model, usage) if code == 200 else (0.0, "none")
         spend.settle(con, rid, provider=provider, model=model, amount=amount, priced=priced,
                      tokens_in=usage.get("prompt_tokens"), tokens_out=tokens_out(usage), cache_hit=False,
                      request_sha=sha, http_status=code, module_version=mv)
@@ -535,9 +685,11 @@ class Handler(BaseHTTPRequestHandler):
             self._warn_near_cap(con, batch)
         elif code in (402, 403):
             self._on_cap(con, batch, f"provider refused ({code}): balance or key limit -- {raw[:200]!r}")
-        self._send(code, raw)
+        self._send(code, raw, headers=self._cost(amount))
 
     def _warn_near_cap(self, con, batch):
+        if self._rc:                                       # a remote client: its own reins watches its batch caps
+            return
         b = batches.get(con, batch)
         used = batches.spent(con, batch)
         if b["spend_cap"] and used >= config()["spend_warn_fraction"] * b["spend_cap"]:
@@ -545,6 +697,10 @@ class Handler(BaseHTTPRequestHandler):
                         "raise the cap (reins batch approve) or let it stop at the cap")
 
     def _on_unpriced(self, con, batch, model, why):
+        if self._rc:
+            notify.send(con, f"unpriced:{model}", "action", f"remote client {self._rc['client']}: no price for {model}", why,
+                        cooldown_min=10)
+            return
         try:
             batches.set_status(con, batch, "paused", f"spend: {why}"[:500], system=True)
         except ReinsError:
@@ -552,6 +708,10 @@ class Handler(BaseHTTPRequestHandler):
         notify.send(con, f"unpriced:{model}", "action", f"{batch} paused: no price for {model}", why, cooldown_min=10)
 
     def _on_cap(self, con, batch, why):
+        if self._rc:                                       # no batch of ours to pause: the client pauses its own on the 402
+            notify.send(con, f"cap:{batch}", "warn", f"remote client {self._rc['client']} refused: cap reached", why,
+                        cooldown_min=60)
+            return
         try:
             batches.set_status(con, batch, "paused", f"spend: {why}", system=True)
         except ReinsError:
@@ -583,6 +743,7 @@ def serve(port: int | None = None) -> None:
     MAX_ACTIVE = int(config().get("gateway_max_active", MAX_ACTIVE))
     _ACTIVE = threading.BoundedSemaphore(MAX_ACTIVE)
     connect().close()                                     # schema and migrations once; requests skip them
-    srv = Server(("127.0.0.1", port), Handler)
-    print(f"reins gateway on http://127.0.0.1:{port}/api/v1  (cache {home() / 'cache'})", file=sys.stderr)
+    host = str(config().get("gateway_host") or "127.0.0.1")   # 0.0.0.0 / a LAN address: shared with remote clients
+    srv = Server((host, port), Handler)
+    print(f"reins gateway on http://{host}:{port}/api/v1  (cache {home() / 'cache'})", file=sys.stderr)
     srv.serve_forever()

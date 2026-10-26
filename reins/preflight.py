@@ -38,6 +38,14 @@ def builtin(con, b) -> list[tuple[str, bool, str]]:
             out.append(("gateway_up", True, ""))
         except Exception as e:                                                  # noqa: BLE001
             out.append(("gateway_up", False, f"paid stages planned but the gateway is down: reins gateway serve ({e})"))
+        from . import providers
+        r = providers.remote()
+        if r:                                              # this machine has no keys: the shared gateway must answer too
+            try:
+                urllib.request.urlopen(str(r["gateway"]).rstrip("/") + "/health", timeout=5)
+                out.append(("shared_gateway_up", True, f"{r['gateway']} as {r['client']}"))
+            except Exception as e:                                              # noqa: BLE001
+                out.append(("shared_gateway_up", False, f"the shared gateway {r['gateway']} does not answer ({e})"))
         out.append(("spend_cap_set", b["spend_cap"] > 0, f"cap ${b['spend_cap']:.2f}"))
     if b["type"] in batches.STRICT_TYPES:
         rel = con.execute("SELECT worktree FROM release WHERE name=?", (b["release_name"],)).fetchone()

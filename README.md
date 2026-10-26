@@ -165,6 +165,14 @@ echo "sk-..." > /data/reins/secrets/openrouter.key && chmod 600 /data/reins/secr
 bin/reins-install-services          # gateway :8790, watchdog, board :8791 as systemd --user units
 ```
 
+**A machine without keys (shared gateway).** One machine holds the provider keys and opens its gateway to the
+network (`gateway_host = "0.0.0.0"` in its `config.toml`, then restart `reins-gateway`); for each colleague:
+`reins gateway client add NAME --daily-cap USD --weekly-cap USD --why '...'`, and hand over the token file it names
+(never by chat or git). On the colleague's machine install as above but without key files, then
+`reins gateway join http://HOST:8790 --client NAME --token-file FILE --why '...'` and restart its gateway. Batches,
+caps, cache and the spend ledger stay on the colleague's machine; the shared gateway adds its keys, its cache and the
+client's own caps (`reins gateway client list` shows what each client spent). See `reins/remote.py`.
+
 Then add the Claude Code hook (`hooks/session_hook.py`) to `~/.claude/settings.json` as shown in [docs/WORKFLOW.md](docs/WORKFLOW.md). Python 3.11+ and the standard library; `openpyxl` only for `.xlsx` files (deliverable checks, header lint).
 
 ## Everyday commands
