@@ -51,11 +51,27 @@ class PushSkipsUnchanged(unittest.TestCase):
 
     def test_data_change_is_pushed(self):
         report.push()
-        self.tick(300, "2026-10-26T09:05:00")
+        self.tick(report.PUSH_MIN_SECONDS, "2026-10-26T09:10:00")
         self.view["packages"][0]["n"] = 2
         r = report.push()
         self.assertNotIn("skipped", r)
         self.assertEqual(len(self.writes), 4)
+
+    def test_data_change_within_10_minutes_waits(self):
+        report.push()
+        self.tick(300, "2026-10-26T09:05:00")
+        self.view["packages"][0]["n"] = 2
+        self.assertEqual(report.push().get("skipped"), "too soon")
+        self.tick(300, "2026-10-26T09:10:00")
+        self.assertNotIn("skipped", report.push())
+        self.assertEqual(len(self.writes), 4)
+
+    def test_a_busy_day_data_changing_every_tick_stays_under_30_percent(self):
+        for i in range(288):
+            self.tick(300, f"2026-10-26T{(i * 5) // 60 % 24:02d}:{(i * 5) % 60:02d}:00")
+            self.view["packages"][0]["n"] = i
+            report.push()
+        self.assertLessEqual(len(self.writes), 290)  # was 576 (57% of the 1,000/day free tier)
 
     def test_unchanged_still_refreshed_hourly(self):
         report.push()

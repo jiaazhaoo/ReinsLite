@@ -547,7 +547,8 @@ def main(argv: list[str] | None = None) -> int:
             from . import report
             if args.sub in ("deploy", "push"):
                 r = report.deploy() if args.sub == "deploy" else report.push()
-                print(f"{r['remote']}: data of {r['packages']} work packages pushed" + (f"; viewer link: reins report link" if args.sub == "deploy" else ""))
+                done = f"not pushed ({r['skipped']})" if r.get("skipped") else "pushed"
+                print(f"{r['remote']}: data of {r['packages']} work packages {done}" + (f"; viewer link: reins report link" if args.sub == "deploy" else ""))
                 return 0
             if args.sub == "login":
                 report.login(); return 0
