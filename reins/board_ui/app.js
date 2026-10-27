@@ -1,5 +1,5 @@
 "use strict";
-/* Reins board: read-only views of /api/state. Views: overview, pipeline, runs, dev, cost, toolbox. No session details. */
+/* Reins board: read-only views of /api/state. Views: overview, ops (ops.js, /api/ops), pipeline, runs, dev, cost, toolbox. No session details. */
 
 const I18N = {
   zh: {
@@ -116,6 +116,7 @@ const store = { get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (
 let LANG = store.get("reins.lang", "zh");
 let S = null;
 let TB = { shelf: "all", q: "" };
+if (typeof OPS_I18N !== "undefined") for (const l of Object.keys(OPS_I18N)) Object.assign(I18N[l], OPS_I18N[l]);   // ops.js
 const t = (k, vars) => { let s = (I18N[LANG] && I18N[LANG][k]) ?? I18N.zh[k] ?? k; if (vars) for (const [a, b] of Object.entries(vars)) s = s.replace(`{${a}}`, b); return s; };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const usd = (v) => (v == null ? "—" : "$" + Number(v).toFixed(2));
@@ -129,6 +130,7 @@ const ICON = {
   runs: '<path d="M7 5v14l11-7z"/>',
   dev: '<path d="m8 8-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14"/>',
   cost: '<circle cx="12" cy="12" r="8.5"/><path d="M14.8 9.2c-.5-.9-1.6-1.4-2.8-1.4-1.6 0-2.8.8-2.8 2.1 0 2.9 5.8 1.4 5.8 4.3 0 1.3-1.2 2.1-3 2.1-1.3 0-2.4-.5-3-1.5M12 6v1.8M12 16.2V18"/>',
+  ops: '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3.5M16 3v3.5M7 13.5h5M7 17h9"/>',
   toolbox: '<rect x="3" y="7.5" width="18" height="12" rx="2"/><path d="M9 7.5V5.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 5.5v2M3 12.5h18"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6 6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/>',
   moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
@@ -345,6 +347,7 @@ function resourcesLine() {
 
 /* ---------- views ---------- */
 const VIEWS = {
+  ops() { return OPS.render(); },
   overview() {
     const n = (g) => S.running.filter((r) => r.group === g).length;
     const P = S.pool, L = P.limits;
@@ -555,7 +558,7 @@ function setDrawer(open) {
 }
 
 /* ---------- shell ---------- */
-const NAV = [["workspace", ["overview", "pipeline", "runs", "dev"]], ["governance", ["cost", "toolbox"]]];
+const NAV = [["workspace", ["overview", "ops", "pipeline", "runs", "dev"]], ["governance", ["cost", "toolbox"]]];
 const view = () => { const v = (location.hash.replace(/^#\/?/, "") || "overview").split("/")[0]; return VIEWS[v] ? v : "overview"; };
 
 function render() {
@@ -583,6 +586,7 @@ function render() {
     const done = () => { el.classList.add("ok"); el.title = t("copied"); setTimeout(() => el.classList.remove("ok"), 1200); };
     try { navigator.clipboard.writeText(el.dataset.copy).then(done, done); } catch (err) { done(); }
   }));
+  if (v === "ops") OPS.bind();
   document.querySelectorAll("[data-shelf]").forEach((el) => (el.onclick = () => { TB.shelf = el.dataset.shelf; render(); }));
   const q = document.getElementById("tbq");
   if (q) q.oninput = () => { TB.q = q.value; const pos = q.selectionStart; render(); const q2 = document.getElementById("tbq"); q2.focus(); q2.setSelectionRange(pos, pos); };
@@ -591,6 +595,7 @@ function render() {
 async function load() {
   try {
     S = await (await fetch("api/state")).json();
+    if (view() === "ops") await OPS.load();
     render();
   } catch (e) {
     document.getElementById("live").innerHTML = `<span class="dot red"></span>offline`;
@@ -613,7 +618,7 @@ document.getElementById("lang").onclick = (e) => {
 };
 document.getElementById("scrim").onclick = () => setDrawer(false);
 addEventListener("keydown", (e) => { if (e.key === "Escape") setDrawer(false); });
-addEventListener("hashchange", () => { setDrawer(false); scrollTo(0, 0); render(); });
+addEventListener("hashchange", async () => { setDrawer(false); scrollTo(0, 0); if (view() === "ops" && !OPS.data) await OPS.load(); render(); });
 document.documentElement.lang = LANG;
 render();
 load();

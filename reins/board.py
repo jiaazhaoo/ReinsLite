@@ -6,6 +6,7 @@
     开发 dev        changes in progress, released versions and what each did
     成本 cost       budget pool, provider balances, spend by batch
     工具箱 toolbox  every prompt / model / weights / tool the workflow uses, by shelf, searchable
+    #/ops          the delivery batches as a schedule, what the automation did to them, review progress (reins/ops.py)
     /production    a page of its own for managers: production and rework only, progress and results per work
                    package (reins/production.py), no commands or versions
 
@@ -587,7 +588,8 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path.startswith("/api/"):
             from . import production
-            fn = {"/api/state": state, "/api/production": production.view}.get(path.rstrip("/"), state)
+            from . import ops
+            fn = {"/api/state": state, "/api/production": production.view, "/api/ops": ops.view}.get(path.rstrip("/"), state)
             with closing(connect()) as con:                                     # one per request: closed, or fds leak
                 body = json.dumps(fn(con), ensure_ascii=False, default=str).encode()
             ctype = "application/json"
