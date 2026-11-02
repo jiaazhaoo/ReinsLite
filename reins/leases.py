@@ -34,8 +34,9 @@ def check(con, resource: str, holder: str | None = None) -> None:
     row = con.execute("SELECT holder, since FROM lease WHERE resource=?", (resource,)).fetchone()
     if row and row["holder"] != holder:
         raise ReinsError(f"{resource} belongs to session {row['holder']} (since {row['since']}); you are "
-                         f"{holder or 'an unknown session'}. If you were forked from it, start your own work: "
-                         f"reins dev start ...")
+                         f"{holder or 'an unknown session'}. If the user gave it to you: reins take "
+                         f"{resource.split(':', 1)[-1]} --why 'user: ...' (batches) or reins session inherit --from "
+                         f"{row['holder'][:8]} --why 'user: ...'; else start your own work: reins dev start ...")
 
 
 def holder_of(con, resource: str) -> str | None:
