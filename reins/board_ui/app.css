@@ -476,3 +476,18 @@ details.earlier summary { cursor: pointer; color: var(--muted); font-size: 12.5p
 .earlier-row { font-size: 12px; color: var(--muted); padding: 2px 0 2px 14px; }
 .pkg-dev { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; font-size: 12px; color: var(--muted); }
 .pkg-dev .dot { margin-right: 4px; }
+
+/* reins find search box (find.js) */
+.findbox { width: min(320px, 40vw); height: 30px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line, #8884);
+  background: var(--bg, #fff); color: inherit; font: inherit; font-size: 13px; }
+.findpanel { position: fixed; top: 56px; right: 16px; width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 80px); overflow: auto;
+  z-index: 30; padding: 14px 16px; border-radius: 12px; border: 1px solid var(--line, #8884); background: var(--bg, #fff);
+  box-shadow: 0 10px 30px #0003; font-size: 13px; overflow-wrap: anywhere; }
+.findpanel .fhead { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; font-size: 14px; }
+.findpanel .fhead .fclose { margin-left: auto; }
+.findpanel table { border-collapse: collapse; width: 100%; }
+.findpanel th { text-align: left; vertical-align: top; padding: 3px 10px 3px 0; white-space: nowrap; font-weight: 500; opacity: .7; }
+.findpanel td { padding: 3px 0; }
+.findpanel ul { margin: 0; padding-left: 16px; }
+.findpanel .muted { opacity: .6; }
+@media (max-width: 600px) { .findbox { width: 34vw; } }
