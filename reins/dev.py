@@ -62,16 +62,25 @@ def _ensure_module(con, cfg: dict, module: str) -> None:
 
 
 def overlaps(con, repo: Path, version: str | None, files: list[str]) -> list[str]:
-    """Other live candidates of the same project whose files overlap these globs (a reins.toml in another repository is
-    another file)."""
+    """Other live candidates of the same project that have really changed files these globs cover, and were worked on
+    in the last 3 days. Declared globs alone are not an overlap (2026-11-02: every core candidate 'overlapped' every
+    other through reins/*.py, and a candidate red since 10-22 blocked others for a week)."""
+    import datetime as _dt
     tracked = git(repo, "ls-files").splitlines()
     mine = {f for g in files for f in tracked if fnmatch.fnmatch(f, g)}
     out = []
-    for other in con.execute("SELECT v.version, v.pins FROM module_version v JOIN module m ON m.name=v.module"
+    since = (_dt.datetime.now() - _dt.timedelta(days=3)).isoformat(timespec="seconds")
+    for other in con.execute("SELECT v.version, v.branch, v.created FROM module_version v JOIN module m ON m.name=v.module"
                              " WHERE v.status='candidate' AND v.version IS NOT ? AND m.project=?",
                              (version, project_cfg(repo)["project"])):
-        theirs = {f for g in json.loads(other["pins"]).get("files", []) for f in tracked if fnmatch.fnmatch(f, g)}
-        ov = sorted(mine & theirs)
+        recent = con.execute("SELECT MAX(at) FROM session_event WHERE detail LIKE ?", (f"%{other['version']}%",)).fetchone()[0]
+        if max(recent or "", other["created"] or "") < since or not other["branch"]:
+            continue
+        try:
+            changed = set(git(repo, "diff", "--name-only", f"main...{other['branch']}").splitlines())
+        except Exception:                                                       # noqa: BLE001 -- a branch gone: no overlap
+            continue
+        ov = sorted(mine & changed)
         if ov:
             out.append(f"{other['version']} also changes {ov[:5]}")
     return out
