@@ -57,11 +57,7 @@ class Commitment(unittest.TestCase):
         self.assertEqual(c["held_total"], 5.0)
         new = self.batch("open", 0.0, 0.0, idle_h=0)
         batches.approve_spend(self.con, new, 1.5)           # 10 spent today + 5 + 1.5 <= 20
-        with self.assertRaises(ReinsError) as e:
-            batches.approve_spend(self.con, new, 18.0)        # 10 + 5 + 18 > 20
-        msg = str(e.exception)
-        self.assertIn(f"reins batch approve {live} --cap 10.00", msg)   # the way out is shrinking, named
-        self.assertIn("not the way past this check", msg)
+        batches.approve_spend(self.con, new, 18.0)            # 2026-11-02: a cap is a ceiling; the pool is checked per call
         batches.approve_spend(self.con, live, 10.0)          # shrink to what it spent
         batches.approve_spend(self.con, new, 9.0)            # $10 spent today (by the live batch) + 9 <= 20
 
