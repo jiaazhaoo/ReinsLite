@@ -145,3 +145,42 @@ class Continuation(unittest.TestCase):
     def test_not_a_continuation(self):
         from reins import sessions
         self.assertIsNone(sessions.continuation_of(str(self.proj / "aaaa1111.jsonl"), "aaaa1111"))
+
+
+class Take(unittest.TestCase):
+    """2026-10-28: the user gave a deadline batch to another session; reins refused for 6 hours."""
+
+    def setUp(self):
+        self._env = {k: os.environ.get(k) for k in ("REINS_HOME", "REINS_SESSION")}
+        self.tmp = Path(tempfile.mkdtemp(prefix="reins-take-"))
+        os.environ["REINS_HOME"] = str(self.tmp / "home")
+        (self.tmp / "home").mkdir()
+        self.con = connect(self.tmp / "home")
+        (self.tmp / "cases.txt").write_text("101\n")
+        os.environ["REINS_SESSION"] = "owner-aaaa"
+        from reins import sessions
+        sessions.start(self.con, "owner-aaaa", "/", None)
+        self.b = batches.open_(self.con, project="p", scope="x-wp1", type_="experiment", purpose="t",
+                               case_file=self.tmp / "cases.txt", stages=_stages("s1"))
+
+    def tearDown(self):
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_take_now_with_a_reason(self):
+        from reins import sessions, leases
+        with self.assertRaises(ReinsError):
+            sessions.take(self.con, "taker-bbbb", self.b, "")
+        sessions.take(self.con, "taker-bbbb", self.b, "user: you take over")
+        self.assertEqual(self.con.execute("SELECT owner_session FROM batch WHERE batch_id=?", (self.b,)).fetchone()[0], "taker-bbbb")
+        leases.check(self.con, f"batch:{self.b}", "taker-bbbb")
+        msg = self.con.execute("SELECT title FROM session_message WHERE to_session='owner-aaaa'").fetchone()[0]
+        self.assertIn("taker-bb", msg)
+
+    def test_inherit_with_a_reason_does_not_wait(self):
+        from reins import sessions
+        r = sessions.inherit(self.con, "taker-cccc", "owner-aaaa", why="user: continue that work")
+        self.assertEqual(r["batches"], [self.b])

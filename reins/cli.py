@@ -380,6 +380,8 @@ def build_parser() -> argparse.ArgumentParser:
     x = sub.add_parser("tell", help="message another session: the owner of a batch, or one session by id")
     x.add_argument("--batch"); x.add_argument("--to"); x.add_argument("--title", required=True); x.add_argument("body", nargs="?", default="")
     x = sub.add_parser("inbox", help="messages other sessions sent to this one"); x.add_argument("--all", action="store_true")
+    x = sub.add_parser("take", help="the user gives a batch to this session now (owner told; the running process keeps going)")
+    x.add_argument("batch"); x.add_argument("--why", required=True)
     x = se.add_parser("inherit", help="take over the batches and worktrees of the session this one was forked from")
     x.add_argument("--from", dest="src", help="session id (default: the parent of this session)"); x.add_argument("--why", default="")
     iss = sub.add_parser("issue").add_subparsers(dest="sub", required=True)
@@ -625,7 +627,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{r['name']}" + ("" if r["new"] else "  (unchanged rules: same version)")
                   + (f"\n  lane diff: {r['diff_summary']}  -> {r['diff_path']}" if r.get("diff_summary") else ""))
             return 0
-        if args.cmd in ("bench", "threshold", "env", "review", "accept", "preflight", "deliver", "check", "quality"):
+        if args.cmd in ("bench", "threshold", "env", "review", "accept", "preflight", "deliver", "check", "quality", "take"):
             return _measure(con, args, cfg, cwd)
         if args.cmd == "module":
             return _module(con, args, cfg)
@@ -1258,6 +1260,10 @@ def _measure(con, args, cfg, cwd) -> int:
             for b in bench.list_(con):
                 print(f"{b['name']:<32} v{b['version']:<3} {b['status']:<7} cases={b['n_cases']} dev={b['n_dev']} holdout={b['n_holdout']}"
                       f" labelset={b['labelset']}{'  HOLDOUT COMPROMISED' if b['holdout_compromised'] else ''}  {b['path']}")
+    elif args.cmd == "take":
+        r = sessions.take(con, this_session(), args.batch, args.why)
+        print(f"{r['batch']}: now this session's (was {str(r['from'])[:8]}; told)")
+        return 0
     elif args.cmd == "quality":
         from . import quality
         qs = quality.refresh(con, args.project) if args.refresh else quality.latest(con, args.project)

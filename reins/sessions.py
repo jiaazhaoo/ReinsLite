@@ -418,6 +418,30 @@ def continuation_of(transcript: str | None, sid: str) -> str | None:
     return None
 
 
+def take(con, me: str, batch: str, why: str) -> dict:
+    """The user gives one batch to this session, now: its lease and ownership move, the old owner is told. The running
+    process is not touched (its supervisor keeps going); only who may steer it changes. 2026-10-28 a deadline batch could
+    not change hands for 6 hours because its owner window was still open."""
+    from . import batches, inbox
+    if not me:
+        raise ReinsError("no session id in the environment")
+    if len(why.strip()) < 6:
+        raise ReinsError("take needs --why: who decided and why (e.g. 'user: you take over Powys draw')")
+    b = batches.get(con, batch)
+    old = b["owner_session"]
+    with tx(con):
+        _ensure(con, me, None, None)
+        con.execute("DELETE FROM lease WHERE resource=?", (f"batch:{batch}",))
+        con.execute("INSERT INTO lease (resource, holder, purpose, since) VALUES (?,?, 'owner', ?)", (f"batch:{batch}", me, now()))
+        con.execute("UPDATE batch SET owner_session=? WHERE batch_id=?", (me, batch))
+        con.execute("INSERT INTO batch_event (at, batch_id, event, detail, session) VALUES (?,?, 'owner_changed', ?, ?)",
+                    (now(), batch, f"{str(old)[:8]} -> {me[:8]}: {why.strip()}", me))
+    if old and old != me:
+        inbox.send(con, old, f"{batch} was given to session {me[:8]}",
+                   f"{why.strip()}. Do not run or write it any more; read-only is fine.", batch=batch)
+    return {"batch": batch, "from": old, "to": me}
+
+
 def adopt_continuation(con, sid: str, transcript: str | None) -> dict | None:
     """Same line of work: record the previous session as parent, end it, inherit what it held. Returns what inherit
     returns ({"from", "leases", "batches"}), None when this is not a continuation."""
@@ -526,7 +550,10 @@ def inherit(con, me: str, src: str | None = None, why: str = "") -> dict:
     s = con.execute("SELECT * FROM session WHERE id=?", (src,)).fetchone()
     quiet = _minutes(s["last_seen"]) if s else 1e9
     ended = bool(s and s["status"] == "ended")
-    if src in anc:
+    told = len(why.strip()) >= 6                         # the user said so (2026-10-28: "你就是接管整个powys draw的会话")
+    if told:
+        pass                                             # the user's word wins over activity; the old owner is told
+    elif src in anc:
         if not ended and quiet < INHERIT_QUIET_MIN:
             raise ReinsError(f"session {src[:8]} was active {quiet:.0f} min ago: two live sessions cannot own the same "
                              f"batch or worktree. Stop it (or wait {INHERIT_QUIET_MIN} min), then inherit")
@@ -551,6 +578,11 @@ def inherit(con, me: str, src: str | None = None, why: str = "") -> dict:
                         (s["role"], s["purpose"], s["module"], s["version"], s["batch_id"], me))
         detail = f"from {src[:8]}: {len(res)} leases, {len(bats)} batches" + (f"; {why}" if why else "")
         con.execute("INSERT INTO session_event (at, session_id, kind, detail) VALUES (?,?, 'inherit', ?)", (now(), me, detail))
+    if s and s["status"] != "ended" and (res or bats):
+        from . import inbox
+        inbox.send(con, src, f"session {me[:8]} took over your work",
+                   f"{len(bats)} batch(es), {len(res)} lease(s) moved to {me[:8]}" + (f": {why}" if why else "") +
+                   ". Do not run or write them any more; read-only is fine.")
         con.execute("INSERT INTO session_event (at, session_id, kind, detail) VALUES (?,?, 'handed_over', ?)",
                     (now(), src, f"to {me[:8]}" + (f"; {why}" if why else "")))
     return {"from": src, "leases": res, "batches": bats}
