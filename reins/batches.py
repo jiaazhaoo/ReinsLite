@@ -312,33 +312,16 @@ def skip_cases(con, batch: str, stage: str, cases: list[str], reason: str) -> in
 
 
 def approve_spend(con, batch: str, cap: float, who: str = "user") -> None:
-    """C7/C9: paid stages run only after a human sets the cap. The cap must fit the machine's pool and the batch's own
-    (production or development: reins/spend.py pools): one batch never exceeds max_batch_cap, and today's spend plus what
-    live batches may still spend never exceeds the daily cap. Recorded as an event."""
-    from .store import config as _config
+    """C7/C9: paid stages run only with a cap. The cap is the batch's ceiling, not a reservation: the money is guarded
+    where it is spent -- every paid call checks the machine's pool and the batch's own (production / development: hourly,
+    daily, weekly; reins/spend.py pool_check). 2026-10-28 approvals were refused for 'max_batch_cap' and for 'the pool
+    would be over-committed' by other batches' unspent caps while the user said 钱不是问题; both checks are gone.
+    Recorded as an event."""
     if cap < 0:
         raise ReinsError("cap must be >= 0")
-    from . import spend as _spend
     with tx(con):
         b = get(con, batch)
         _live(b)
-        mine = con.execute("SELECT COALESCE(SUM(amount),0) FROM spend WHERE batch_id=?", (batch,)).fetchone()[0]
-        for label, lim in _spend.limits_for(b["type"]):           # the machine, then the batch's own pool
-            if "max_batch_cap" in lim and cap > lim["max_batch_cap"]:
-                raise ReinsError(f"cap ${cap:.2f} exceeds the {label}'s max_batch_cap ${lim['max_batch_cap']:.2f} "
-                                 f"(a decision for the user: reins config set ... --why)")
-            if "daily_cap" not in lim or cap <= b["spend_cap"]:
-                continue
-            c = _spend.commitment(con, exclude=batch, pool=None if label == "machine" else _spend.pool_of(b["type"]))
-            need = c["today"] + c["held_total"] + max(0.0, cap - mine)
-            if need > lim["daily_cap"] + 1e-9:
-                top = "; ".join(f"{h['batch_id']} ({h['status']}, ${h['left']:.2f} of ${h['cap']:.2f} unspent: "
-                                f"reins batch approve {h['batch_id']} --cap {h['spent']:.2f})" for h in c["held"][:5])
-                raise ReinsError(f"the {label}'s ${lim['daily_cap']:.2f} a day would be over-committed: ${c['today']:.2f} spent or "
-                                 f"reserved today + ${c['held_total']:.2f} other live batches may still spend + "
-                                 f"${max(0.0, cap - mine):.2f} for this one. Shrink a batch that will not use its cap to what it "
-                                 f"spent, or close it: {top or 'none hold any'}. Raising the pool is a decision for the user, "
-                                 f"not the way past this check")
         con.execute("UPDATE batch SET spend_cap=? WHERE batch_id=?", (cap, batch))
         _event(con, batch, "spend_approved", f"${cap:.2f} by {who} (was ${b['spend_cap']:.2f})")
 

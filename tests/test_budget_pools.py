@@ -52,10 +52,7 @@ class Pools(unittest.TestCase):
         self.batch("experiment", spent=4.0)
         prod = self.batch("production", spent=30.0)
         exp = self.batch("experiment")
-        with self.assertRaises(ReinsError) as e:
-            batches.approve_spend(self.con, exp, 2.0)                    # 4 today + 2 > 5 in development
-        self.assertIn("development pool", str(e.exception))
-        batches.approve_spend(self.con, exp, 1.0)
+        batches.approve_spend(self.con, exp, 2.0)                        # a ceiling: approving never checks the pool
         batches.approve_spend(self.con, prod, 50.0)                      # production: 30 spent of its own 60, development untouched
         with self.assertRaises(CapReached) as e:
             spend.pool_check(self.con, exp, 1.5)                         # per call: 4 + 1.5 > 5
@@ -68,8 +65,9 @@ class Pools(unittest.TestCase):
     def test_without_pool_tables_only_the_machine_limits(self):
         self.batch("experiment", spent=90.0)
         exp = self.batch("experiment")
-        with self.assertRaises(ReinsError) as e:
-            batches.approve_spend(self.con, exp, 20.0)                  # 90 + 20 > the machine's 100
+        batches.approve_spend(self.con, exp, 20.0)                      # a ceiling; the call is what is refused
+        with self.assertRaises(CapReached) as e:
+            spend.pool_check(self.con, exp, 20.0)                        # 90 + 20 > the machine's 100
         self.assertIn("machine", str(e.exception))
 
 

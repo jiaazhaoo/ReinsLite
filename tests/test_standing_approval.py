@@ -54,13 +54,10 @@ class Standing(unittest.TestCase):
         self.assertEqual(self.cap(self.open(paid=0)), 0.0)                 # no paid stage: no cap
         self.assertEqual(self.cap(self.open(type_="experiment")), 0.0)     # other types untouched
 
-    def test_pool_refusal_is_an_event_not_an_error(self):
+    def test_every_batch_gets_its_ceiling(self):
         settings_edit.set_(self.con, "standing.intake", "1", why="user agreed")
-        caps = [self.cap(self.open()) for _ in range(4)]                    # $3 a day: the 4th does not fit
-        self.assertEqual(caps, [1.0, 1.0, 1.0, 0.0])
-        b = f"x-wp{self.n}"
-        n = self.con.execute("SELECT COUNT(*) FROM batch_event WHERE event='standing_refused'").fetchone()[0]
-        self.assertEqual(n, 1)
+        caps = [self.cap(self.open()) for _ in range(4)]                    # caps are ceilings: the pool is checked per call
+        self.assertEqual(caps, [1.0, 1.0, 1.0, 1.0])
 
     def test_bad_keys(self):
         with self.assertRaises(ReinsError):
