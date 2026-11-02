@@ -392,4 +392,9 @@ H = {"type": "command", "command": "python3 <ReinsLite>/hooks/session_hook.py"}
 项目可以在自己的 `reins.toml` 里写 `[run] work_dirs = ["/data/councils/*/runs/{batch}", "/data/benchmarks/*/experiments/{batch}"]`。
 写了以后，`reins batch open --work-dir` 只接受符合其中一个模式的目录：`{batch}` 会换成新批次名（所以开批次时直接写
 `--work-dir /data/councils/sheffield/runs/{batch}`），`*` 只代表一层目录名。目录不存在时自动创建（父目录必须已存在）。
-不符合的直接拒绝，批次不会登记。没写这个设置的项目照旧（只禁止放在代码目录里）。
+不符合的直接拒绝，批次不会登记。没写这个设置的项目照旧（只禁止放在代码目录里）。**系统自己收尾，不再催人**（2026-11-02）：停止钩子不再催会话收尾批次；开发类批次没有进程、6 小时没动静，watchdog 直接结束
+（输出保留，接着做就开新批次）。自查发现“批次说在跑、进程没了”就把它暂停并写明原因，不开问题单；问题已消失的自查问题单
+自动关闭。候选版本门禁不过且 3 天没人动就自动放弃。`dev start` 只在别的候选真改了同一批文件（且 3 天内有人在做）时才要求
+`--overlap-ok`。用户把批次交给某个会话：`reins take BATCH --why '用户：…'`，立即生效，原会话会收到通知。
+
+

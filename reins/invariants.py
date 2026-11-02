@@ -124,7 +124,7 @@ def repair(con, items: list[dict]) -> list[str]:
             continue
         try:
             b = batches.get(con, bid)
-            if b["status"] not in ("done", "failed") and chk != "process":
+            if b["status"] not in ("done", "failed") and chk != "process" and not i["detail"].startswith("batch running, no"):
                 continue                                 # a live batch is its owner's: escalated if it stays wrong
             if chk == "conservation":
                 outcomes = con.execute("SELECT COUNT(*) FROM case_event WHERE batch_id=? AND status<>'started'", (bid,)).fetchone()[0]
@@ -147,6 +147,12 @@ def repair(con, items: list[dict]) -> list[str]:
                                                                       f"{n_rest} skipped ({REPAIRED})")
                     ok, rest = range(n_ok), range(n_rest)
                     done.append(f"{bid}/{stage}: {len(ok)} done from the results file, {len(rest)} skipped")
+            elif chk in ("process", "stage_order") and i["detail"].startswith("batch running, no"):
+                with tx(con):                            # the process is gone: say so on the batch, by pausing it
+                    state.batch_to(con, bid, "paused", "process gone (state check)", reason="process gone: no live process (state check)")
+                done.append(f"{bid}: paused, process gone")
+            elif chk == "process" and "still alive" in i["detail"]:
+                continue                                 # a done batch whose process is finishing: nothing to repair
             elif chk == "process" and "recorded as" in i["detail"]:
                 with tx(con):
                     n = con.execute("UPDATE process SET state='lost', ended=COALESCE(ended, ?) WHERE batch_id=? AND"
@@ -180,6 +186,8 @@ def escalate(con, items: list[dict]) -> list[int]:
                         " ON CONFLICT(key) DO UPDATE SET passes=passes+1", (k, t))
     for k, i in keys.items():
         row = con.execute("SELECT passes, issue_id FROM invariant_seen WHERE key=?", (k,)).fetchone()
+        if i["check"] == "process":
+            continue                                     # process states are repaired or harmless: never an issue
         if row["passes"] >= ESCALATE and not row["issue_id"]:
             module = "board" if i["check"] == "visible" else "core"
             symptom = (f"state check ({i['check']}) not cleared by the repairs for {row['passes']} passes: "
@@ -197,6 +205,21 @@ def escalate(con, items: list[dict]) -> list[int]:
     return opened
 
 
+def close_cleared(con, left: list[dict]) -> list[int]:
+    """State-check issues whose violation is gone close themselves (2026-11-02: #26-#37 stayed open after the fact)."""
+    from . import issues
+    keys = {f"{i['batch'] or '-'} -- {i['detail']}" for i in left}
+    out = []
+    for r in con.execute("SELECT id, symptom FROM issue WHERE status='open' AND symptom LIKE 'state check (%'").fetchall():
+        tail = r["symptom"].split("passes: ", 1)[-1]
+        if tail not in keys:
+            with tx(con):
+                con.execute("UPDATE issue SET status='closed' WHERE id=?", (r["id"],))
+                issues._ev(con, r["id"], "closed", "the state check no longer finds it")
+            out.append(r["id"])
+    return out
+
+
 def record(con, items: list[dict]) -> None:
     key = sorted((i["check"], i["batch"] or "", i["detail"]) for i in items)
     last = con.execute("SELECT items FROM invariant_run ORDER BY id DESC LIMIT 1").fetchone()
@@ -212,7 +235,8 @@ def tend(con) -> dict:
     fixed = repair(con, found) if found else []
     left = run(con) if fixed else found
     record(con, left)
-    return {"found": len(found), "repaired": fixed, "left": len(left), "issues": escalate(con, left)}
+    return {"found": len(found), "repaired": fixed, "left": len(left), "issues": escalate(con, left),
+            "closed": close_cleared(con, left)}
 
 
 def latest(con) -> dict:

@@ -105,8 +105,10 @@ def _sweep_one(con, b, stale_days: float) -> str | None:
         from . import lineage
         return lineage.settle(con, bid, stale_days)
     idle = _idle_days(con, bid)
-    if idle is not None and idle >= stale_days:
-        why = f"nothing alive and no sign of life for {idle:.0f} days (closed by the watchdog; outputs kept)"
+    dev_days = float(config().get("dev_idle_h", DEV_IDLE_H)) / 24     # development work: hours, not a week (2026-11-02)
+    if idle is not None and idle >= min(stale_days, dev_days):
+        why = (f"nothing alive and no sign of life for {idle * 24:.0f} h (ended by the watchdog; outputs kept; "
+               f"a new batch continues the work)")
         from . import state
         with tx(con):
             state.batch_to(con, bid, "closed", why, reason=f"abandoned: {why}", closed=True)
@@ -172,6 +174,14 @@ def _candidate_last_activity(con, v) -> str | None:
     return max(t for t in ts if t)
 
 
+RED_IDLE_DAYS = 3
+DEV_IDLE_H = 6                 # a development batch with nothing alive and no sign of life this long is ended
+
+
+def _has_table(con, name: str) -> bool:
+    return con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
+
+
 def tend_candidates(con, idle_days: float | None = None) -> list[str]:
     """A candidate nobody has touched for idle_days (and whose session is not active) is abandoned; its branch and
     worktree stay, `reins dev adopt WORKTREE` takes it up again. Issues it had taken go back to open.
@@ -184,7 +194,10 @@ def tend_candidates(con, idle_days: float | None = None) -> list[str]:
         if s and s["status"] == "active":
             continue
         days = _days_since(_candidate_last_activity(con, v))
-        if days is None or days < idle_days:
+        red = con.execute("SELECT 1 FROM module_event WHERE version=? AND event='gate_red' ORDER BY id DESC LIMIT 1",
+                          (v["version"],)).fetchone() if _has_table(con, "module_event") else None
+        limit = min(idle_days, RED_IDLE_DAYS) if red else idle_days      # a red gate nobody works on: 3 days
+        if days is None or days < limit:
             continue
         why = (f"nothing done on it for {days:.0f} days and its session is {s['status'] if s else 'gone'}; "
                f"branch {v['branch'] or '?'} and worktree kept (reins dev adopt {v['worktree']} to take it up again)")

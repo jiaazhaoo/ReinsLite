@@ -46,7 +46,7 @@ from pathlib import Path
 
 from . import (accept, artifacts, batches, bench, decisions, deliver, dev, envs, gate, glossary, issues, leases, modules,
                names, notify, preflight, resources, review, rules, runner, sessions, spend)
-from .store import ReinsError, connect
+from .store import ReinsError, connect, tx
 
 
 def project_root(cwd: Path) -> Path | None:
@@ -160,6 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("worktree", type=Path); x.add_argument("module"); x.add_argument("suffix"); x.add_argument("--about", required=True)
     x.add_argument("--files"); x.add_argument("--overlap-ok")
     x = d.add_parser("finish"); x.add_argument("version"); x.add_argument("--skip-tier"); x.add_argument("--why")
+    x.add_argument("--about", help="accepted for convenience: kept as a note on the version")
     x = d.add_parser("abandon"); x.add_argument("version"); x.add_argument("--why", required=True)
     x = d.add_parser("release"); x.add_argument("--note", default=""); x.add_argument("--repo")
     x = d.add_parser("sync", help="push main and the release tags to [dev] push (finish and release do it too)")
@@ -222,6 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
     x = b.add_parser("lineage", help="which earlier run each batch repeats, splits or extends (--backfill: fill it in)")
     x.add_argument("batch", nargs="?"); x.add_argument("--backfill", action="store_true")
     x = b.add_parser("stage-end"); x.add_argument("batch"); x.add_argument("stage")
+    x.add_argument("--why", help="accepted for convenience: kept as an event on the batch")
     x.add_argument("--checks", type=Path, help="TSV check, ok[, detail]: the project's completeness checks; one failing "
                                                "check ends the stage failed (exit 1)")
     x = b.add_parser("skip-stage"); x.add_argument("batch"); x.add_argument("stage"); x.add_argument("--why", required=True)
@@ -1015,6 +1017,8 @@ def _dev(con, args, cfg, cwd) -> int:
         if r["pilot_cases"]:
             print(f"  pilot cases: {', '.join(r['pilot_cases'])}")
     elif args.sub == "finish":
+        if getattr(args, "about", None):
+            modules.note(con, args.version, "note", args.about[:500])
         r = dev.finish(con, args.version, args.skip_tier, args.why)
         print(f"{r['version']} released; main {r['main']}\n  {r['evidence']}")
     elif args.sub == "abandon":
@@ -1156,6 +1160,9 @@ def _batch(con, args, cfg) -> int:
         else:
             raise ReinsError("reins batch lineage BATCH | --backfill")
     elif args.sub == "stage-end":
+        if getattr(args, "why", None):
+            with tx(con):
+                batches._event(con, args.batch, "note", f"{args.stage}: {args.why}"[:500])
         try:
             led = batches.stage_end(con, args.batch, args.stage, batches.read_checks(args.checks) if args.checks else None)
         finally:

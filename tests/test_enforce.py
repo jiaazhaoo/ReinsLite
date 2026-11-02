@@ -76,7 +76,11 @@ class Enforce(unittest.TestCase):
         self.assertIsNone(g.check_bash("python3 tools/dev/dev.py list"))
 
     def test_start_refuses_overlap_unless_justified(self):
-        dev.start(self.con, self.repo, "georef", "a", "roads before geocode")
+        a = dev.start(self.con, self.repo, "georef", "a", "roads before geocode")
+        dev.start(self.con, self.repo, "georef", "c", "declared the same files, changed nothing yet")   # not an overlap
+        wt = Path(a["worktree"])                                   # an overlap is files the other really changed
+        changed = [f for f in git(wt, "ls-files").splitlines() if f.startswith("georef")][:1]
+        (wt / changed[0]).write_text("changed = 1\n"); git(wt, "commit", "-qam", "change")
         with self.assertRaises(ReinsError):
             dev.start(self.con, self.repo, "georef", "b", "another georef change")
         r = dev.start(self.con, self.repo, "georef", "b", "another georef change", overlap_ok="different functions, agreed order")
