@@ -590,6 +590,11 @@ class Handler(BaseHTTPRequestHandler):
             from . import production
             from . import ops
             fn = {"/api/state": state, "/api/production": production.view, "/api/ops": ops.view}.get(path.rstrip("/"), state)
+            if path.rstrip("/") == "/api/find":                                 # reins find, for the board's search box
+                from urllib.parse import parse_qs, urlparse
+                from . import find as _find
+                q = (parse_qs(urlparse(self.path).query).get("q") or [""])[0].strip()
+                fn = (lambda con: _find.find(con, q)) if q else (lambda con: {"kind": "none"})
             with closing(connect()) as con:                                     # one per request: closed, or fds leak
                 body = json.dumps(fn(con), ensure_ascii=False, default=str).encode()
             ctype = "application/json"
