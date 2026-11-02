@@ -82,7 +82,12 @@ def frozen_reason(path: str) -> str | None:
             return (f"{f} is frozen (a benchmark version or a registered deliverable). Make a new version instead: "
                     f"reins bench bump NAME, or reins deliver register for a new deliverable")
     if any(p.search(path) for p in FROZEN):
-        return f"{path} is in a frozen path (gateway cache or config.toml frozen_paths)"
+        # frozen_paths protect what exists: an existing delivered file may not be overwritten, but a new delivery
+        # folder or file may be written (2026-10-28 a new delivery date folder was refused). The gateway cache and
+        # release trees stay frozen whole.
+        cache = path.startswith(str(HOME / "cache") + "/")
+        if cache or Path(path).is_file():
+            return f"{path} is in a frozen path (gateway cache or config.toml frozen_paths)"
     return None
 
 
