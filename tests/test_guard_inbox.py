@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -164,3 +165,18 @@ class GuardBatchDirs(unittest.TestCase):
         os.environ["REINS_SESSION"] = "owner-A"
         self.assertIsNone(self.g.check_bash(f"cp config.json {self.wd}/config.json"))
         self.assertIsNone(self.g.check_edit(str(self.wd / "config.json")))
+
+
+class FrozenOnlyExisting(unittest.TestCase):
+    """2026-10-28: a new delivery date folder under deliver/ was refused as frozen."""
+
+    def test_new_delivery_allowed_existing_kept(self):
+        import guard
+        importlib.reload(guard)
+        d = Path(tempfile.mkdtemp(prefix="reins-fz-")) / "deliver" / "wp1"
+        d.mkdir(parents=True)
+        old = d / "2026-10-01" / "book.xlsx"; old.parent.mkdir(); old.write_text("x")
+        guard.FROZEN = [re.compile(re.escape(str(d.parent)) + "/")]
+        self.assertIsNone(guard.frozen_reason(str(d / "2026-10-28")))
+        self.assertIsNone(guard.frozen_reason(str(d / "2026-10-28" / "book.xlsx")))
+        self.assertIsNotNone(guard.frozen_reason(str(old)))

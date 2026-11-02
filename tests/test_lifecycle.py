@@ -106,7 +106,7 @@ class Lifecycle(unittest.TestCase):
         finally:
             os.killpg(p.pid, signal.SIGKILL)
 
-    def test_hook_asks_once_about_loose_batches(self):
+    def test_hook_does_not_ask_about_batches(self):     # 2026-11-02: the watchdog ends them; no Stop nag
         b = self.batch(status="paused")
         env = {**os.environ}
 
@@ -114,10 +114,7 @@ class Lifecycle(unittest.TestCase):
             r = subprocess.run([sys.executable, str(ROOT / "hooks" / "session_hook.py")], capture_output=True, text=True,
                                input=json.dumps({"hook_event_name": "Stop", "session_id": "owner"}), env=env, timeout=60)
             return json.loads(r.stdout) if r.stdout.strip() else {}
-        first = stop()
-        self.assertEqual(first.get("decision"), "block")
-        self.assertIn(b, first["reason"])
-        self.assertEqual(stop(), {})
+        self.assertNotEqual(stop().get("decision"), "block")
 
 
 if __name__ == "__main__":

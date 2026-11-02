@@ -165,7 +165,7 @@ def main() -> int:
             with tx(con):
                 con.execute("UPDATE session SET last_seen=?, status='active' WHERE id=?", (now(), sid))
             if ev == "Stop" and not data.get("stop_hook_active"):
-                ask = _ask_for_facts(con, sid) or _ask_for_batches(con, sid)
+                ask = _ask_for_facts(con, sid)   # batches are not asked about (2026-11-02): the watchdog ends idle ones itself
                 if ask:                                  # changed a module or a service and left no fact: ask once
                     print(json.dumps({"decision": "block", "reason": ask}))
                     return 0
