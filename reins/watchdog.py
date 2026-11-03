@@ -285,7 +285,7 @@ def _sync(con) -> list[str]:
     from . import dev
     from . import weights_store
     out = []
-    for f in (dev.sync_all, weights_store.push_all):
+    for f in (dev.remote_login, dev.sync_all, weights_store.push_all):
         try:
             out += f(con)
         except Exception as e:                                                  # noqa: BLE001 -- never stop the watchdog
