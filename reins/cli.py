@@ -328,6 +328,12 @@ def build_parser() -> argparse.ArgumentParser:
         x = en.add_parser(verb); x.add_argument("name"); x.add_argument("--python", required=True)
         x.add_argument("--asset", action="append")
     en.add_parser("list")
+    pg = sub.add_parser("page").add_subparsers(dest="sub", required=True)
+    x = pg.add_parser("build"); x.add_argument("batch"); x.add_argument("--cards", required=True, type=Path)
+    x.add_argument("--name", required=True); x.add_argument("--title", default=""); x.add_argument("--reviewer", default="")
+    x = pg.add_parser("marks"); x.add_argument("batch"); x.add_argument("name"); x.add_argument("--all", action="store_true")
+    x.add_argument("--json", action="store_true")
+    x = pg.add_parser("list"); x.add_argument("batch", nargs="?")
     rv = sub.add_parser("review").add_subparsers(dest="sub", required=True)
     x = rv.add_parser("assign"); x.add_argument("batch"); x.add_argument("--reviewer", required=True)
     x.add_argument("--cases", required=True); x.add_argument("--queue"); x.add_argument("--round"); x.add_argument("--by", default="user")
@@ -631,7 +637,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{r['name']}" + ("" if r["new"] else "  (unchanged rules: same version)")
                   + (f"\n  lane diff: {r['diff_summary']}  -> {r['diff_path']}" if r.get("diff_summary") else ""))
             return 0
-        if args.cmd in ("bench", "threshold", "env", "review", "accept", "preflight", "deliver", "check", "quality", "take", "find"):
+        if args.cmd in ("bench", "threshold", "env", "review", "accept", "preflight", "deliver", "check", "quality", "take", "find", "page"):
             return _measure(con, args, cfg, cwd)
         if args.cmd == "module":
             return _module(con, args, cfg)
@@ -1331,6 +1337,23 @@ def _measure(con, args, cfg, cwd) -> int:
         else:
             for e in envs.list_(con):
                 print(f"{e['name']:<30} {e['sha'][:12]}  {e['created']}")
+    elif args.cmd == "page":
+        from . import qa_page
+        from .store import config as _config
+        port = _config()["board_port"]
+        if args.sub == "build":
+            r = qa_page.build(con, args.batch, args.cards, args.name, args.title, args.reviewer, os.environ.get("REINS_SESSION", ""))
+            print(f"{r['cards']} cards -> {r['dir']}" + (f" ({r['missing_images']} images missing)" if r["missing_images"] else ""))
+            print(f"  open: http://127.0.0.1:{port}{r['url']}   (marks are saved to reins as they are made: reins page marks {args.batch} {args.name})")
+        elif args.sub == "marks":
+            if args.json:
+                print(json.dumps(qa_page.marks(con, args.batch, args.name), ensure_ascii=False, indent=1))
+            else:
+                print(qa_page.text(con, args.batch, args.name, args.all))
+        else:
+            for p in qa_page.list_(con, args.batch):
+                m = len(qa_page.marks(con, p["batch_id"], p["name"]))
+                print(f"{p['created'][:16]}  {p['batch_id']}  {p['name']}  {m}/{p['n_cards']} marked  http://127.0.0.1:{port}/pages/{p['batch_id']}/{p['name']}/")
     elif args.cmd == "review":
         tax = review.taxonomy((project_root(cwd) or cwd) / "review.toml")
         if args.sub == "assign":

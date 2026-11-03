@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="reins-page" content="qa">
+<title>QA</title>
+<style>
+:root{--bg:#fff;--fg:#1d1d1f;--mut:#6b6b70;--line:#e3e3e8;--card:#f7f7f9;--acc:#1a5fd0;--ok:#1e7d4f;--q:#b7791f;--bad:#c0392b}
+@media (prefers-color-scheme:dark){:root{--bg:#141416;--fg:#ececf0;--mut:#9a9aa2;--line:#2c2c31;--card:#1c1c20;--acc:#7fb0ff;--ok:#4cc38a;--q:#e0a84a;--bad:#ff6b5b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 -apple-system,"PingFang SC","Noto Sans CJK SC",system-ui,sans-serif}
+header{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.hbar{max-width:1200px;margin:0 auto;padding:10px 16px;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}
+.hbar h1{font-size:16px;margin:0;flex:1 1 220px;overflow-wrap:anywhere}
+.hbar input,.hbar select,.hbar button{font:inherit;font-size:13px;height:30px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:inherit;padding:0 8px}
+.hbar button{cursor:pointer}
+#cnt{color:var(--mut);font-size:13px}
+main{max-width:1200px;margin:0 auto;padding:8px 16px 90px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin:14px 0;scroll-margin-top:70px}
+.card.cur{outline:2px solid var(--acc)}
+.card h3{margin:0 0 4px;font-size:15px;overflow-wrap:anywhere}.num{color:var(--mut);margin-right:6px}
+.tag{font-size:12px;color:var(--acc);border:1px solid var(--acc);border-radius:4px;padding:0 5px;margin-left:6px;white-space:nowrap}
+.meta,.mut{color:var(--mut)}.meta{margin:4px 0;overflow-wrap:anywhere}
+.why{margin:6px 0;padding:6px 8px;border-left:3px solid var(--acc);overflow-wrap:anywhere}
+.imgs{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px;margin:8px 0}figure{margin:0}
+img{width:100%;border:1px solid var(--line);border-radius:6px;background:#fff;cursor:zoom-in}
+img.big{position:fixed;inset:2vh 2vw;width:96vw;height:96vh;object-fit:contain;z-index:20;cursor:zoom-out;background:#000c}
+figcaption{font-size:12px;color:var(--mut)}
+table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+td,th{border-top:1px solid var(--line);padding:4px 6px;text-align:left;vertical-align:top;overflow-wrap:anywhere}
+th{color:var(--mut);font-weight:500}
+.links a{margin-right:12px;color:var(--acc)}
+.grade{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
+.grade button.g{min-width:52px;height:38px;font:600 16px/1 inherit;border-radius:8px;border:2px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer}
+.grade button.g.on[data-v=correct]{background:var(--ok);border-color:var(--ok);color:#fff}
+.grade button.g.on[data-v=unsure]{background:var(--q);border-color:var(--q);color:#fff}
+.grade button.g.on[data-v=wrong]{background:var(--bad);border-color:var(--bad);color:#fff}
+.grade select,.grade input{font:inherit;height:34px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:inherit;padding:0 8px}
+.grade input{flex:1 1 200px;min-width:0}
+.saved{font-size:12px}
+.saved.ok{color:var(--ok)}.saved.err{color:var(--bad)}.saved.wait{color:var(--mut)}
+.help{color:var(--mut);font-size:12px;margin:6px 0 0}
+@media (max-width:600px){.hbar{padding:8px 16px}.imgs{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><div class="hbar">
+  <h1 id="title">…</h1>
+  <span id="cnt"></span>
+  <label class="mut">审核人 <input id="who" size="8" placeholder="名字"></label>
+  <select id="show" title="显示">
+    <option value="all">全部</option><option value="open">只看未评</option>
+  </select>
+  <button id="next" title="跳到下一个未评 (N)">下一个未评</button>
+  <button id="export" title="导出 CSV（兜底；标注已自动保存到 reins）">导出 CSV</button>
+</div></header>
+<main id="main"><p class="mut">加载中…</p></main>
+<script>
+const BASE = location.pathname.replace(/\/?(index\.html)?$/, "/");
+const parts = BASE.split("/").filter(Boolean);            // pages, BATCH, NAME
+const BATCH = decodeURIComponent(parts[1] || ""), NAME = decodeURIComponent(parts[2] || "");
+const KEY = `reins-page:${BATCH}:${NAME}:`;
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const ls = {get(k) { try { return JSON.parse(localStorage.getItem(k) || "null"); } catch (e) { return null; } },
+            set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }};
+let META = {}, CARDS = [], STATE = {}, cur = 0;
+
+function card(c, i) {
+  const tags = (c.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("");
+  const imgs = (c.images || []).map((m) => m.src
+    ? `<figure><img loading="lazy" src="${esc(m.src)}" alt=""><figcaption>${esc(m.caption)}</figcaption></figure>`
+    : `<figure><p class="mut">${esc(m.caption || "image missing")}</p></figure>`).join("");
+  const t = c.table && (c.table.rows || []).length ? `<table>${c.table.head ? "<tr>" + c.table.head.map((h) => `<th>${esc(h)}</th>`).join("") + "</tr>" : ""}${
+    c.table.rows.map((r) => "<tr>" + r.map((x) => `<td>${esc(x)}</td>`).join("") + "</tr>").join("")}</table>` : "";
+  const links = (c.links || []).length ? `<p class="links">${c.links.map((l) => `<a href="${esc(l.href)}" target="_blank" rel="noopener">${esc(l.text || l.href)}</a>`).join("")}</p>` : "";
+  const gb = META.grades.map((g) => `<button class="g" data-k="${esc(g.key)}" data-v="${esc(g.verdict)}" title="${esc(g.verdict)} (${esc(g.key.toLowerCase())})">${esc(g.label)}</button>`).join("");
+  const codes = `<select class="code" title="错误代码"><option value=""></option>${META.codes.map((x) => `<option value="${esc(x.code)}">${esc(x.label || x.code)}</option>`).join("")}</select>`;
+  return `<section class="card" id="c${i}" data-i="${i}"><h3><span class="num">#${i + 1}</span>${esc(c.title || c.case)}${tags}${c.group ? ` <span class="mut">${esc(c.group)}</span>` : ""}</h3>
+${c.meta ? `<p class="meta">${esc(c.meta)}</p>` : ""}${c.why ? `<p class="why">${esc(c.why)}</p>` : ""}
+${imgs ? `<div class="imgs">${imgs}</div>` : ""}${t}${links}
+<div class="grade">${gb}${codes}<input class="note" placeholder="备注"><span class="saved"></span></div></section>`;
+}
+
+function paint(i) {
+  const s = STATE[CARDS[i].case] || {}, el = document.getElementById("c" + i);
+  el.querySelectorAll("button.g").forEach((b) => b.classList.toggle("on", b.dataset.k === s.grade));
+  el.querySelector(".code").value = s.code || "";
+  if (document.activeElement !== el.querySelector(".note")) el.querySelector(".note").value = s.note || "";
+  const st = el.querySelector(".saved");
+  st.className = "saved " + (s.status || "");
+  st.textContent = {ok: "已保存 ✓", wait: "保存中…", err: "未保存（" + (s.err || "") + "）会自动重试"}[s.status] || "";
+}
+
+function count() {
+  const n = CARDS.length, by = {};
+  CARDS.forEach((c) => { const g = (STATE[c.case] || {}).grade; if (g) by[g] = (by[g] || 0) + 1; });
+  const done = Object.values(by).reduce((a, b) => a + b, 0);
+  document.getElementById("cnt").textContent = `已评 ${done}/${n}` + META.grades.filter((g) => g.verdict !== "correct").map((g) => ` · ${g.key} ${by[g.key] || 0}`).join("");
+  const open = document.getElementById("show").value === "open";
+  CARDS.forEach((c, i) => { document.getElementById("c" + i).hidden = open && !!(STATE[c.case] || {}).grade && i !== cur; });
+}
+
+const timers = {};
+function push(i, delay = 500) {
+  const c = CARDS[i].case, s = STATE[c];
+  if (!s || !s.grade) return;
+  clearTimeout(timers[c]);
+  timers[c] = setTimeout(async () => {
+    const who = document.getElementById("who").value.trim();
+    s.status = "wait"; paint(i);
+    try {
+      const r = await fetch(`/api/page/mark?batch=${encodeURIComponent(BATCH)}&name=${encodeURIComponent(NAME)}`, {method: "POST",
+        headers: {"Content-Type": "application/json"}, body: JSON.stringify({case: c, grade: s.grade, code: s.code || "", note: s.note || "", reviewer: who})});
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) throw new Error(d.error || r.status);
+      s.status = "ok"; s.err = "";
+    } catch (e) { s.status = "err"; s.err = String(e.message || e).slice(0, 80); }
+    ls.set(KEY + c, s); paint(i);
+  }, delay);
+}
+
+function set(i, patch) {
+  const c = CARDS[i].case;
+  STATE[c] = {...(STATE[c] || {}), ...patch, status: "wait"};
+  ls.set(KEY + c, STATE[c]); paint(i); count(); push(i);
+}
+
+function focus(i, scroll = true) {
+  if (i < 0 || i >= CARDS.length) return;
+  document.getElementById("c" + cur)?.classList.remove("cur");
+  cur = i; const el = document.getElementById("c" + i); el.classList.add("cur");
+  if (scroll) el.scrollIntoView({block: "start"});
+}
+
+function nextOpen() {
+  for (let k = 1; k <= CARDS.length; k++) { const i = (cur + k) % CARDS.length; if (!(STATE[CARDS[i].case] || {}).grade) { focus(i); return; } }
+}
+
+function exportCsv() {
+  const q = (x) => `"${String(x ?? "").replace(/"/g, '""')}"`;
+  const rows = [["order", "case", "grade", "code", "note", "saved"]].concat(CARDS.map((c, i) => {
+    const s = STATE[c.case] || {}; return [i + 1, c.case, s.grade || "", s.code || "", s.note || "", s.status === "ok" ? "yes" : "no"]; }));
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(["﻿" + rows.map((r) => r.map(q).join(",")).join("\n")], {type: "text/csv"}));
+  a.download = `${NAME}_marks.csv`; a.click();
+}
+
+async function init() {
+  const d = await (await fetch(BASE + "cards.json", {cache: "no-cache"})).json();
+  META = d.meta; CARDS = d.cards;
+  document.title = META.title; document.getElementById("title").textContent = META.title;
+  const who = document.getElementById("who");
+  who.value = ls.get("reins-page:who") || META.reviewer || "";
+  who.addEventListener("change", () => { ls.set("reins-page:who", who.value.trim()); CARDS.forEach((c, i) => { if ((STATE[c.case] || {}).status === "err") push(i, 0); }); });
+  const main = document.getElementById("main");
+  main.innerHTML = CARDS.map(card).join("") + `<p class="help">按键：${META.grades.map((g) => g.key.toLowerCase()).join(" / ")} 评当前卡片 · j / k 上下一张 · n 下一个未评 · 点图放大。每次评分立即保存到 reins；导出 CSV 只是兜底。</p>`;
+  let server = {};
+  try { server = await (await fetch(`/api/page/marks?batch=${encodeURIComponent(BATCH)}&name=${encodeURIComponent(NAME)}`)).json(); } catch (e) {}
+  CARDS.forEach((c, i) => {
+    const local = ls.get(KEY + c.case), sv = server[c.case];
+    if (sv) STATE[c.case] = {grade: sv.grade, code: sv.code || "", note: sv.note || "", status: "ok"};
+    if (local && local.grade && (!sv || local.status !== "ok")) { STATE[c.case] = local; push(i, 200 + 50 * i); }   // marked here, never confirmed: send now
+    paint(i);
+  });
+  main.addEventListener("click", (e) => {
+    const sec = e.target.closest(".card"); if (!sec) return;
+    const i = +sec.dataset.i; focus(i, false);
+    if (e.target.matches("img")) e.target.classList.toggle("big");
+    if (e.target.matches("button.g")) set(i, {grade: e.target.dataset.k});
+  });
+  main.addEventListener("change", (e) => { if (e.target.matches(".code")) set(+e.target.closest(".card").dataset.i, {code: e.target.value}); });
+  main.addEventListener("input", (e) => { if (e.target.matches(".note")) set(+e.target.closest(".card").dataset.i, {note: e.target.value}); });
+  document.getElementById("show").addEventListener("change", count);
+  document.getElementById("next").addEventListener("click", nextOpen);
+  document.getElementById("export").addEventListener("click", exportCsv);
+  addEventListener("keydown", (e) => {
+    if (e.target.matches("input,select,textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
+    const k = e.key.toLowerCase(), g = META.grades.find((x) => x.key.toLowerCase() === k);
+    if (g) { set(cur, {grade: g.key}); return; }
+    if (k === "j") focus(cur + 1); else if (k === "k") focus(cur - 1); else if (k === "n") nextOpen();
+    else if (k === "escape") document.querySelectorAll("img.big").forEach((x) => x.classList.remove("big"));
+  });
+  addEventListener("beforeunload", (e) => { if (Object.values(STATE).some((s) => s.status === "wait" || s.status === "err")) { e.preventDefault(); e.returnValue = ""; } });
+  focus(0, false); count();
+}
+init().catch((e) => { document.getElementById("main").innerHTML = `<p class="mut">页面加载失败：${esc(e)}</p>`; });
+</script>
+</body>
+</html>
