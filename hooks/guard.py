@@ -442,6 +442,24 @@ def check_edit(path: str) -> str | None:
     return managed_main_or_unheld(p)
 
 
+REVIEW_INPUT = re.compile(r"""type=\\?['"]?radio|<button[^>]*>\s*[PQEAF]\s*</button>""", re.I)
+REVIEW_WORDS = re.compile(r"grade|verdict|correct|wrong|对\s*/\s*错", re.I)
+QA_PAGE_HINT = ("pages where a person marks cases right / wrong are built only by `reins page build BATCH --cards "
+                "cards.jsonl --name NAME` (user 2026-11-03: one fixed template; marks are saved to reins as they are "
+                "made). Write the cards JSONL instead; to change the page itself, change ReinsLite's page_ui/qa.html.")
+
+
+def hand_made_review_page(path: str, text: str) -> str | None:
+    """A session writing its own grading page (HTML, or a script printing one) outside any code repo."""
+    if not text or not REVIEW_INPUT.search(text) or not REVIEW_WORDS.search(text):
+        return None
+    p = Path(os.path.abspath(path))
+    for d in (p.parent, *p.parent.parents):                  # code repos (apps, ReinsLite itself) keep their own rules
+        if (d / ".git").exists():
+            return None
+    return f"{p} looks like a hand-made review page: {QA_PAGE_HINT}"
+
+
 def main() -> int:
     try:
         data = json.load(sys.stdin)
@@ -450,6 +468,8 @@ def main() -> int:
             msg = check_bash(inp.get("command", ""))
         elif tool in ("Edit", "Write", "MultiEdit"):
             msg = check_edit(inp.get("file_path", ""))
+            text = inp.get("content") or inp.get("new_string") or "".join(e.get("new_string", "") for e in inp.get("edits") or [])
+            msg = msg or hand_made_review_page(inp.get("file_path", ""), text)
         else:
             msg = None
         if msg:

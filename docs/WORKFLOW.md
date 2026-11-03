@@ -352,6 +352,21 @@ council，一个会话只读了服务器参数就说不行；另一个会话正�
 case 只详列生产和返工批次，开发实验只计数。项目可以在 reins.toml 的 `[find] commands` 里加自己的查询（`{id}` 会被
 替换），例如账本里这个 case 的事实。看板 `/api/find?q=ID` 返回同一份 JSON。
 
+## 人工标注对错只用一个页面：reins page（2026-11-03）
+
+用户 2026-11-03："以后用来看对错的 qa 的 html 都用这个固定模板，只用这个，并且允许优化更新"。
+
+- 会话不写网页，只写卡片清单（每个 case 一行 JSON：图、说明、判定理由表、链接），然后
+  `reins page build BATCH --cards cards.jsonl --name NAME --title '...'`。图片缩到 1600 px 放进
+  `WORK_DIR/pages/NAME/img/`；页面在看板上：`http://127.0.0.1:8791/pages/BATCH/NAME/`。
+- 页面：P / Q / E 大按钮、错误代码、备注；快捷键 p/q/e、j/k、n；只看未评；导出 CSV（兜底）。
+- 每次评分立即写成一条署名的 review_event（payload 记页面名、按钮、代码），浏览器另存一份，没确认的会重发。
+  读结果：`reins page marks BATCH NAME`（默认只列 Q 和 E）；`reins find CASE` 也能看到。
+- 按钮和错误代码由项目在 reins.toml `[page]` 里定（grades / codes / reviewer），框架里不写项目词。
+- 模板只有一个：`reins/page_ui/qa.html`，每次打开时读取，改进它就改进所有页面（旧页面也一样）。
+  改它走 `reins dev start core ...`。
+- 护栏：在代码仓库之外写带评分按钮的网页（或生成它的脚本）会被拒绝，提示改用 `reins page build`。
+
 ## 改 ReinsLite 本身（2026-10-18）
 
 ReinsLite 也由它自己管理（仓库里的 `reins.toml`：core、guard、board、docs 四个模块）。和任何受管项目一样：
