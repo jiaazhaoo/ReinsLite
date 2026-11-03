@@ -436,6 +436,46 @@ def sync_all(con, every_h: float = 6) -> list[str]:
     return out
 
 
+def remote_login(con, every_h: float = 1) -> list[str]:
+    """Watchdog pass, hourly: can each pushed project still reach its remote? (2026-11-03: one rejected push made git's
+    credential store delete the token, and every repo silently stopped pushing.) Login lost -> one action notice;
+    reachable and local main ahead of the remote's -> push now instead of at the next 6-hourly sync."""
+    import os
+    import time
+    from . import notify, projects
+    from .store import home
+    mark = home() / "last_remote_login"
+    if mark.exists() and time.time() - mark.stat().st_mtime < every_h * 3600:
+        return []
+    mark.touch()
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "true"}       # never wait for a password
+    out = []
+    for repo, cfg in projects.all_():
+        remote = (cfg.get("dev") or {}).get("push")
+        if not remote or "project" not in cfg:
+            continue
+        try:
+            r = subprocess.run(["git", "-C", str(repo), "ls-remote", remote, "refs/heads/main"], capture_output=True,
+                               text=True, timeout=60, env=env)
+        except subprocess.SubprocessError as e:
+            r = subprocess.CompletedProcess([], 1, "", str(e))
+        key = f"remote-login:{cfg['project']}"
+        if r.returncode:
+            err = r.stderr.strip()[-200:]
+            notify.send(con, key, "action", f"{cfg['project']}: cannot log in to {remote}",
+                        f"git ls-remote failed: {err}\nmerges are kept locally and pushed once the login works again"
+                        " (credentials: see docs/WORKFLOW.md, GitHub login)", cooldown_min=360)
+            out.append(f"login {cfg['project']}: FAILED {err[:80]}")
+            continue
+        theirs = (r.stdout.split() or [""])[0]
+        mine = git(repo, "rev-parse", "main")
+        if theirs and theirs != mine and subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", theirs, "main"],
+                                                         capture_output=True).returncode == 0:
+            p = sync(con, repo, cfg)
+            out.append(f"push {cfg['project']} (behind): {'ok' if p['ok'] else 'FAILED'}")
+    return out
+
+
 def adopt_release(con, repo: Path, tag: str, note: str = "") -> dict:
     """An existing git tag with its read-only worktree becomes a registered release (name = the tag)."""
     cfg = project_cfg(repo) if (repo / "reins.toml").is_file() else None

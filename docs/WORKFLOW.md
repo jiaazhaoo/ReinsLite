@@ -367,6 +367,15 @@ case 只详列生产和返工批次，开发实验只计数。项目可以在 re
   改它走 `reins dev start core ...`。
 - 护栏：在代码仓库之外写带评分按钮的网页（或生成它的脚本）会被拒绝，提示改用 `reins page build`。
 
+## GitHub 登录（2026-11-03）
+
+2026-11-03 推送一度全部失败：git 的 `credential.helper=store` 在一次推送被拒后会把 `~/.git-credentials` 里的
+token 删掉，之后所有仓库都推不上去。现在：
+- GitHub 的 token 放在 `/env/key/github_token`（600），git 用 `~/.local/bin/git-credential-keyfile` 去读；这个
+  helper 只读不删，推送失败不会再弄丢登录。换 token：覆盖这个文件即可，不用改 git 配置。
+- 看门狗每小时对每个配了 `[dev] push` 的项目跑一次 `git ls-remote`：登录不上，看板上一条提醒（6 小时内不重复）；
+  登录正常但本机 main 领先，当场补推（不再等 6 小时一次的同步）。
+
 ## 改 ReinsLite 本身（2026-10-18）
 
 ReinsLite 也由它自己管理（仓库里的 `reins.toml`：core、guard、board、docs 四个模块）。和任何受管项目一样：
