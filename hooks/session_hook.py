@@ -203,6 +203,8 @@ def main() -> int:
             import guard
             path = inp.get("file_path") or inp.get("notebook_path") or ""
             msg = guard.check_edit(path)
+            text = inp.get("content") or inp.get("new_string") or "".join(e.get("new_string", "") for e in inp.get("edits") or [])
+            msg = msg or guard.hand_made_review_page(path, text)          # QA pages only via reins page build
             if msg:
                 sessions.event(con, sid, "blocked", cwd=cwd, path=path, detail=msg)
                 print(f"reins guard: {msg}", file=sys.stderr)
