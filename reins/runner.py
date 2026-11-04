@@ -5,7 +5,8 @@
         the command moves through several stages itself and reports each boundary with
         `reins batch stage-start / mark / stage-end` (e.g. through a project hook); on exit 0 every stage must be done
     reins ctl pause|resume|stop BATCH
-    reins wait BATCH             block until the batch's process exits (reins run itself returns at once: detached)
+    reins wait BATCH             block until the batch's process exits or the batch is paused / failed / done
+                                 (reins run itself returns at once: detached)
 
 `run` records the stage start, then hands the command to a supervisor that lives in its own session (it survives the
 Claude session that launched it). The command runs in a fresh process group, so pause/stop act on the whole tree
@@ -108,6 +109,10 @@ def wait(con, batch: str, timeout_s: float | None = None, poll_s: float = 2) -> 
     batches.get(con, batch)
     t0 = time.time()
     while True:
+        st = batches.get(con, batch)["status"]
+        if st in ("paused", "failed", "done", "closed"):                 # a paused batch's processes are stopped, not gone:
+            b = batches.get(con, batch)                                  # waiting for them to exit waited for hours (2026-11-04)
+            return {"status": st, "reason": b["status_reason"], "timed_out": False}
         live = [p for p in live_processes(con, batch) if _alive(p["pgid"]) or _alive(p["supervisor_pid"])]
         waiting = [c for c in resources.live(con) if c["batch_id"] == batch and c["state"] == "waiting" and c["pid"] is None]
         if not live and not waiting:

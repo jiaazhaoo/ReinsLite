@@ -181,7 +181,7 @@ def once(con=None) -> list[str]:
     from . import sentinel, upkeep
     return ([f"released {n} resource claim(s) of ended processes"] if n else []) + upkeep.reconcile(con) + check_batches(con, cfg) + \
         check_machine(con, cfg) + poll_balances_due(con, cfg) + release_stale_reservations(con, cfg) + sentinel.watch_running(con) + \
-        _lifecycle(con) + upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _services(con) + check_gateway(con, cfg) + _sync(con) + \
+        _lifecycle(con) + upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _services(con) + check_gateway(con, cfg) + _stops(con) + _sync(con) + \
         (check_code_fresh(con, cfg) if os.environ.get("INVOCATION_ID") else []) + _invariants(con) + _legacy(con) + _loop(con) + _quality(con) + _foreign_touch(con)   # only the systemd watchdog restarts units
 
 
@@ -278,6 +278,17 @@ def _invariants(con) -> list[str]:
     out = [f"state check repaired: {x}" for x in r["repaired"][:20]]
     if r["issues"]:
         out.append(f"state check opened issue(s) {r['issues']}")
+    return out
+
+
+def _stops(con) -> list[str]:
+    from . import stops
+    out = []
+    for f in (stops.left_running, stops.auto_resume):
+        try:
+            out += f(con)
+        except Exception as e:                                                  # noqa: BLE001 -- never stop the watchdog
+            out.append(f"{f.__module__}.{f.__name__} skipped: {e}")
     return out
 
 
