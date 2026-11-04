@@ -25,7 +25,15 @@ config.toml (the machine):
     max_fraction = 0.75     # granted claims stay under total * max_fraction - reserved
     poll_s = 1.0            # how often a supervisor looks at its process tree
 
-Order is first come, first served: a claim is granted only when it fits and no older claim of a running batch is still
+Measured, not guessed (2026-11-04): the supervisor samples every claimed process tree (RSS, GPU memory per pid) every
+5 s and records its peak when it ends (resource_peak). A match claim asks for max(declared, 1.1 x the largest peak of
+the rule's last 10 runs), so a declaration that is too small corrects itself after one run.
+    split_env = "E2E_GPU_PROCS"          # the rule's gpu_gb is for the whole step; each process holds 1/N of it,
+                                          # N read from that variable in the process's environment (shards)
+A release cut before its project declared any [resources] uses the main checkout's (the needs are the machine's).
+
+Production and rework first: their claims do not wait behind waiting experiment claims, and an experiment claim
+waits while a production claim is waiting. Otherwise order is first come, first served: a claim is granted only when it fits and no older claim of a running batch is still
 waiting (no overtaking, so a big claim is never starved by a stream of small ones). A claim bigger than the whole
 budget is granted only when nothing else holds that dimension (it runs alone).
 
@@ -75,14 +83,27 @@ CREATE TABLE IF NOT EXISTS resource_claim (
   session    TEXT
 );
 CREATE INDEX IF NOT EXISTS resource_claim_live ON resource_claim (state, id);
+CREATE TABLE IF NOT EXISTS resource_peak (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  at         TEXT NOT NULL,
+  batch_id   TEXT NOT NULL,
+  rule       TEXT NOT NULL,
+  pid        INTEGER,
+  mem_gb     REAL NOT NULL,                          -- peak RSS of the claimed process and its children
+  gpu_gb     REAL NOT NULL,                          -- peak GPU memory of the same tree
+  share      INTEGER NOT NULL DEFAULT 1,             -- split_env value: the process held 1/share of the rule's GPU
+  seconds    REAL
+);
+CREATE INDEX IF NOT EXISTS resource_peak_rule ON resource_peak (rule, id);
 """
 
+PRIORITY_TYPES = ("production", "rework")
 KILL_CODES = {-signal.SIGKILL, -signal.SIGTERM, 128 + signal.SIGKILL, 128 + signal.SIGTERM}
 KILLED = "killed:"                       # batch.status_reason prefix of a pause caused by a kill
 
 
 def ensure(con) -> None:
-    if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='resource_claim'").fetchone():
+    if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='resource_peak'").fetchone():
         con.executescript(SCHEMA)
 
 
@@ -104,7 +125,7 @@ def rules(project_cfg: dict) -> list[dict]:
     for name, r in (project_cfg.get("resources") or {}).items():
         out.append({"name": name, "stage": r.get("stage"), "match": r.get("match"),
                     "mem_gb": float(r.get("mem_gb", 0)), "gpu_gb": float(r.get("gpu_gb", 0)),
-                    "tags": sorted(r.get("exclusive", []))})
+                    "tags": sorted(r.get("exclusive", [])), "split_env": r.get("split_env")})
     return out
 
 
@@ -120,7 +141,7 @@ def check_rules(project_cfg: dict) -> list[str]:
                 out.append(f"[resources.{name}] match does not compile: {e}")
         if not (r.get("mem_gb") or r.get("gpu_gb") or r.get("exclusive")):
             out.append(f"[resources.{name}] declares nothing (mem_gb, gpu_gb or exclusive)")
-        bad = set(r) - {"stage", "match", "mem_gb", "gpu_gb", "exclusive", "about"}
+        bad = set(r) - {"stage", "match", "mem_gb", "gpu_gb", "exclusive", "about", "split_env"}
         if bad:
             out.append(f"[resources.{name}] unknown keys: {', '.join(sorted(bad))}")
     return out
@@ -134,9 +155,13 @@ def project_rules(cwd: Path | None, project: str | None = None) -> list[dict]:
         f = d / "reins.toml"
         if f.is_file():
             try:
-                return rules(tomllib.loads(f.read_text(encoding="utf-8")))
+                rs = rules(tomllib.loads(f.read_text(encoding="utf-8")))
             except (OSError, tomllib.TOMLDecodeError):
-                return []
+                rs = []
+            if rs or not project:
+                return rs
+            break                    # a release cut before its project declared resources: the machine's needs are
+                                     # the main checkout's (2026-11-04), not "none"
     if project:
         from . import projects
         for _, cfg in projects.all_():
@@ -216,9 +241,53 @@ def cleanup(con) -> int:
     return len(gone)
 
 
+LEARN_N = 10              # peaks of the last N finished claims of a rule
+LEARN_MARGIN = 1.1
+
+
+def learned(con, rule: str) -> dict:
+    """What the rule's processes really used lately: {'mem': GB, 'gpu': GB for the whole rule (share x per process)}."""
+    ensure(con)
+    rows = con.execute("SELECT mem_gb, gpu_gb, share FROM resource_peak WHERE rule=? ORDER BY id DESC LIMIT ?", (rule, LEARN_N)).fetchall()
+    return {"mem": max((r["mem_gb"] for r in rows), default=0.0), "gpu": max((r["gpu_gb"] * r["share"] for r in rows), default=0.0),
+            "n": len(rows)}
+
+
+def _env_of(pid: int | None, name: str | None) -> str | None:
+    if not pid or not name:
+        return None
+    try:
+        for kv in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0"):
+            if kv.startswith(name.encode() + b"="):
+                return kv.split(b"=", 1)[1].decode(errors="replace")
+    except OSError:
+        pass
+    return None
+
+
+def share_of(rule: dict, pid: int | None) -> int:
+    try:
+        return max(1, int(_env_of(pid, rule.get("split_env")) or 1))
+    except ValueError:
+        return 1
+
+
+def sized(con, rule: dict, pid: int | None) -> tuple[float, float, int]:
+    """(mem_gb, gpu_gb, share) a claim asks for: the declared need or what was measured (x1.1), whichever is larger;
+    a split_env rule's GPU is shared by that many processes."""
+    lr = learned(con, rule["name"])
+    n = share_of(rule, pid)
+    mem = max(rule["mem_gb"], round(lr["mem"] * LEARN_MARGIN, 2))
+    gpu = max(rule["gpu_gb"], round(lr["gpu"] * LEARN_MARGIN, 2)) / n
+    return mem, round(gpu, 2), n
+
+
 def request(con, batch: str, stage: str | None, rule: dict, pid: int | None = None, owner_pid: int | None = None,
             cmd: str | None = None) -> int:
     ensure(con)
+    if rule.get("match"):
+        mem, gpu, _ = sized(con, rule, pid)
+        rule = {**rule, "mem_gb": mem, "gpu_gb": gpu}
     with tx(con):
         cur = con.execute("INSERT INTO resource_claim (batch_id, stage, rule, pid, owner_pid, cmd, mem_gb, gpu_gb, tags,"
                           " state, requested, session) VALUES (?,?,?,?,?,?,?,?,?, 'waiting', ?, ?)",
@@ -237,9 +306,16 @@ def try_grant(con, claim_id: int, cap: dict | None = None) -> tuple[bool, str]:
             raise ReinsError(f"resource claim #{claim_id} is released")
         if c["state"] == "granted":
             return True, ""
+        mine = con.execute("SELECT type FROM batch WHERE batch_id=?", (c["batch_id"],)).fetchone()
+        first = mine is not None and mine["type"] in PRIORITY_TYPES      # production / rework go before experiments
         older = con.execute("SELECT c.id, c.batch_id, c.rule FROM resource_claim c JOIN batch b USING (batch_id)"
-                            " WHERE c.state='waiting' AND c.id<? AND b.status='running' ORDER BY c.id LIMIT 1",
-                            (claim_id,)).fetchone()
+                            " WHERE c.state='waiting' AND c.id<? AND b.status='running'"
+                            + (" AND b.type IN (%s)" % ",".join("?" * len(PRIORITY_TYPES)) if first else "")
+                            + " ORDER BY c.id LIMIT 1", (claim_id, *(PRIORITY_TYPES if first else ()))).fetchone()
+        if not older and not first:                                   # an experiment also lets a waiting production
+            older = con.execute("SELECT c.id, c.batch_id, c.rule FROM resource_claim c JOIN batch b USING (batch_id)"  # claim go first
+                                " WHERE c.state='waiting' AND c.id>? AND b.status='running' AND b.type IN (%s) ORDER BY c.id LIMIT 1"
+                                % ",".join("?" * len(PRIORITY_TYPES)), (claim_id, *PRIORITY_TYPES)).fetchone()
         if older:
             return False, f"behind claim #{older['id']} ({older['batch_id']} {older['rule']})"
         granted = con.execute("SELECT * FROM resource_claim WHERE state='granted'").fetchall()
@@ -374,6 +450,36 @@ def _subtree(pids: dict[int, tuple[int | None, str]], top: int) -> list[int]:
     return out
 
 
+PEAK_EVERY_S = 5.0
+
+
+def rss_gb(pid: int) -> float:
+    try:
+        for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) / 1024 / 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0.0
+
+
+def gpu_by_pid() -> dict[int, float]:
+    """GPU memory per process (GB), from nvidia-smi; {} without a GPU."""
+    try:
+        q = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    out: dict[int, float] = {}
+    for line in q.stdout.splitlines():
+        try:
+            pid, mb = (x.strip() for x in line.split(","))
+            out[int(pid)] = out.get(int(pid), 0.0) + float(mb) / 1024
+        except ValueError:
+            continue
+    return out
+
+
 def _signal(pids: list[int], sig) -> None:
     for p in pids:
         try:
@@ -418,6 +524,8 @@ class Monitor(threading.Thread):
         self.kill_lines: list[tuple[int, str]] = []
         self.lock = threading.Lock()
         self.follower = None
+        self.peaks: dict[int, list] = {}           # claimed pid -> [rule, mem GB, gpu GB, share, first seen]
+        self.last_sample = 0.0
 
     # the kill log is followed in its own thread; lines only queue here
     def _follow(self) -> None:
@@ -469,11 +577,36 @@ class Monitor(threading.Thread):
                 self.on_kill(pid, self.seen[pid], line)
         if self.match:
             self._admit(con, pids)
+            if time.time() - self.last_sample >= PEAK_EVERY_S:
+                self.last_sample = time.time()
+                self._sample(pids)
+
+    def _sample(self, pids: dict) -> None:
+        """Peak RAM / GPU of every claimed process tree, recorded when it ends (resource_peak): claims learn from it."""
+        gm = gpu_by_pid() if any(r.get("gpu_gb") or r.get("split_env") for r, _ in self.match) else {}
+        for p in list(self.claims):
+            if p not in pids or p in self.held:
+                continue
+            sub = _subtree(pids, p)
+            mem = sum(rss_gb(q) for q in sub)
+            gpu = sum(gm.get(q, 0.0) for q in sub)
+            pk = self.peaks.get(p)
+            if pk:
+                pk[1], pk[2] = max(pk[1], mem), max(pk[2], gpu)
+
+    def _record_peak(self, con, p: int) -> None:
+        pk = self.peaks.pop(p, None)
+        if not pk or (pk[1] <= 0 and pk[2] <= 0):
+            return
+        with tx(con):
+            con.execute("INSERT INTO resource_peak (at, batch_id, rule, pid, mem_gb, gpu_gb, share, seconds) VALUES (?,?,?,?,?,?,?,?)",
+                        (now(), self.batch, pk[0], p, round(pk[1], 2), round(pk[2], 2), pk[3], round(time.time() - pk[4], 1)))
 
     def _admit(self, con, pids: dict) -> None:
         for p in [p for p in self.claims if p not in pids]:              # gone: its claim ends
             release(con, self.claims.pop(p), "process ended")
             self.held.discard(p)
+            self._record_peak(con, p)
         for p, (ppid, cmd) in sorted(pids.items()):
             if p in self.claims or _is_reins(cmd):
                 continue
@@ -490,6 +623,7 @@ class Monitor(threading.Thread):
                     break
                 cid = request(con, self.batch, self.stage, r, pid=p, owner_pid=p, cmd=cmd)
                 self.claims[p] = cid
+                self.peaks[p] = [r["name"], 0.0, 0.0, share_of(r, p), time.time()]
                 ok, why = try_grant(con, cid)
                 if not ok:
                     _signal(_subtree(pids, p), signal.SIGSTOP)
