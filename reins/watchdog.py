@@ -178,8 +178,12 @@ def once(con=None) -> list[str]:
     cfg = config()
     from . import resources
     n = resources.cleanup(con)                                  # claims of processes that are gone
+    try:
+        rb = resources.rebalance(con)                           # claims follow real use, whoever holds them
+    except Exception as e:                                      # noqa: BLE001  never stop the watchdog
+        rb = [f"rebalance failed: {e}"]
     from . import sentinel, upkeep
-    return ([f"released {n} resource claim(s) of ended processes"] if n else []) + upkeep.reconcile(con) + check_batches(con, cfg) + \
+    return ([f"released {n} resource claim(s) of ended processes"] if n else []) + rb + upkeep.reconcile(con) + check_batches(con, cfg) + \
         check_machine(con, cfg) + poll_balances_due(con, cfg) + release_stale_reservations(con, cfg) + sentinel.watch_running(con) + \
         _lifecycle(con) + upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _services(con) + check_gateway(con, cfg) + _stops(con) + _sync(con) + \
         (check_code_fresh(con, cfg) if os.environ.get("INVOCATION_ID") else []) + _invariants(con) + _legacy(con) + _loop(con) + _quality(con) + _foreign_touch(con)   # only the systemd watchdog restarts units

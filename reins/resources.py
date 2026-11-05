@@ -58,6 +58,7 @@ Kill detection (also in the supervisor): config.toml
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import re
@@ -87,7 +88,11 @@ CREATE TABLE IF NOT EXISTS resource_claim (
   released   TEXT,
   note       TEXT,
   session    TEXT,
-  sig        TEXT                                    -- subcommand signature (see sig_of)
+  sig        TEXT,                                   -- subcommand signature (see sig_of)
+  need_mem   REAL,                                   -- the rule's declared need for this process (resize floor)
+  need_gpu   REAL,
+  peak_mem   REAL,                                   -- live peak of the claimed process tree so far (rebalance)
+  peak_gpu   REAL
 );
 CREATE INDEX IF NOT EXISTS resource_claim_live ON resource_claim (state, id);
 CREATE TABLE IF NOT EXISTS resource_peak (
@@ -113,9 +118,12 @@ KILLED = "killed:"                       # batch.status_reason prefix of a pause
 def ensure(con) -> None:
     if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='resource_peak'").fetchone():
         con.executescript(SCHEMA)
-    for t in ("resource_peak", "resource_claim"):                       # 2026-11-05: subcommand signature
-        if "sig" not in {r[1] for r in con.execute(f"PRAGMA table_info({t})")}:
-            con.execute(f"ALTER TABLE {t} ADD COLUMN sig TEXT")
+    for t, cols in (("resource_peak", ("sig TEXT",)),                   # 2026-11-05: adaptive claims
+                    ("resource_claim", ("sig TEXT", "need_mem REAL", "need_gpu REAL", "peak_mem REAL", "peak_gpu REAL"))):
+        have = {r[1] for r in con.execute(f"PRAGMA table_info({t})")}
+        for c in cols:
+            if c.split()[0] not in have:
+                con.execute(f"ALTER TABLE {t} ADD COLUMN {c}")
 
 
 def alive(pid: int | None) -> bool:
@@ -320,14 +328,16 @@ def request(con, batch: str, stage: str | None, rule: dict, pid: int | None = No
             cmd: str | None = None) -> int:
     ensure(con)
     sig = sig_of(rule, cmd) if rule.get("match") else ""
+    n = share_of(rule, pid) if rule.get("match") else 1
+    need = (rule.get("mem_gb") or 0.0, (rule.get("gpu_gb") or 0.0) / n)   # declared, for this process
     if rule.get("match"):
         mem, gpu, _ = sized(con, rule, pid, sig)
         rule = {**rule, "mem_gb": mem, "gpu_gb": gpu}
     with tx(con):
         cur = con.execute("INSERT INTO resource_claim (batch_id, stage, rule, pid, owner_pid, cmd, mem_gb, gpu_gb, tags,"
-                          " state, requested, session, sig) VALUES (?,?,?,?,?,?,?,?,?, 'waiting', ?, ?, ?)",
+                          " state, requested, session, sig, need_mem, need_gpu) VALUES (?,?,?,?,?,?,?,?,?, 'waiting', ?, ?, ?, ?, ?)",
                           (batch, stage, rule["name"], pid, owner_pid, (cmd or "")[:500], rule["mem_gb"], rule["gpu_gb"],
-                           json.dumps(rule["tags"]), now(), session(), sig or None))
+                           json.dumps(rule["tags"]), now(), session(), sig or None, *need))
         return cur.lastrowid
 
 
@@ -391,6 +401,81 @@ def resize(con, claim_id: int, peak_mem: float, peak_gpu: float, need_mem: float
                          + ", ".join(f"{d} {c[f'{d}_gb']:g} -> {v:g} GB" for d, v in new.items())
                          + f" (live peak mem {peak_mem:.2f} gpu {peak_gpu:.2f} GB after {age_s:.0f} s)")
     return new
+
+
+IDLE_WAIT_S = 600.0       # a claim waiting this long while the GPU's real use is under half the budget is recorded
+
+
+def sig_peak(con, rule: str, sig: str | None) -> tuple[float, float]:
+    """(mem, gpu) peak of this subcommand's own last runs (per process), 0 when it has none: a resize floor, so a
+    process known to peak late keeps that room even while it still uses little."""
+    if not sig:
+        return 0.0, 0.0
+    ensure(con)
+    rows = con.execute("SELECT mem_gb, gpu_gb FROM resource_peak WHERE rule=? AND sig=? ORDER BY id DESC LIMIT ?",
+                       (rule, sig, LEARN_N)).fetchall()
+    return (max((r["mem_gb"] for r in rows), default=0.0), max((r["gpu_gb"] for r in rows), default=0.0))
+
+
+def _need_of(con, c) -> tuple[float, float] | None:
+    """A claim's declared need: stored on it (since 2026-11-05) or the rule of its batch's project; None if unknown."""
+    if c["need_mem"] is not None or c["need_gpu"] is not None:
+        return (c["need_mem"] or 0.0, c["need_gpu"] or 0.0)
+    b = con.execute("SELECT project FROM batch WHERE batch_id=?", (c["batch_id"],)).fetchone()
+    r = next((r for r in project_rules(None, b["project"] if b else None) if r["name"] == c["rule"]), None)
+    if r is None:
+        return None
+    n = share_of(r, c["pid"]) if r.get("match") else 1
+    return (r.get("mem_gb") or 0.0, (r.get("gpu_gb") or 0.0) / n)
+
+
+def rebalance(con, cap: dict | None = None) -> list[str]:
+    """Every pass of the watchdog, for every granted claim of a live process, whichever supervisor (old or new code)
+    holds it: measure the process tree's RAM / GPU now, keep the peak on the claim, resize it (resize()). Then a claim
+    that has waited IDLE_WAIT_S while the GPU's real use is under half the budget is recorded on its batch (once)."""
+    ensure(con)
+    out = []
+    rows = con.execute("SELECT * FROM resource_claim WHERE state='granted' AND pid IS NOT NULL").fetchall()
+    if rows:
+        table, gm = _proc_table(), gpu_by_pid()
+        for c in rows:
+            if c["pid"] not in table:
+                continue
+            sub = list(tree(c["pid"], table))
+            mem, gpu = sum(rss_gb(q) for q in sub), sum(gm.get(q, 0.0) for q in sub)
+            pm, pg = max(c["peak_mem"] or 0.0, mem), max(c["peak_gpu"] or 0.0, gpu)
+            with tx(con):
+                con.execute("UPDATE resource_claim SET peak_mem=?, peak_gpu=? WHERE id=?", (round(pm, 2), round(pg, 2), c["id"]))
+            need = _need_of(con, c)
+            if need is None:
+                continue                                                # no declared floor known: never lowered
+            sp = sig_peak(con, c["rule"], c["sig"])
+            need = (max(need[0], sp[0] * LEARN_MARGIN), max(need[1], sp[1] * LEARN_MARGIN))
+            try:
+                age = (dt.datetime.now() - dt.datetime.fromisoformat(c["granted"])).total_seconds()
+            except (TypeError, ValueError):
+                age = 0.0
+            new = resize(con, c["id"], pm, pg, need[0], need[1], age)
+            if new:
+                out.append(f"claim #{c['id']} {c['rule']} resized: " + ", ".join(f"{d} {v:g} GB" for d, v in new.items()))
+    cap = cap or budget()
+    if cap.get("gpu"):
+        real = sum(gpu_by_pid().values())
+        waiting = con.execute("SELECT * FROM resource_claim WHERE state='waiting' AND gpu_gb>0 AND (note IS NULL OR note NOT LIKE '%idle-gpu%')").fetchall()
+        for w in waiting:
+            try:
+                waited = (dt.datetime.now() - dt.datetime.fromisoformat(w["requested"])).total_seconds()
+            except (TypeError, ValueError):
+                continue
+            if waited >= IDLE_WAIT_S and real < cap["gpu"] * 0.5:
+                held = con.execute("SELECT COALESCE(SUM(gpu_gb),0) FROM resource_claim WHERE state='granted'").fetchone()[0]
+                with tx(con):
+                    con.execute("UPDATE resource_claim SET note=COALESCE(note,'') || ' idle-gpu' WHERE id=?", (w["id"],))
+                    _batch_event(con, w["batch_id"], "resource_idle_wait",
+                                 f"#{w['id']} {w['rule']} waited {waited / 60:.0f} min for {w['gpu_gb']:g} GB while the GPU used "
+                                 f"{real:.1f} GB (claims held {held:g} of {cap['gpu']:.1f} GB)")
+                out.append(f"claim #{w['id']} {w['rule']} waits on an idle GPU ({real:.1f} GB used)")
+    return out
 
 
 def release(con, claim_id: int, note: str = "") -> None:
@@ -697,9 +782,10 @@ class Monitor(threading.Thread):
                     break
                 cid = request(con, self.batch, self.stage, r, pid=p, owner_pid=p, cmd=cmd)
                 self.claims[p] = cid
-                n = share_of(r, p)
-                self.peaks[p] = [r["name"], 0.0, 0.0, n, time.time(), sig_of(r, cmd), r.get("mem_gb") or 0.0,
-                                 (r.get("gpu_gb") or 0.0) / n]
+                n, sg = share_of(r, p), sig_of(r, cmd)
+                sp = sig_peak(con, r["name"], sg)                         # resize floor: declared or own history
+                self.peaks[p] = [r["name"], 0.0, 0.0, n, time.time(), sg, max(r.get("mem_gb") or 0.0, sp[0] * LEARN_MARGIN),
+                                 max((r.get("gpu_gb") or 0.0) / n, sp[1] * LEARN_MARGIN)]
                 ok, why = try_grant(con, cid)
                 if not ok:
                     _signal(_subtree(pids, p), signal.SIGSTOP)
