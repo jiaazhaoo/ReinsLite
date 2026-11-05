@@ -133,6 +133,23 @@ def _purpose_from_prompt(con, sid: str, prompt: str) -> None:
         log(f"purpose: {e!r}")
 
 
+def _turn_texts(path: str) -> list[str]:
+    """This turn's assistant text blocks (since the last real user message)."""
+    if not path:
+        return []
+    rows = [json.loads(l) for l in open(path, encoding="utf-8", errors="ignore") if l.strip()]
+    texts = []
+    for r in reversed(rows):
+        m = r.get("message") or {}
+        if r.get("type") == "user":
+            c = m.get("content")
+            if (isinstance(c, str) or any(isinstance(x, dict) and x.get("type") == "text" for x in c or [])) and not r.get("isMeta"):
+                break
+        elif r.get("type") == "assistant":
+            texts += [x["text"] for x in m.get("content") or [] if isinstance(x, dict) and x.get("type") == "text"]
+    return texts[::-1]
+
+
 def main() -> int:
     try:
         data = json.load(sys.stdin)
@@ -165,6 +182,15 @@ def main() -> int:
             with tx(con):
                 con.execute("UPDATE session SET last_seen=?, status='active' WHERE id=?", (now(), sid))
             if ev == "Stop" and not data.get("stop_hook_active"):
+                try:
+                    from reins import hints
+                    said = hints.for_reply(_turn_texts(data.get("transcript_path") or ""))
+                except Exception as e:                                          # noqa: BLE001
+                    said = []
+                    log(f"hints: {e!r}")
+                if said:                                 # a known wrong move reported to the user: fix the work first
+                    print(json.dumps({"decision": "block", "reason": "\n".join(said)}, ensure_ascii=False))
+                    return 0
                 ask = _ask_for_facts(con, sid)   # batches are not asked about (2026-11-02): the watchdog ends idle ones itself
                 if ask:                                  # changed a module or a service and left no fact: ask once
                     print(json.dumps({"decision": "block", "reason": ask}))
@@ -219,6 +245,11 @@ def main() -> int:
             except Exception as e:                                              # noqa: BLE001
                 log(f"capture: {e!r}")
             parts += _live(con, sid)
+            try:
+                from reins import hints
+                parts = hints.for_output(sid, hints._text(data.get("tool_response"))) + parts   # a known failure: the fix first
+            except Exception as e:                                              # noqa: BLE001
+                log(f"hints: {e!r}")
             if parts:
                 print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "\n\n".join(parts)}}))
             return 0

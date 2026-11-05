@@ -397,6 +397,14 @@ token 删掉，之后所有仓库都推不上去。现在：
 - 机器看门狗（~/.local/bin/resource_watchdog.py）先杀非生产进程；生产只在内存 88% / 显存 95% 以上才动，
   被杀的批次按 [resume] after_kill 自己接着跑。
 
+## 已知的错不再犯：hints（2026-11-05）
+
+2026-11-05 一个会话列 S3 时 `aws login` 过期，就改用了 8 月 21 日的旧索引；同样的事以前也发生过。现在本机的
+config.toml 里写 `[[hints]]`（name / output / reply / message）：
+- 命令输出匹配 `output`（如登录过期）：立刻把 `message` 告诉这个会话（每个会话每小时一次）。
+- 回复匹配 `reply`（如“登录过期，所以用了旧索引”）：这次回复被退回一次，带着 `message`，先把事做对再回复。
+规则里的词和路径只写在 config.toml，框架里没有。
+
 ## 改 ReinsLite 本身（2026-10-18）
 
 ReinsLite 也由它自己管理（仓库里的 `reins.toml`：core、guard、board、docs 四个模块）。和任何受管项目一样：
