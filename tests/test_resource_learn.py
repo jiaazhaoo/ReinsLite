@@ -74,6 +74,54 @@ class Learn(Base):
         lr = resources.learned(self.con, "geo")
         self.assertEqual((lr["mem"], lr["gpu"], lr["n"]), (3.2, 1.5, 1))
 
+    def test_subcommand_signature(self):
+        r = rule("yp", gpu=4, match=r"s2_extract/yolo_plans\.py")
+        self.assertEqual(resources.sig_of(r, "/env/venv/yolo/bin/python e2e/s2_extract/yolo_plans.py fallback --out-root X"), "fallback")
+        self.assertEqual(resources.sig_of(r, "python e2e/s2_extract/yolo_plans.py yolo --cases c.json"), "yolo")
+        self.assertEqual(resources.sig_of(r, "python e2e/s2_extract/yolo_plans.py --out-root X"), "")
+        self.assertEqual(resources.sig_of(r, "python other.py"), "")
+
+    def test_peaks_learned_per_subcommand(self):
+        """2026-11-05: a 9.3 GB Qwen fallback peak sized every YOLO pass of the same script at 10.2 GB."""
+        b = self.running()
+        with tx(self.con):
+            for sig, gpu in (("fallback", 9.3), ("yolo", 1.4), ("yolo", 1.8)):
+                self.con.execute("INSERT INTO resource_peak (at, batch_id, rule, pid, mem_gb, gpu_gb, share, sig) VALUES"
+                                 " ('2026-11-05T00:00:00', ?, 'yp', 1, 1.0, ?, 1, ?)", (b, gpu, sig))
+        r = {**rule("yp", gpu=4, match=r"yolo_plans\.py"), "split_env": None}
+        self.assertEqual(resources.sized(self.con, r, None, "yolo")[1], 4)            # declared 4 beats 1.8 x 1.1
+        self.assertEqual(resources.sized(self.con, r, None, "fallback")[1], round(9.3 * 1.1, 2))
+        self.assertEqual(resources.sized(self.con, r, None, "score")[1], round(9.3 * 1.1, 2))  # unseen: the rule's
+        c = resources.request(self.con, b, "work", r, cmd="python yolo_plans.py yolo --cases x")
+        row = self.con.execute("SELECT gpu_gb, sig FROM resource_claim WHERE id=?", (c,)).fetchone()
+        self.assertEqual((row["gpu_gb"], row["sig"]), (4, "yolo"))
+
+    def test_claim_follows_its_process(self):
+        b = self.running()
+        big = resources.request(self.con, b, "work", rule("yp", gpu=10.24, mem=2))
+        self.assertTrue(resources.try_grant(self.con, big, self.cap)[0])
+        self.assertEqual(resources.resize(self.con, big, 1.0, 1.2, 2, 4, age_s=30), {})          # not settled yet
+        self.assertEqual(resources.resize(self.con, big, 1.0, 1.2, 2, 4, age_s=200), {"gpu": 4})  # down to the declared need
+        row = self.con.execute("SELECT gpu_gb, mem_gb FROM resource_claim WHERE id=?", (big,)).fetchone()
+        self.assertEqual((row["gpu_gb"], row["mem_gb"]), (4, 2))
+        w = resources.request(self.con, b, "work", rule("geo", gpu=self.cap["gpu"] - 4))
+        self.assertTrue(resources.try_grant(self.con, w, self.cap)[0])                          # the room is real now
+        self.assertEqual(resources.resize(self.con, big, 1.0, 6.0, 2, 4, age_s=10), {"gpu": 6.6})  # grew: raised at once
+        self.assertEqual(resources.resize(self.con, big, 1.0, 6.0, 2, 4, age_s=500), {"gpu": 7.5} if 7.5 < 6.6 * 0.9 else {})
+        ev = self.con.execute("SELECT detail FROM batch_event WHERE batch_id=? AND event='resource_resized'", (b,)).fetchall()
+        self.assertEqual(len(ev), 2)
+        self.assertIn("gpu 10.24 -> 4 GB", ev[0]["detail"])
+
+    def test_peak_records_the_subcommand(self):
+        b = self.running()
+        m = resources.Monitor(b, "work", os.getpid(), [{**rule("yp", gpu=1, match="nothing-matches"), "split_env": None}],
+                              on_kill=lambda *a: None)
+        m.claims[999998] = resources.request(self.con, b, "work", rule("yp", gpu=1))
+        m.peaks[999998] = ["yp", 1.0, 9.3, 1, 0.0, "fallback", 0.0, 1.0]
+        m._admit(self.con, {})
+        self.assertEqual(resources.learned(self.con, "yp", "fallback")["gpu"], 9.3)
+        self.assertEqual(resources.learned(self.con, "yp", "yolo")["gpu"], 9.3)               # no yolo peak yet: the rule's
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -28,6 +28,12 @@ config.toml (the machine):
 Measured, not guessed (2026-11-04): the supervisor samples every claimed process tree (RSS, GPU memory per pid) every
 5 s and records its peak when it ends (resource_peak). A match claim asks for max(declared, 1.1 x the largest peak of
 the rule's last 10 runs), so a declaration that is too small corrects itself after one run.
+Adaptive (2026-11-05, user: 我不允许这样的事情发生，必须有很灵活聪明的调整机制): peaks are learned per subcommand -- the
+first plain word after the matched part of the command line (`yolo_plans.py yolo` and `yolo_plans.py fallback` are two
+signatures of one rule; a Qwen fallback peak no longer sizes every YOLO pass) -- falling back to the whole rule until the
+signature has a peak of its own. And a granted claim follows its process: once the process has run SETTLE_S, its claim is
+set to max(the rule's declared need, live peak x RESIZE_MARGIN) -- lowered when the process uses far less than it was
+given (waiting claims fit as soon as there is real room), raised when it uses more than its claim.
     split_env = "E2E_GPU_PROCS"          # the rule's gpu_gb is for the whole step; each process holds 1/N of it,
                                           # N read from that variable in the process's environment (shards)
 A release cut before its project declared any [resources] uses the main checkout's (the needs are the machine's).
@@ -80,7 +86,8 @@ CREATE TABLE IF NOT EXISTS resource_claim (
   granted    TEXT,
   released   TEXT,
   note       TEXT,
-  session    TEXT
+  session    TEXT,
+  sig        TEXT                                    -- subcommand signature (see sig_of)
 );
 CREATE INDEX IF NOT EXISTS resource_claim_live ON resource_claim (state, id);
 CREATE TABLE IF NOT EXISTS resource_peak (
@@ -92,7 +99,8 @@ CREATE TABLE IF NOT EXISTS resource_peak (
   mem_gb     REAL NOT NULL,                          -- peak RSS of the claimed process and its children
   gpu_gb     REAL NOT NULL,                          -- peak GPU memory of the same tree
   share      INTEGER NOT NULL DEFAULT 1,             -- split_env value: the process held 1/share of the rule's GPU
-  seconds    REAL
+  seconds    REAL,
+  sig        TEXT                                    -- subcommand signature of the process (see sig_of)
 );
 CREATE INDEX IF NOT EXISTS resource_peak_rule ON resource_peak (rule, id);
 """
@@ -105,6 +113,9 @@ KILLED = "killed:"                       # batch.status_reason prefix of a pause
 def ensure(con) -> None:
     if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='resource_peak'").fetchone():
         con.executescript(SCHEMA)
+    for t in ("resource_peak", "resource_claim"):                       # 2026-11-05: subcommand signature
+        if "sig" not in {r[1] for r in con.execute(f"PRAGMA table_info({t})")}:
+            con.execute(f"ALTER TABLE {t} ADD COLUMN sig TEXT")
 
 
 def alive(pid: int | None) -> bool:
@@ -243,12 +254,35 @@ def cleanup(con) -> int:
 
 LEARN_N = 10              # peaks of the last N finished claims of a rule
 LEARN_MARGIN = 1.1
+SETTLE_S = 120.0          # a running process's claim follows its live peak after this long
+RESIZE_MARGIN = 1.25      # live peak x this = the settled claim (never below the rule's declared need)
+_WORD = re.compile(r"[A-Za-z][\w.-]*$")
 
 
-def learned(con, rule: str) -> dict:
-    """What the rule's processes really used lately: {'mem': GB, 'gpu': GB for the whole rule (share x per process)}."""
+def sig_of(rule: dict, cmd: str | None) -> str:
+    """The subcommand signature: the first plain word (not an option, path or number) after the rule's match in the
+    command line -- 'fallback' in '... yolo_plans.py fallback --out-root X'; '' when there is none."""
+    m = re.search(rule.get("match") or "$^", cmd or "")
+    if not m:
+        return ""
+    for tok in (cmd or "")[m.end():].split():
+        if tok.startswith("-") or "/" in tok or "=" in tok:
+            return ""                                                   # options first: no subcommand
+        return tok if _WORD.match(tok) else ""
+    return ""
+
+
+def learned(con, rule: str, sig: str | None = None) -> dict:
+    """What the rule's processes really used lately: {'mem': GB, 'gpu': GB for the whole rule (share x per process)}.
+    With `sig`, the peaks of that subcommand when it has any (else the rule's)."""
     ensure(con)
-    rows = con.execute("SELECT mem_gb, gpu_gb, share FROM resource_peak WHERE rule=? ORDER BY id DESC LIMIT ?", (rule, LEARN_N)).fetchall()
+    rows = []
+    if sig:
+        rows = con.execute("SELECT mem_gb, gpu_gb, share FROM resource_peak WHERE rule=? AND sig=? ORDER BY id DESC LIMIT ?",
+                           (rule, sig, LEARN_N)).fetchall()
+    if not rows:
+        rows = con.execute("SELECT mem_gb, gpu_gb, share FROM resource_peak WHERE rule=? ORDER BY id DESC LIMIT ?",
+                           (rule, LEARN_N)).fetchall()
     return {"mem": max((r["mem_gb"] for r in rows), default=0.0), "gpu": max((r["gpu_gb"] * r["share"] for r in rows), default=0.0),
             "n": len(rows)}
 
@@ -272,10 +306,10 @@ def share_of(rule: dict, pid: int | None) -> int:
         return 1
 
 
-def sized(con, rule: dict, pid: int | None) -> tuple[float, float, int]:
+def sized(con, rule: dict, pid: int | None, sig: str | None = None) -> tuple[float, float, int]:
     """(mem_gb, gpu_gb, share) a claim asks for: the declared need or what was measured (x1.1), whichever is larger;
-    a split_env rule's GPU is shared by that many processes."""
-    lr = learned(con, rule["name"])
+    a split_env rule's GPU is shared by that many processes; measured = the subcommand's peaks when it has any."""
+    lr = learned(con, rule["name"], sig)
     n = share_of(rule, pid)
     mem = max(rule["mem_gb"], round(lr["mem"] * LEARN_MARGIN, 2))
     gpu = max(rule["gpu_gb"], round(lr["gpu"] * LEARN_MARGIN, 2)) / n
@@ -285,14 +319,15 @@ def sized(con, rule: dict, pid: int | None) -> tuple[float, float, int]:
 def request(con, batch: str, stage: str | None, rule: dict, pid: int | None = None, owner_pid: int | None = None,
             cmd: str | None = None) -> int:
     ensure(con)
+    sig = sig_of(rule, cmd) if rule.get("match") else ""
     if rule.get("match"):
-        mem, gpu, _ = sized(con, rule, pid)
+        mem, gpu, _ = sized(con, rule, pid, sig)
         rule = {**rule, "mem_gb": mem, "gpu_gb": gpu}
     with tx(con):
         cur = con.execute("INSERT INTO resource_claim (batch_id, stage, rule, pid, owner_pid, cmd, mem_gb, gpu_gb, tags,"
-                          " state, requested, session) VALUES (?,?,?,?,?,?,?,?,?, 'waiting', ?, ?)",
+                          " state, requested, session, sig) VALUES (?,?,?,?,?,?,?,?,?, 'waiting', ?, ?, ?)",
                           (batch, stage, rule["name"], pid, owner_pid, (cmd or "")[:500], rule["mem_gb"], rule["gpu_gb"],
-                           json.dumps(rule["tags"]), now(), session()))
+                           json.dumps(rule["tags"]), now(), session(), sig or None))
         return cur.lastrowid
 
 
@@ -327,6 +362,35 @@ def try_grant(con, claim_id: int, cap: dict | None = None) -> tuple[bool, str]:
                      f"#{claim_id} {c['rule']} mem {c['mem_gb']:g} GB gpu {c['gpu_gb']:g} GB {c['tags']}"
                      + (f" pid {c['pid']}" if c["pid"] else ""))
         return True, ""
+
+
+def resize(con, claim_id: int, peak_mem: float, peak_gpu: float, need_mem: float, need_gpu: float, age_s: float) -> dict:
+    """A granted claim follows its process (adaptive claims): `peak_*` = what the process tree used so far, `need_*` =
+    the rule's declared need for this process. Raised at once when the process uses more than its claim (x LEARN_MARGIN);
+    after SETTLE_S lowered to max(need, peak x RESIZE_MARGIN) when that is under 90% of the claim. -> the changed dims."""
+    c = con.execute("SELECT * FROM resource_claim WHERE id=?", (claim_id,)).fetchone()
+    if c is None or c["state"] != "granted":
+        return {}
+    new = {}
+    for dim, peak, need in (("mem", peak_mem, need_mem), ("gpu", peak_gpu, need_gpu)):
+        cur = c[f"{dim}_gb"] or 0.0
+        if not cur and not need:
+            continue                                                    # the rule does not claim this dimension
+        if peak > cur:
+            new[dim] = round(peak * LEARN_MARGIN, 2)
+        elif age_s >= SETTLE_S:
+            target = round(max(need, peak * RESIZE_MARGIN), 2)
+            if target < cur * 0.9:
+                new[dim] = target
+    if new:
+        with tx(con):
+            con.execute("UPDATE resource_claim SET " + ", ".join(f"{d}_gb=?" for d in new) + " WHERE id=? AND state='granted'",
+                        (*new.values(), claim_id))
+            _batch_event(con, c["batch_id"], "resource_resized",
+                         f"#{claim_id} {c['rule']}" + (f" {c['sig']}" if c["sig"] else "") + ": "
+                         + ", ".join(f"{d} {c[f'{d}_gb']:g} -> {v:g} GB" for d, v in new.items())
+                         + f" (live peak mem {peak_mem:.2f} gpu {peak_gpu:.2f} GB after {age_s:.0f} s)")
+    return new
 
 
 def release(con, claim_id: int, note: str = "") -> None:
@@ -524,8 +588,10 @@ class Monitor(threading.Thread):
         self.kill_lines: list[tuple[int, str]] = []
         self.lock = threading.Lock()
         self.follower = None
-        self.peaks: dict[int, list] = {}           # claimed pid -> [rule, mem GB, gpu GB, share, first seen]
+        self.peaks: dict[int, list] = {}           # claimed pid -> [rule, mem GB, gpu GB, share, first seen, sig,
+                                                   #                 declared mem GB, declared gpu GB (this process)]
         self.last_sample = 0.0
+        self.con = None                            # set by step(): _sample resizes claims through it
 
     # the kill log is followed in its own thread; lines only queue here
     def _follow(self) -> None:
@@ -576,6 +642,7 @@ class Monitor(threading.Thread):
             if pid in self.seen:
                 self.on_kill(pid, self.seen[pid], line)
         if self.match:
+            self.con = con
             self._admit(con, pids)
             if time.time() - self.last_sample >= PEAK_EVERY_S:
                 self.last_sample = time.time()
@@ -593,14 +660,21 @@ class Monitor(threading.Thread):
             pk = self.peaks.get(p)
             if pk:
                 pk[1], pk[2] = max(pk[1], mem), max(pk[2], gpu)
+                if self.con is not None and len(pk) >= 8:
+                    try:                                                   # the claim follows the process
+                        resize(self.con, self.claims[p], pk[1], pk[2], pk[6], pk[7], time.time() - pk[4])
+                    except Exception as e:                                 # noqa: BLE001  bookkeeping never stops a run
+                        print(f"reins monitor: resize: {e}", flush=True)
 
     def _record_peak(self, con, p: int) -> None:
         pk = self.peaks.pop(p, None)
         if not pk or (pk[1] <= 0 and pk[2] <= 0):
             return
         with tx(con):
-            con.execute("INSERT INTO resource_peak (at, batch_id, rule, pid, mem_gb, gpu_gb, share, seconds) VALUES (?,?,?,?,?,?,?,?)",
-                        (now(), self.batch, pk[0], p, round(pk[1], 2), round(pk[2], 2), pk[3], round(time.time() - pk[4], 1)))
+            con.execute("INSERT INTO resource_peak (at, batch_id, rule, pid, mem_gb, gpu_gb, share, seconds, sig)"
+                        " VALUES (?,?,?,?,?,?,?,?,?)",
+                        (now(), self.batch, pk[0], p, round(pk[1], 2), round(pk[2], 2), pk[3], round(time.time() - pk[4], 1),
+                         (pk[5] if len(pk) > 5 else "") or None))
 
     def _admit(self, con, pids: dict) -> None:
         for p in [p for p in self.claims if p not in pids]:              # gone: its claim ends
@@ -623,7 +697,9 @@ class Monitor(threading.Thread):
                     break
                 cid = request(con, self.batch, self.stage, r, pid=p, owner_pid=p, cmd=cmd)
                 self.claims[p] = cid
-                self.peaks[p] = [r["name"], 0.0, 0.0, share_of(r, p), time.time()]
+                n = share_of(r, p)
+                self.peaks[p] = [r["name"], 0.0, 0.0, n, time.time(), sig_of(r, cmd), r.get("mem_gb") or 0.0,
+                                 (r.get("gpu_gb") or 0.0) / n]
                 ok, why = try_grant(con, cid)
                 if not ok:
                     _signal(_subtree(pids, p), signal.SIGSTOP)
