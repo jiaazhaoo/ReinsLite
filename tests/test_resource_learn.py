@@ -122,6 +122,40 @@ class Learn(Base):
         self.assertEqual(resources.learned(self.con, "yp", "fallback")["gpu"], 9.3)
         self.assertEqual(resources.learned(self.con, "yp", "yolo")["gpu"], 9.3)               # no yolo peak yet: the rule's
 
+    def test_watchdog_rebalances_any_granted_claim(self):
+        """A claim granted by an older supervisor (no need / peak stored) is lowered by the watchdog pass to the rule's
+        declared need once its process has settled; its live peak is kept on the claim."""
+        b = self.running()
+        c = resources.request(self.con, b, "work", rule("yp", gpu=10.24, mem=2))
+        self.assertTrue(resources.try_grant(self.con, c, self.cap)[0])
+        with tx(self.con):
+            self.con.execute("UPDATE resource_claim SET pid=?, need_mem=NULL, need_gpu=NULL, granted='2026-11-05T00:00:00' WHERE id=?",
+                             (os.getpid(), c))
+        r = {**rule("yp", gpu=4, mem=2, match="x"), "split_env": None}
+        with mock.patch.object(resources, "gpu_by_pid", return_value={os.getpid(): 1.2}), \
+                mock.patch.object(resources, "project_rules", return_value=[r]):
+            out = resources.rebalance(self.con, self.cap)
+        row = self.con.execute("SELECT gpu_gb, peak_gpu FROM resource_claim WHERE id=?", (c,)).fetchone()
+        self.assertEqual(row["gpu_gb"], 4)
+        self.assertAlmostEqual(row["peak_gpu"], 1.2)
+        self.assertTrue(any("resized" in o for o in out))
+
+    def test_own_history_is_a_resize_floor(self):
+        b = self.running()
+        with tx(self.con):
+            self.con.execute("INSERT INTO resource_peak (at, batch_id, rule, pid, mem_gb, gpu_gb, share, sig) VALUES"
+                             " ('2026-11-05T00:00:00', ?, 'yp', 1, 1.0, 9.0, 1, 'fallback')", (b,))
+        self.assertEqual(resources.sig_peak(self.con, "yp", "fallback"), (1.0, 9.0))
+        self.assertEqual(resources.sig_peak(self.con, "yp", "yolo"), (0.0, 0.0))
+        c = resources.request(self.con, b, "work", {**rule("yp", gpu=4, match=r"yolo_plans\.py"), "split_env": None},
+                              pid=os.getpid(), cmd="python yolo_plans.py fallback --x")
+        self.assertTrue(resources.try_grant(self.con, c, self.cap)[0])
+        with tx(self.con):
+            self.con.execute("UPDATE resource_claim SET granted='2026-11-05T00:00:00' WHERE id=?", (c,))
+        with mock.patch.object(resources, "gpu_by_pid", return_value={os.getpid(): 0.5}):
+            resources.rebalance(self.con, self.cap)                   # loading: 0.5 GB now, but it peaked at 9 before
+        self.assertEqual(self.con.execute("SELECT gpu_gb FROM resource_claim WHERE id=?", (c,)).fetchone()[0], round(9.0 * 1.1, 2))
+
 
 if __name__ == "__main__":
     unittest.main()
