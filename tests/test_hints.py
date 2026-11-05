@@ -43,6 +43,10 @@ class Hints(unittest.TestCase):
         self.assertTrue(hints.for_reply([said]))
         self.assertEqual(hints.for_reply(["S3 列出了 43 个目录。"]), [])
 
+    def test_quoted_words_are_not_claims(self):
+        self.assertEqual(hints.for_reply(["会被退回，例如“因为 AWS 登录已过期，所以用的是旧的 S3 文件夹索引”这种回复。"]), [])
+        self.assertTrue(hints.for_reply(["因为 AWS 登录已过期，所以用的是旧的 S3 文件夹索引。"]))
+
     def test_bad_rule_is_skipped(self):
         (self.tmp / "config.toml").write_text('[[hints]]\nname = "x"\noutput = "("\nmessage = "m"\n')
         self.assertEqual(hints.rules(), [])

@@ -60,8 +60,16 @@ def for_output(sid: str, text: str) -> list[str]:
             if h["output"] and text and h["output"].search(text) and _once(sid, h["name"])]
 
 
+QUOTED = re.compile(r"```.*?```|`[^`\n]*`|“[^”]*”|「[^」]*」|『[^』]*』|\"[^\"\n]*\"", re.S)
+
+
+def own_words(text: str) -> str:
+    """The reply without what it quotes: a quoted sentence (the bad one being explained) is not the session's claim."""
+    return QUOTED.sub(" ", text)
+
+
 def for_reply(texts: list[str]) -> list[str]:
-    body = "\n".join(texts)
+    body = own_words("\n".join(texts))
     return [f"[reins hint: {h['name']}] {h['message']}" for h in rules() if h["reply"] and h["reply"].search(body)]
 
 
