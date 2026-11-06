@@ -23,6 +23,7 @@ auto_resume    a batch paused because a process was killed goes on by itself onc
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import shlex
 from contextlib import contextmanager
@@ -145,7 +146,11 @@ def auto_resume(con, mem_free_pct: float | None = None) -> list[str]:
                     batches._event(con, bid, "auto_resume", f"try {tries + 1}/{mx}: {free:.0f}% RAM free; restart: {p['cmd'][:300]}")
                 mv = None if p["stage"] == runner.SELF else (con.execute(
                     "SELECT module_version FROM batch_stage WHERE batch_id=? AND stage=?", (bid, p["stage"])).fetchone() or [None])[0]
-                r = runner.start(con, bid, p["stage"], shlex.split(p["cmd"]), Path(p["cwd"]), mv)
+                try:                                             # the knobs it was started with (START_STEP ...)
+                    extra = json.loads(Path(p["log_path"] + ".env.json").read_text())
+                except (OSError, ValueError):
+                    extra = {}
+                r = runner.start(con, bid, p["stage"], shlex.split(p["cmd"]), Path(p["cwd"]), mv, extra_env=extra)
         except Exception as e:                                           # noqa: BLE001
             notify.send(con, f"auto-resume-failed:{bid}:{kill['id']}", "action", f"{bid}: automatic restart failed", str(e)[:500],
                         cooldown_min=0)

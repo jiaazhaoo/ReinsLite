@@ -28,6 +28,7 @@ Environment given to the command:
 from __future__ import annotations
 
 import json
+import re
 import os
 import shlex
 import signal
@@ -52,8 +53,22 @@ def _log_path(b, stage: str) -> Path:
 SELF = "*"                         # stage name of a self-staged run
 
 
+_ENV_SKIP = re.compile(r"^(PATH|HOME|USER|LOGNAME|SHELL|PWD|OLDPWD|SHLVL|LANG|LANGUAGE|TERM|COLORTERM|DISPLAY|WAYLAND_DISPLAY|"
+                       r"XDG_.*|DBUS_.*|SSH_.*|GNOME_.*|GDM.*|DESKTOP_SESSION|SESSION_MANAGER|MEMORY_PRESSURE_.*|INVOCATION_ID|"
+                       r"JOURNAL_STREAM|MANAGERPID|SYSTEMD_.*|LS_COLORS|LESS.*|MAIL|_|CLAUDE.*|REINS_.*|VSCODE.*|TERM_.*|"
+                       r"QT_.*|GTK_.*|XAUTHORITY|WINDOWPATH|IM_CONFIG_.*|GPG_.*|CONDA_.*|PYTHONUNBUFFERED)$")
+_ENV_SECRET = re.compile(r"KEY|TOKEN|SECRET|PASS|CREDENTIAL|AUTH|COOKIE|PRIVATE|DSN", re.I)
+
+
+def knobs(env: dict) -> dict:
+    """The variables a run was started with that a restart must give it again (START_STEP=5 CASE_PREFIX=BRA_ ...):
+    upper-case names, not the desktop / shell / reins / session ones, never anything that looks like a secret."""
+    return {k: v for k, v in env.items() if re.fullmatch(r"[A-Z][A-Z0-9_]*", k) and not _ENV_SKIP.match(k)
+            and not _ENV_SECRET.search(k) and len(v) < 2000}
+
+
 def start(con, batch: str, stage: str, cmd: list[str], cwd: Path, module_version: str | None = None,
-          retries: int | None = None) -> dict:
+          retries: int | None = None, extra_env: dict | None = None) -> dict:
     if not cmd:
         raise ReinsError("no command: reins run BATCH STAGE -- CMD ...")
     b = batches.get(con, batch)
@@ -81,10 +96,15 @@ def start(con, batch: str, stage: str, cmd: list[str], cwd: Path, module_version
     spec = {"batch": batch, "stage": stage, "cmd": cmd, "cwd": str(cwd.resolve()), "module_version": mv,
             "retries": retries, "log": str(log), "session": session(), "home": str(home()),
             "rules": resources.project_rules(cwd.resolve(), b["project"])}
+    env = {**os.environ, **(extra_env or {})}
+    try:                                                    # what an automatic restart gives the command again
+        Path(str(log) + ".env.json").write_text(json.dumps(knobs(env), indent=1, sort_keys=True))
+    except OSError:
+        pass
     sup = subprocess.Popen([sys.executable, "-m", "reins.runner", "--supervise", json.dumps(spec)],
                            start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                            stderr=open(str(log) + ".supervisor", "ab"), cwd=str(cwd),
-                           env={**os.environ, "REINS_HOME": str(home())})
+                           env={**env, "REINS_HOME": str(home())})
     return {"supervisor_pid": sup.pid, "log": str(log), "warnings": warnings, **_started(con, sup)}
 
 

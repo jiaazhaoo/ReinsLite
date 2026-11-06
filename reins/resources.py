@@ -407,13 +407,14 @@ IDLE_WAIT_S = 600.0       # a claim waiting this long while the GPU's real use i
 
 
 def sig_peak(con, rule: str, sig: str | None) -> tuple[float, float]:
-    """(mem, gpu) peak of this subcommand's own last runs (per process), 0 when it has none: a resize floor, so a
-    process known to peak late keeps that room even while it still uses little."""
-    if not sig:
-        return 0.0, 0.0
+    """(mem, gpu) peak of this subcommand's own last runs (per process) -- or of the whole rule while the subcommand has
+    none: a resize floor, so a process that may peak late keeps that room even while it still uses little."""
     ensure(con)
     rows = con.execute("SELECT mem_gb, gpu_gb FROM resource_peak WHERE rule=? AND sig=? ORDER BY id DESC LIMIT ?",
-                       (rule, sig, LEARN_N)).fetchall()
+                       (rule, sig, LEARN_N)).fetchall() if sig else []
+    if not rows:            # no history of its own yet: the rule's peaks (2026-11-06 06:35: a Qwen fallback with no
+        rows = con.execute("SELECT mem_gb, gpu_gb FROM resource_peak WHERE rule=? ORDER BY id DESC LIMIT ?",  # tagged peak
+                           (rule, LEARN_N)).fetchall()   # was lowered to 4 GB before loading 8.5 GB; a 10 GB step OOMed)
     return (max((r["mem_gb"] for r in rows), default=0.0), max((r["gpu_gb"] for r in rows), default=0.0))
 
 
