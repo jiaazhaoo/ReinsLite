@@ -139,8 +139,8 @@ function nextOpen() {
 
 function exportCsv() {
   const q = (x) => `"${String(x ?? "").replace(/"/g, '""')}"`;
-  const rows = [["order", "case", "grade", "code", "note", "saved"]].concat(CARDS.map((c, i) => {
-    const s = STATE[c.case] || {}; return [i + 1, c.case, s.grade || "", s.code || "", s.note || "", s.status === "ok" ? "yes" : "no"]; }));
+  const rows = [["order", "title", "case", "grade", "code", "note", "saved"]].concat(CARDS.map((c, i) => {
+    const s = STATE[c.case] || {}; return [i + 1, c.title || "", c.case, s.grade || "", s.code || "", s.note || "", s.status === "ok" ? "yes" : "no"]; }));
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob(["﻿" + rows.map((r) => r.map(q).join(",")).join("\n")], {type: "text/csv"}));
   a.download = `${NAME}_marks.csv`; a.click();
