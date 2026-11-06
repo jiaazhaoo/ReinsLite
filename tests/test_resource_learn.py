@@ -146,7 +146,8 @@ class Learn(Base):
             self.con.execute("INSERT INTO resource_peak (at, batch_id, rule, pid, mem_gb, gpu_gb, share, sig) VALUES"
                              " ('2026-11-05T00:00:00', ?, 'yp', 1, 1.0, 9.0, 1, 'fallback')", (b,))
         self.assertEqual(resources.sig_peak(self.con, "yp", "fallback"), (1.0, 9.0))
-        self.assertEqual(resources.sig_peak(self.con, "yp", "yolo"), (0.0, 0.0))
+        self.assertEqual(resources.sig_peak(self.con, "yp", "yolo"), (1.0, 9.0))      # no own peak yet: the rule's
+        self.assertEqual(resources.sig_peak(self.con, "other", "yolo"), (0.0, 0.0))
         c = resources.request(self.con, b, "work", {**rule("yp", gpu=4, match=r"yolo_plans\.py"), "split_env": None},
                               pid=os.getpid(), cmd="python yolo_plans.py fallback --x")
         self.assertTrue(resources.try_grant(self.con, c, self.cap)[0])
@@ -155,6 +156,13 @@ class Learn(Base):
         with mock.patch.object(resources, "gpu_by_pid", return_value={os.getpid(): 0.5}):
             resources.rebalance(self.con, self.cap)                   # loading: 0.5 GB now, but it peaked at 9 before
         self.assertEqual(self.con.execute("SELECT gpu_gb FROM resource_claim WHERE id=?", (c,)).fetchone()[0], round(9.0 * 1.1, 2))
+
+    def test_restart_knobs_keep_run_settings_not_secrets(self):
+        from reins import runner
+        k = runner.knobs({"START_STEP": "5", "CASE_PREFIX": "BRA_", "END_STEP": "10", "PATH": "/usr/bin", "HOME": "/h",
+                          "DEEPSEEK_API_KEY": "sk-x", "OS_API_KEY": "y", "CLAUDE_CODE_SESSION_ID": "s", "REINS_BATCH": "b",
+                          "lower": "z", "GITHUB_TOKEN": "t"})
+        self.assertEqual(k, {"START_STEP": "5", "CASE_PREFIX": "BRA_", "END_STEP": "10"})
 
 
 if __name__ == "__main__":
