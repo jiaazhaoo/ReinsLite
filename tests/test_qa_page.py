@@ -75,6 +75,19 @@ class QaPage(unittest.TestCase):
         with self.assertRaises(ReinsError):
             qa_page.mark(self.con, self.b, "nopage", {"case": "101", "grade": "P", "reviewer": "Jia"})
 
+    def test_marks_carry_the_card_title(self):
+        """a card may name the case by the client's own fields (title); marks and the export carry it"""
+        cards = self.tmp / "titled.jsonl"
+        cards.write_text(json.dumps({"case": "101", "title": "mansfield · 1982/0520/P · 1982/0520/P"}) + "\n" + json.dumps({"case": "102"}) + "\n")
+        qa_page.build(self.con, self.b, cards, "t1")
+        qa_page.mark(self.con, self.b, "t1", {"case": "101", "grade": "P", "reviewer": "Jia"})
+        qa_page.mark(self.con, self.b, "t1", {"case": "102", "grade": "E", "reviewer": "Jia"})
+        m = qa_page.marks(self.con, self.b, "t1")
+        self.assertEqual(m["101"]["title"], "mansfield · 1982/0520/P · 1982/0520/P")
+        self.assertEqual(m["102"]["title"], "")
+        self.assertIn("1982/0520/P", qa_page.text(self.con, self.b, "t1", all_=True))
+        self.assertIn('"title"', (qa_page.UI / "qa.html").read_text())       # the CSV export has a title column
+
     def test_guard_refuses_hand_made_pages_outside_repos(self):
         page = "<label><input type='radio' name='g_1' value='P'>P</label> grade"
         self.assertTrue(guard.hand_made_review_page(str(self.tmp / "build.py"), page))

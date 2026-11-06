@@ -194,14 +194,27 @@ def mark(con, batch: str, name: str, ev: dict) -> dict:
     return {"ok": True, "at": now()}
 
 
+def titles(con, batch: str, name: str) -> dict[str, str]:
+    """case -> the card's title (the case's own identity when the project gives one), from the page's cards.json."""
+    p = page(con, batch, name)
+    try:
+        cards = json.loads((Path(p["dir"]) / "cards.json").read_text(encoding="utf-8"))["cards"] if p else []
+    except (OSError, ValueError, KeyError):
+        cards = []
+    return {str(c.get("case")): str(c.get("title") or "") for c in cards}
+
+
 def marks(con, batch: str, name: str) -> dict[str, dict]:
-    """Latest mark per case made on this page."""
+    """Latest mark per case made on this page, with the card's title (the identity a person sees and exports)."""
     out = {}
     for r in con.execute("SELECT * FROM review_event WHERE batch_id=? AND action='verdict' AND client='qa_page'"
                          " AND json_extract(payload, '$.page')=? ORDER BY id", (batch, name)):
         p = json.loads(r["payload"] or "{}")
-        out[r["case_id"]] = {"grade": p.get("grade"), "code": p.get("code"), "note": r["note"] if r["note"] != p.get("grade") else "",
+        out[r["case_id"]] = {"title": "", "grade": p.get("grade"), "code": p.get("code"), "note": r["note"] if r["note"] != p.get("grade") else "",
                              "verdict": r["verdict"], "reviewer": r["reviewer"], "at": r["at"]}
+    t = titles(con, batch, name)
+    for c, x in out.items():
+        x["title"] = t.get(c, "")
     return out
 
 
@@ -217,5 +230,5 @@ def text(con, batch: str, name: str, all_: bool = False) -> str:
     rows = [head]
     for c, x in sorted(m.items(), key=lambda kv: kv[1]["at"]):
         if all_ or x["verdict"] != "correct":
-            rows.append(f"  {x['grade']}  {c:<14} {x['code'] or '':<6} {x['note'] or ''}  ({x['reviewer']} {x['at'][:16]})")
+            rows.append(f"  {x['grade']}  {c:<14} {x['title'] + '  ' if x['title'] else ''}{x['code'] or '':<6} {x['note'] or ''}  ({x['reviewer']} {x['at'][:16]})")
     return "\n".join(rows)
