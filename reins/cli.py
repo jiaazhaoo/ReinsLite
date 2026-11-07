@@ -1281,6 +1281,7 @@ def _measure(con, args, cfg, cwd) -> int:
         print(json.dumps(d, ensure_ascii=False, indent=1, default=str) if args.json else _find.text(d))
         return 0
     elif args.cmd == "take":
+        from .store import session as this_session
         r = sessions.take(con, this_session(), args.batch, args.why)
         print(f"{r['batch']}: now this session's (was {str(r['from'])[:8]}; told)")
         return 0
