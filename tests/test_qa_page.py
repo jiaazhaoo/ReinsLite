@@ -53,6 +53,22 @@ class QaPage(unittest.TestCase):
         self.assertEqual(Image.open(Path(r["dir"]) / src).getpixel((5, 5)), (255, 255, 255))
         self.assertEqual(qa_page.page(self.con, self.b, "gate1")["n_cards"], 2)
 
+    def test_layers_kept_transparent_and_sized_to_the_base(self):
+        from PIL import Image
+        Image.new("RGB", (400, 300), (200, 200, 200)).save(self.tmp / "base.png")
+        Image.new("RGBA", (800, 600), (0, 0, 255, 0)).save(self.tmp / "machine.png")
+        (self.tmp / "layers.jsonl").write_text(json.dumps({"case": "103", "images": [{
+            "path": str(self.tmp / "base.png"), "caption": "map",
+            "layers": [{"path": str(self.tmp / "machine.png"), "label": "machine polygon", "on": False},
+                       {"path": "/nowhere.png", "label": "gone"}]}]}) + "\n")
+        r = qa_page.build(self.con, self.b, self.tmp / "layers.jsonl", "lay", "Layers", "Jia")
+        self.assertEqual(r["missing_images"], 1)                           # the missing overlay is counted, not fatal
+        d = json.loads((Path(r["dir"]) / "cards.json").read_text())
+        im = d["cards"][0]["images"][0]
+        self.assertEqual([(l["label"], l["on"]) for l in im["layers"]], [("machine polygon", False)])
+        with Image.open(Path(r["dir"]) / im["layers"][0]["src"]) as ly, Image.open(Path(r["dir"]) / im["src"]) as b:
+            self.assertEqual((ly.mode, ly.size), ("RGBA", b.size))
+
     def test_foreign_case_refused(self):
         bad = self.tmp / "bad.jsonl"
         bad.write_text('{"case": "999"}\n')
