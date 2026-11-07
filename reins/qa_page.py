@@ -10,6 +10,9 @@ A session never writes review HTML itself. It writes one JSON line per case and 
      "images": [{"path": "/abs/os_close.png", "caption": "OS map, red = delivered polygon"},
                 {"path": "/abs/os_wide.png", "caption": "wider OS map"}, {"path": "/abs/plan.png", "caption": "plan"}],
      "table": {"head": ["judge", "verdict", "reason"], "rows": [["model A", "correct", "..."]]},
+     (an image may carry "layers": [{"path": "/abs/overlay.png", "label": "machine polygon", "on": true}, ...] --
+      transparent PNGs of the base image's size, drawn over it in order; the page gives each layer a switch on the
+      card and one switch per label in the header for every card at once)
      "links": [{"href": "https://...", "text": "scans"}], "group": "stratum"}
 
 Only `case` is required; it must be a case of BATCH. Images are copied (shrunk to 1600 px JPEG) into
@@ -81,6 +84,26 @@ def settings(con, batch: str) -> dict:
     return {"grades": grades, "codes": codes, "reviewer": pg.get("reviewer", ""), "taxonomy": tax}
 
 
+def _shrink_layer(src: Path, dst: Path, size: tuple[int, int] | None, px: int = 1600) -> bool:
+    """A transparent overlay, kept a PNG with its alpha, scaled to the base image's copied size (so it lines up)."""
+    try:
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS = None
+        with Image.open(src) as im:
+            im = im.convert("RGBA")
+            if size:
+                im = im.resize(size)
+            else:
+                im.thumbnail((px, px))
+            im.save(dst, "PNG", optimize=True)
+        return True
+    except ImportError:
+        shutil.copyfile(src, dst)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def _shrink(src: Path, dst: Path, px: int = 1600) -> bool:
     try:
         from PIL import Image
@@ -139,7 +162,25 @@ def build(con, batch: str, cards_file: Path, name: str, title: str = "", reviewe
                 continue
             dst = img / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', c['case'])}_{k}.jpg"
             if Path(p).is_file() and _shrink(Path(p), dst):
-                ims.append({"src": f"img/{dst.name}", "caption": im.get("caption", "")})
+                entry = {"src": f"img/{dst.name}", "caption": im.get("caption", "")}
+                layers = []
+                try:
+                    from PIL import Image
+                    with Image.open(dst) as b_:
+                        size = b_.size
+                except (ImportError, OSError):
+                    size = None
+                for j, ly in enumerate(im.get("layers") or []):
+                    lp = str(ly.get("path") or "")
+                    ldst = img / f"{dst.stem}_L{j}.png"
+                    if lp and Path(lp).is_file() and _shrink_layer(Path(lp), ldst, size):
+                        layers.append({"src": f"img/{ldst.name}", "label": str(ly.get("label") or f"layer {j + 1}"),
+                                       "on": bool(ly.get("on", True))})
+                    else:
+                        missing += 1
+                if layers:
+                    entry["layers"] = layers
+                ims.append(entry)
             else:
                 missing += 1
                 ims.append({"src": "", "caption": (im.get("caption", "") + " (image missing)").strip()})
