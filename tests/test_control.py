@@ -264,7 +264,10 @@ class Runner(Base):
         pgid = runner.live_processes(self.con, b)[0]["pgid"]
         runner.ctl(self.con, "pause", b)
         self.assertEqual(batches.get(self.con, b)["status"], "paused")
-        self.assertIn("T", Path(f"/proc/{pgid}/status").read_text().split("State:")[1][:4])
+        state = lambda: Path(f"/proc/{pgid}/status").read_text().split("State:")[1][:4]        # noqa: E731
+        # SIGSTOP arrives asynchronously: right after the pause a group just started can still read R (2026-11-09:
+        # 1 run in 5 under load, and a gate run while the machine was busy)
+        self.assertTrue(self.wait(lambda: "T" in state(), secs=2), state())
         runner.ctl(self.con, "resume", b)
         self.assertEqual(batches.get(self.con, b)["status"], "running")
         runner.ctl(self.con, "stop", b)
