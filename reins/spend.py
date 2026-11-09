@@ -118,8 +118,14 @@ def _types_of(pool: str | None) -> list[str] | None:
     return [t for t in BATCH_TYPES if pool_of(t) == pool]
 
 
-def pool_usage(con, pool: str | None = None) -> dict:
-    """Spent + reserved: last hour, today, this week; today per owning session. For one pool, or the machine (None)."""
+WINDOWS = ("hour", "today", "week")
+
+
+def pool_usage(con, pool: str | None = None, open_caps: bool = True, windows=WINDOWS, sessions: bool = True) -> dict:
+    """Spent + reserved: last hour, today, this week; today per owning session. For one pool, or the machine (None).
+    A cap check runs under the write lock of every paid call, so it asks only for what its caps use: open_caps=False
+    leaves out what live batches may still spend (the board shows it), `windows` the time windows it has a cap for (the
+    week reads ~100k rows), sessions=False the per-session sums; a window not asked for is None."""
     import datetime as _dt
     now_ = _dt.datetime.now()
     hour = (now_ - _dt.timedelta(hours=1)).isoformat(timespec="seconds")
@@ -136,9 +142,11 @@ def pool_usage(con, pool: str | None = None) -> dict:
 
     by_session = {r[0]: r[1] for r in con.execute(
         f"SELECT b.owner_session, COALESCE(SUM(s.amount),0) FROM spend s JOIN batch b USING (batch_id) WHERE s.at>=?{extra}"
-        " GROUP BY b.owner_session", (today, *args))}
-    return {"hour": spent_since(hour), "today": spent_since(today), "week": spent_since(week), "today_by_session": by_session,
-            "open_caps": commitment(con, pool=pool)["held_total"]}   # what live batches may still spend (not their full caps)
+        " GROUP BY b.owner_session", (today, *args))} if sessions else {}
+    since = {"hour": hour, "today": today, "week": week}
+    return {**{w: spent_since(since[w]) if w in windows else None for w in WINDOWS}, "today_by_session": by_session,
+            # what live batches may still spend (not their full caps)
+            "open_caps": commitment(con, pool=pool)["held_total"] if open_caps else None}
 
 
 def pools_view(con) -> list[dict]:
@@ -202,7 +210,9 @@ def pool_check(con, batch: str, amount: float) -> None:
     """Would this spend break the machine's pool or the batch's own (production / development)? Raises CapReached."""
     b = batches.get(con, batch)
     for label, lim in limits_for(b["type"]):
-        u = pool_usage(con, None if label == "machine" else pool_of(b["type"]))
+        u = pool_usage(con, None if label == "machine" else pool_of(b["type"]), open_caps=False,
+                       windows=[w for k, w in (("hourly_cap", "hour"), ("daily_cap", "today"), ("weekly_cap", "week")) if k in lim],
+                       sessions="per_session_daily_cap" in lim)
         if "hourly_cap" in lim and u["hour"] + amount > lim["hourly_cap"]:
             raise CapReached(f"{label}: ${u['hour']:.2f} spent in the last hour + ${amount:.3f} > hourly cap ${lim['hourly_cap']:.2f}")
         if "daily_cap" in lim and u["today"] + amount > lim["daily_cap"]:

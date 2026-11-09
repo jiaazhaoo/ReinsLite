@@ -154,6 +154,46 @@ def check_machine(con, cfg) -> list[str]:
 
 _last_poll = 0.0
 
+# the share of quick write attempts that found reins.db's write lock taken, one sample per watchdog round (2026-11-09:
+# ~70% busy for an hour while ~4 paid calls a second each held it ~0.35 s; nobody knew until merges failed)
+LOCK_SAMPLES: list[float] = []
+LOCK_ROUNDS, LOCK_TRIES, LOCK_GAP_S = 5, 20, 0.05
+
+
+def lock_busy_share(path: Path | None = None, tries: int = LOCK_TRIES, gap: float = LOCK_GAP_S) -> float:
+    """Try BEGIN IMMEDIATE without waiting `tries` times; the share refused because another writer holds the lock."""
+    import sqlite3
+    c = sqlite3.connect(path or home() / "reins.db", timeout=0, isolation_level=None)
+    busy = 0
+    try:
+        for _ in range(tries):
+            try:
+                c.execute("BEGIN IMMEDIATE")
+                c.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                busy += 1
+            time.sleep(gap)
+    finally:
+        c.close()
+    return busy / tries
+
+
+def check_db_lock(con, cfg, sample=None) -> list[str]:
+    """Warn when the write lock was busy for more than db_lock_warn_pct of the last LOCK_ROUNDS rounds on average."""
+    LOCK_SAMPLES.append((sample or lock_busy_share)())
+    del LOCK_SAMPLES[:-LOCK_ROUNDS]
+    if len(LOCK_SAMPLES) < LOCK_ROUNDS:
+        return []
+    pct = 100 * sum(LOCK_SAMPLES) / len(LOCK_SAMPLES)
+    if pct < cfg.get("db_lock_warn_pct", 30):
+        return []
+    since = (dt.datetime.now() - dt.timedelta(minutes=10)).isoformat(timespec="seconds")      # reins stores local ISO times
+    paid = [r[0] for r in con.execute("SELECT DISTINCT batch_id FROM spend_reserve WHERE at >= ? ORDER BY batch_id", (since,))]
+    notify.send(con, "db_lock", "warn", f"reins.db write lock busy {pct:.0f}% of the time",
+                f"over the last {len(LOCK_SAMPLES)} watchdog rounds; other writers wait or time out (merges, marks). "
+                f"Paid calls in the last 10 min: {', '.join(paid) or 'none'}", cooldown_min=60, backoff=True)
+    return [f"db write lock busy {pct:.0f}%"]
+
 
 def poll_balances_due(con, cfg) -> list[str]:
     """Provider balances every balance_poll_min minutes (free endpoints); a drop without gateway spend is flagged."""
@@ -184,7 +224,7 @@ def once(con=None) -> list[str]:
         rb = [f"rebalance failed: {e}"]
     from . import sentinel, upkeep
     return ([f"released {n} resource claim(s) of ended processes"] if n else []) + rb + upkeep.reconcile(con) + check_batches(con, cfg) + \
-        check_machine(con, cfg) + poll_balances_due(con, cfg) + release_stale_reservations(con, cfg) + sentinel.watch_running(con) + \
+        check_machine(con, cfg) + check_db_lock(con, cfg) + poll_balances_due(con, cfg) + release_stale_reservations(con, cfg) + sentinel.watch_running(con) + \
         _lifecycle(con) + upkeep.backup(con) + upkeep.release_leases(con) + upkeep.disk_warning(con) + _services(con) + check_gateway(con, cfg) + _stops(con) + _sync(con) + \
         (check_code_fresh(con, cfg) if os.environ.get("INVOCATION_ID") else []) + _invariants(con) + _legacy(con) + _loop(con) + _quality(con) + _foreign_touch(con)   # only the systemd watchdog restarts units
 
