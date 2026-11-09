@@ -535,6 +535,10 @@ def connect(path: Path | None = None, ensure: bool = True) -> sqlite3.Connection
     con = sqlite3.connect(h / "reins.db", timeout=30, isolation_level=None)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
+    # WAL + NORMAL: a commit no longer waits for an fsync of the log (the checkpoint does); the database cannot be
+    # corrupted by a crash, at worst the last commits before a power cut are lost (2026-11-09: the write lock was busy
+    # ~70% of the time under ~50 parallel paid calls)
+    con.execute("PRAGMA synchronous=NORMAL")
     con.execute("PRAGMA foreign_keys=ON")
     con.execute("PRAGMA busy_timeout=30000")
     if not ensure:
@@ -542,6 +546,7 @@ def connect(path: Path | None = None, ensure: bool = True) -> sqlite3.Connection
     _rename_legacy(con)
     con.executescript(SCHEMA)
     _migrate(con)
+    _hot_indexes(con)
     from . import artifacts, inbox, issues, resources, sentinel
     issues.ensure(con)
     inbox.ensure(con)
@@ -604,6 +609,28 @@ def _rename_legacy(con: sqlite3.Connection) -> None:
             raise
     finally:
         con.execute("PRAGMA foreign_keys=ON")
+
+
+# The cap checks every paid call makes inside its write lock (spend.reserve: pools and providers by time, open holds by
+# batch) scanned spend and spend_reserve whole, ~0.25 s each time under BEGIN IMMEDIATE: with ~50 parallel paid calls the
+# lock was busy ~70% of the time and other writers timed out (2026-11-09). Covering indexes: the sums read the index only.
+# After the migrations (spend_reserve.provider is one); CREATE IF NOT EXISTS costs nothing once they exist.
+HOT_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS spend_at ON spend (at, batch_id, amount)",
+    "CREATE INDEX IF NOT EXISTS spend_provider_at ON spend (provider, at, amount)",
+    "CREATE INDEX IF NOT EXISTS spend_reserve_open ON spend_reserve (state, at, batch_id, amount)",
+    "CREATE INDEX IF NOT EXISTS spend_reserve_provider ON spend_reserve (state, provider, at, amount)",
+    "CREATE INDEX IF NOT EXISTS spend_reserve_batch ON spend_reserve (batch_id, state, stage, amount)",
+)
+
+
+def _hot_indexes(con: sqlite3.Connection) -> None:
+    """Only the missing ones: a CREATE asks for the write lock even when the index is there, and every reins command
+    connects (2026-11-09: under a busy lock the first build waited 120 s for it)."""
+    have = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    for sql in HOT_INDEXES:
+        if sql.split(" ON ")[0].split()[-1] not in have:
+            con.execute(sql)
 
 
 def _migrate(con: sqlite3.Connection) -> None:
