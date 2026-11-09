@@ -625,8 +625,12 @@ HOT_INDEXES = (
 
 
 def _hot_indexes(con: sqlite3.Connection) -> None:
+    """Only the missing ones: a CREATE asks for the write lock even when the index is there, and every reins command
+    connects (2026-11-09: under a busy lock the first build waited 120 s for it)."""
+    have = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='index'")}
     for sql in HOT_INDEXES:
-        con.execute(sql)
+        if sql.split(" ON ")[0].split()[-1] not in have:
+            con.execute(sql)
 
 
 def _migrate(con: sqlite3.Connection) -> None:
