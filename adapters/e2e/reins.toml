@@ -28,7 +28,7 @@ gate = "python3 $REINS_ADAPTER/no_reins.py && python3 /env/code/standards/vocab/
 release_prefix = "qa"                     # tags qa-YYYYMMDD-N, trees e2e-plan-extract-rel-qa-YYYYMMDD-N (as before reins)
 # after reins dev release (in the new release tree): the GitHub release page, its models, smoke-expected.json -- what
 # tools/update.sh on other machines needs to install it (user 2026-10-26: whoever clones the repo runs it on their own)
-post_release = "python3 tools/release_publish.py"
+post_release = "python3 tools/release_publish.py --tag $REINS_RELEASE"
 # tools/dev/dev.py is replaced by reins dev start / finish / release; only `dev.py list` still runs (read-only)
 blocked_tools = ["tools/dev/dev.py"]
 
@@ -322,7 +322,7 @@ files = ["e2e_plan_extract/intake/*", "tests/test_intake*.py", "docs/INTAKE.md",
 
 [modules.pipeline_ctl]
 about ="流水线和 reins 的接口：阶段边界、逐 case 账本、付费调用走网关、门禁结果"
-files = ["e2e_plan_extract/runctl.py", "tools/run_local_qa.sh", "tools/run_record.py",
+files = ["e2e_plan_extract/runctl.py", "tests/test_runctl.py", "tools/run_local_qa.sh", "tools/run_record.py",
          "tools/cloud/*", "docs/CLOUD.md", "tools/setup_env.sh", "tools/container.sh", "docker/*", "docs/CONTAINER.md", "e2e_plan_extract/results_store.py"]
 tools = ["run_record"]
 

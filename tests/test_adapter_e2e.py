@@ -100,3 +100,32 @@ def test_register_refusal_not_written_as_registered(tmp_path):
         register.REINS = old
 
 
+
+
+def test_register_marks(tmp_path):
+    import cloud_register as register
+    W = tmp_path / "w"; (W / "lab/georef/out").mkdir(parents=True)
+    (W / "cases.json").write_text(json.dumps(["MAN_1", "MAN_2", "MAN_3"]))
+    (W / "records.json").write_text(json.dumps({"MAN_1": {"oachargeid": "1", "orig_oachargeid": "1990/0001/P"},
+                                                "MAN_2": {"oachargeid": "2", "orig_oachargeid": "1990/0002/P"},
+                                                "MAN_3": {"oachargeid": "3"}}))
+    (W / "lab/georef/out/results_0of1.json").write_text(json.dumps([
+        {"case": "MAN_1", "accepted": True}, {"case": "MAN_1", "accepted": False}, {"case": "MAN_2", "accepted": False}]))
+    rows, st = register.marks(W)
+    assert rows == [("1990/0001/P", "done", "1 plan(s) placed on RunPod"), ("1990/0002/P", "done", "georef ran on RunPod, no plan placed"),
+                    ("3", "failed", "no georef row")]
+    assert st == {"plans": 3, "placed": 1, "cases": 3, "cases_placed": 1}
+
+
+def test_runctl_open_for_a_managed_project_runs_from_its_checkout(tmp_path, monkeypatch):
+    """tools/cloud/prepare.sh opens its chunk runs as project e2e-plan-extract: reins must see e2e's rules."""
+    fake = tmp_path / "reins"
+    fake.write_text(f'#!/bin/bash\necho "$PWD $@" >> {tmp_path}/calls\necho "opened mansfield-wp1-rework-20261119-4"\n')
+    fake.chmod(0o755)
+    r = subprocess.run([sys.executable, str(AD / "runctl.py"), "open", "--project", "e2e-plan-extract", "--scope",
+                        "mansfield-wp1", "--kind", "rework", "--cases", "c.txt"], capture_output=True, text=True,
+                       env={**os.environ, "REINS_BIN": str(fake)})
+    assert r.stdout.strip() == "mansfield-wp1-rework-20261119-4", r.stderr
+    call = (tmp_path / "calls").read_text().strip()
+    if E2E.is_dir():
+        assert call.startswith(f"{E2E} batch open --scope mansfield-wp1 --type rework")
