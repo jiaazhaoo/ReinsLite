@@ -37,7 +37,7 @@ class External(unittest.TestCase):
         (self.ad / "biz/reins.toml").write_text(
             f'project = "biz"\nrepo = "{self.repo}"\n[run]\nprograms = ["go.sh"]\n'
             '[run.env]\nBIZ_RUN = "{batch}"\nBIZ_HOOK = "python3 {adapter}/hook.py"\nBIZ_V = "{stage_versions}"\n')
-        (self.ad / "biz/review.toml").write_text('version = 1\n')
+        (self.ad / "biz/review.toml").write_text('version = 1\nerror_types = ["polygon"]\n')
         self.env = {k: os.environ.get(k) for k in ("REINS_ADAPTERS", "REINS_CODE_ROOT")}
         os.environ["REINS_ADAPTERS"] = str(self.ad)
         os.environ["REINS_CODE_ROOT"] = str(self.code)
@@ -71,6 +71,18 @@ class External(unittest.TestCase):
         self.assertEqual(projects.find_root(other), other)
         self.assertEqual(projects.load(other)["project"], "other")
         self.assertFalse(projects.managed(self.tmp))
+
+    def test_qa_page_settings_read_the_adapters_review_taxonomy(self):
+        """#76: settings() named projects without importing it, so every `reins page build` failed."""
+        from reins import qa_page
+        old = qa_page._project
+        qa_page._project = lambda con, batch: (self.repo, projects.load(self.repo))
+        try:
+            st = qa_page.settings(None, "b-1")
+        finally:
+            qa_page._project = old
+        self.assertEqual(st["taxonomy"]["error_types"], ["polygon"])
+        self.assertTrue(st["grades"])
 
     def test_guard_sees_the_repo_as_managed(self):
         sys.path.insert(0, str(HOOKS))

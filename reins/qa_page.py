@@ -76,6 +76,7 @@ def _project(con, batch: str) -> tuple[Path | None, dict]:
 
 def settings(con, batch: str) -> dict:
     """Grades, codes, reviewer and taxonomy for this batch's project."""
+    from . import projects
     root, cfg = _project(con, batch)
     tax = review.taxonomy(projects.side_file(root, "review.toml") if root else None)
     pg = cfg.get("page") or {}
