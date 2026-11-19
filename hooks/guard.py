@@ -182,18 +182,11 @@ GIT_C = re.compile(r"git\s+-C\s+(\S+)")
 def managed_repo(where: str) -> bool:
     """True when the directory belongs to a repo managed by reins (its main repo has reins.toml). Other repos,
     ReinsLite itself included, keep their own rules."""
+    from reins import projects as P
     p = Path(where)
     for d in (p, *p.parents):
-        g = d / ".git"
-        if g.is_dir():
-            return (d / "reins.toml").is_file()
-        if g.is_file():
-            try:
-                gd = g.read_text().split(":", 1)[1].strip()
-                main = Path(gd).parents[2] if "/worktrees/" in gd else d
-            except (OSError, IndexError):
-                main = d
-            return (main / "reins.toml").is_file()
+        if (d / ".git").exists():
+            return P.managed(P.main_checkout(d))
     return False
 
 
@@ -310,7 +303,8 @@ def managed_main_or_unheld(path: str) -> str | None:
                 main = Path(gd).parents[2] if "/worktrees/" in gd else d
             except (OSError, IndexError):
                 return None
-            if not (main / "reins.toml").is_file():
+            from reins import projects as P
+            if not P.managed(main):
                 return None
             if "-rel-" in d.name:
                 return None                                 # frozen() reports release trees

@@ -71,9 +71,10 @@ def builtin(con, b) -> list[tuple[str, bool, str]]:
 
 def project_checks(b, root: Path | None) -> list[tuple[str, bool, str]]:
     import tomllib
-    if not root or not (root / "reins.toml").is_file():
+    from . import projects
+    cfg = projects.load(root) if root else {}
+    if not cfg:
         return []
-    cfg = tomllib.loads((root / "reins.toml").read_text(encoding="utf-8"))
     out = []
     if cfg.get("models"):
         out += models_priced(cfg)
@@ -86,6 +87,7 @@ def project_checks(b, root: Path | None) -> list[tuple[str, bool, str]]:
         from .store import connect
         out += artifacts.check_tools(connect(), root, cfg)
     env = {**os.environ, "REINS_BATCH": b["batch_id"], "REINS_CASES": resolve(b["case_set_path"]), "REINS_WORK_DIR": _wd(b) or ""}
+    env["REINS_ADAPTER"] = str(projects.config_dir(root) or "")      # the folder of the project's settings and glue
     for c in cfg.get("preflight", []):
         r = subprocess.run(c["cmd"], shell=True, cwd=str(root), env=env, capture_output=True, text=True, timeout=600)
         out.append((c["name"], r.returncode == 0, (r.stdout + r.stderr).strip()[-300:]))

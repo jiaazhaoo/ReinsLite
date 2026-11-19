@@ -1,0 +1,898 @@
+# ReinsLite settings of e2e-plan-extract, kept outside its repo (2026-11-19, user: e2e 是业务代码，不允许出现任何 reinslite).
+# reins finds them by the repo path below, from the main checkout, a candidate worktree or a release tree. The glue
+# that drives e2e from outside sits next to this file: stage_hook.py (stage boundaries + case ledger), gate.py (gates),
+# runctl.py (intake runs, $E2E_RUN_CONTROL), container_claim.py, cloud_register.py; AGENTS.md says how to work.
+project = "e2e-plan-extract"
+repo = "/env/code/e2e-plan-extract"
+case_key = "oachargeid"                   # this project's name for the case key column (reins reads it beside case_id)
+case_id_pattern = "^[^\\s,]+$"            # the client's own oachargeid (Sheffield 75755, Mansfield 1986/0508/P, Powys
+                                          # 202100;3031425170): no spaces or commas; the case is council + oachargeid + further-information-reference
+
+[batch]
+scope = ["council", "wp"]                 # batch names: <council>-<wp>-<type>-<YYYYMMDD>-<n>, e.g. sheffield-wp3-production-20261007-1
+
+[glossary]
+file = "/env/code/standards/glossary.toml"   # the project's one word list (all repos, user 2026-11-16); `reins lint` reads it with the framework's
+
+[deliver]
+forbid_scripts = ["cjk"]                  # client files are English only (reins deliver check refuses CJK text)
+
+[dev]
+repo = "/env/code/e2e-plan-extract"
+push = "origin"                           # reins dev finish / release / the watchdog publish main + qa- tags to GitHub
+# reins dev finish runs this in the candidate's worktree; gate.py hands the gate --out $REINS_GATE_OUT. Since 2026-10-26 (decision #42) the
+# daily gate is bench-judge-hmlr-100 (4 councils, HMLR truth; benchmark/judge_hmlr/README.md); eval-359 (Sheffield) is an
+# auxiliary line inside it; the qa359 gate stays for its pipeline tier ([dev.upstream])
+# the project's word police first: a change that brings a forbidden word into a field name is refused (2026-11-16)
+gate = "python3 $REINS_ADAPTER/no_reins.py && python3 /env/code/standards/vocab/check.py diff && python3 $REINS_ADAPTER/gate.py python3 benchmark/judge_hmlr/gate.py"
+release_prefix = "qa"                     # tags qa-YYYYMMDD-N, trees e2e-plan-extract-rel-qa-YYYYMMDD-N (as before reins)
+# after reins dev release (in the new release tree): the GitHub release page, its models, smoke-expected.json -- what
+# tools/update.sh on other machines needs to install it (user 2026-10-26: whoever clones the repo runs it on their own)
+post_release = "python3 tools/release_publish.py"
+# tools/dev/dev.py is replaced by reins dev start / finish / release; only `dev.py list` still runs (read-only)
+blocked_tools = ["tools/dev/dev.py"]
+
+[dev.upstream]
+# a change to these files can change every output after it: it needs the pipeline tier on an idle GPU (~1.5 h),
+# or reins dev finish VERSION --skip-tier upstream --why '...' (recorded)
+files = ["e2e_plan_extract/s1_inputs/*", "e2e_plan_extract/s2_extract/*", "e2e_plan_extract/s3_georef/*",
+         "e2e_plan_extract/s3_trace/*", "e2e_plan_extract/resumable.py", "tools/run_local_qa.sh"]
+gate = "python3 $REINS_ADAPTER/gate.py python3 benchmark/qa359/gate.py --tier pipeline"
+
+[run]
+# where a batch may work (/data/README.md, user 2026-10-22): reins batch open --work-dir /data/<council>/runs/{batch}
+# ({batch} becomes the new batch id); anything else is refused
+work_dirs = ["/data/councils/*/runs/{batch}", "/data/benchmarks/*/experiments/{batch}", "/data/lab/datasets/*/runs/{batch}",
+             "/data/lab/projects/*/runs/{batch}"]
+# shown on the board for every batch of this project
+probe = "python3 /env/code/e2e-plan-extract/tools/qa_status.py {work_dir}"
+# a session never runs these itself, also not through a wrapper script: only `reins run` starts them
+programs = ["run_local_qa.sh", "run_rework.sh", "boundary_lab.py", "qa_judge.py", "case_classify.py", "noplan_reader.py",
+            "vlm_crops.py", "vet_crops.py", "qa_input_polygon.py", "e2e_plan_extract.georef.batch",
+            "e2e_plan_extract.georef.read_vlm", "e2e_plan_extract.georef.ocr_rotated",
+            "e2e_plan_extract.s3_georef.batch", "e2e_plan_extract.s3_georef.read_vlm", "e2e_plan_extract.s3_georef.ocr_rotated"]
+# tools/run_local_qa.sh reports these stages through $E2E_STAGE_HOOK (stage_hook.py here): open a batch with
+#   --stage prepare --stage plan_crop=V --stage georef=V --stage trace=V --stage check=V:paid
+# and start it with  reins run BATCH --self-staged -- tools/run_local_qa.sh EVAL_DIR
+stages = ["prepare", "plan_crop", "georef", "trace", "check"]
+
+# what a reins run gives e2e, in e2e's own words (it reads no reins variable): the run id, the stage hook, the module
+# version of each stage (results_store keys reused outputs by it), the work dir, the container's resource claim, and
+# run control for the intake runs a run may start
+[run.env]
+E2E_RUN_ID = "{batch}"
+E2E_WORK_DIR = "{work_dir}"
+E2E_STAGE_VERSIONS = "{stage_versions}"
+E2E_STAGE_HOOK = "python3 {adapter}/stage_hook.py"
+E2E_CONTAINER_HOOK = "python3 {adapter}/container_claim.py"
+E2E_RUN_CONTROL = "python3 {adapter}/runctl.py"
+
+
+[results]
+# the production page (reins board, /production): what each case ended as, read from the batch's own work dir.
+# a case's result is its newest batch's row; the rows of cases outside the batch are left out
+file = "lab/qa_final.csv"                 # step 15 output, relative to the batch work_dir
+key = "case"                              # SHF_100047 / CHA_168849 / MAN_710313
+key_pattern = "([0-9]+)$"                 # the case id inside it
+value = "lane"
+detail = "review_category"                # the breakdown of a value
+good = ["auto pass"]                      # finished without a person
+
+
+# what each case was delivered as (the board's batch comparison): the status column (the code's group) of the delivery
+# workbooks (s5_review/delivery_workbook.py, user 2026-10-23); a case's status is the one in the newest workbook
+[results.delivered]
+files = ["/data/councils/*/runs/*/delivery/*_spatial_autoQA_*.xlsx"]
+sheet = "Conclusion"
+keys = ["oachargeid"]                                 # the first column of these whose values are this batch's cases
+value = "status"
+name = "^(.*?)_spatial_autoQA_"                       # the batch name: the file name before this
+# statuses since delivery codes v2 (2026-11-03): the Summary categories; the older workbooks' groups stay readable
+good = ["High Confidence", "Correct"]
+order = ["High Confidence", "Likely Error", "Uncertain", "Query - Hard to find polygons",
+         "Query - Plan address & input address conflicts", "Query - No Scans",
+         "Query - No Polygons found based on the input address",
+         "Correct", "LikelyError", "Query", "NoPlan", "NoScan"]
+bad = ["Likely Error", "LikelyError"]
+
+# the four fields the batch comparison shows; every status falls in one
+[results.delivered.groups]
+Correct = ["Correct"]
+Error = ["LikelyError"]
+"No plan" = ["NoPlan", "NoScan"]
+Query = ["Uncertain", "Query"]
+
+# why a case could not be processed: a skip / fail reason -> one of these words (first match wins; else "other")
+[[results.reasons]]
+match = "no scans|no source files|never entered|gave no page"
+zh = "没有扫描件"
+en = "No scans"
+[[results.reasons]]
+match = "no plan_image|no drawing page"
+zh = "扫描件里没找到图纸"
+en = "No plan in the scans"
+[[results.reasons]]
+match = "no answer from|no lane"
+zh = "AI 核对没做完"
+en = "AI check not finished"
+[[results.reasons]]
+match = "no georef|no OCR|no ring|no trace|trace error|no address"
+zh = "地图上没定到位置"
+en = "Not placed on the map"
+[[results.reasons]]
+match = "stage A"
+zh = "挑图出错"
+en = "Plan picking failed"
+
+[labels]
+# words shown on the board pages, by language
+prepare = { zh = "准备输入", en = "Inputs" }
+plan_crop = { zh = "挑图裁图", en = "Find the plan" }
+georef = { zh = "地图配准", en = "Place on the map" }
+trace = { zh = "描边界", en = "Trace the boundary" }
+check = { zh = "AI 核对", en = "AI check" }
+# delivered statuses (the workbooks' own English words; Chinese for the board; *_short for table headers)
+"Correct (manually confirmed)" = { zh = "正确（人工确认）", en = "Correct (manually confirmed)", zh_short = "正确·人工", en_short = "Correct · manual" }
+"Correct (automated check)" = { zh = "正确（自动核对）", en = "Correct (automated check)", zh_short = "正确·自动", en_short = "Correct · auto" }
+"Incorrect (manually confirmed)" = { zh = "错误（人工确认）", en = "Incorrect (manually confirmed)", zh_short = "错误·人工", en_short = "Incorrect · manual" }
+"Incorrect (strong evidence, not individually reviewed)" = { zh = "错误（证据充分，未逐个复核）", en = "Incorrect (strong evidence, not individually reviewed)", zh_short = "错误·证据", en_short = "Incorrect · evidence" }
+"Suspected issue (awaiting manual review)" = { zh = "疑似有问题（待人工复核）", en = "Suspected issue (awaiting manual review)", zh_short = "疑似问题", en_short = "Suspected" }
+"Unresolved (reviewer query)" = { zh = "未定（审核员有疑问）", en = "Unresolved (reviewer query)", zh_short = "未定", en_short = "Unresolved" }
+"Cannot verify - consistent with the address parcel" = { zh = "无法核对·与地址地块一致", en = "Cannot verify - consistent with the address parcel", zh_short = "无法核对·地块一致", en_short = "No check · parcel agrees" }
+"Cannot verify - not confirmed by the address parcel" = { zh = "无法核对·地址地块未证实", en = "Cannot verify - not confirmed by the address parcel", zh_short = "无法核对·未证实", en_short = "No check · not confirmed" }
+Correct = { zh = "正确", en = "Correct" }
+Error = { zh = "错误", en = "Error" }
+"No plan" = { zh = "无图纸", en = "No plan" }
+Query = { zh = "待定", en = "Query" }
+# batch name parts ([batch] scope)
+council = { zh = "地区", en = "Site" }
+wp = { zh = "工作包", en = "Work package" }
+# modules (development spend by module)
+judge = { zh = "AI 核对模型", en = "AI judges" }
+lanes = { zh = "分流规则", en = "Routing rules" }
+review = { zh = "人工审核平台", en = "Review platform" }
+delivery = { zh = "交付表", en = "Delivery workbook" }
+pipeline_ctl = { zh = "流水线控制", en = "Pipeline control" }
+"auto pass" = { zh = "自动通过", en = "Auto-passed" }
+human = { zh = "需人工复核", en = "Needs a person" }
+"1 无法核对" = { zh = "无法核对", en = "Cannot be checked" }
+"2 疑似错误" = { zh = "疑似错误", en = "Likely wrong" }
+"3 意见分歧" = { zh = "AI 意见不一", en = "AI judges disagree" }
+"4 无图纸·高置信" = { zh = "无图纸·高置信", en = "No plan, high confidence" }
+
+[[preflight]]
+name = "eval_dir_inputs"
+cmd = "test -s $REINS_WORK_DIR/records.json && test -s $REINS_WORK_DIR/cases.json && test -s $REINS_WORK_DIR/config.json && test -s $REINS_WORK_DIR/truth.gpkg && echo inputs present"
+
+[[preflight]]
+name = "case_set_is_records"
+cmd = "python3 $REINS_ADAPTER/stage_hook.py check-cases $REINS_WORK_DIR $REINS_CASES"
+
+[[preflight]]
+name = "file_links"
+# user 2026-10-23: the default input carries file_link (the charge's cloud scans) and the Evidence sheet shows it;
+# fill it with: python3 tools/file_links.py add WORK_DIR
+cmd = "python3 tools/file_links.py check $REINS_WORK_DIR"
+
+[[preflight]]
+name = "references"
+# warn only (user 2026-11-09: A 先只报警): records whose further-information-reference is not the ledger's current one
+cmd = "python3 tools/file_links.py refs $REINS_WORK_DIR"
+
+[[preflight]]
+name = "source_files"
+# samples the files stage A will read (raw/<case>/): a PDF / JPEG named .tif, a multi-frame TIFF (stage A reads frame 0
+# only) or another workflow's derivative next to its original fails the batch before any OCR is spent
+# (charnwood-wp3-production-20261010-1: 1120 of 1515 cases crashed in stage A, 5 h of OCR wasted)
+cmd = "python3 -m e2e_plan_extract.s1_inputs.sources check $REINS_WORK_DIR --sample 300"
+
+
+# ReinsLite reins/stops.py (user 2026-11-04: 要开启中断后自动续跑): a batch paused because a process was killed (memory
+# watchdog) restarts its last command by itself, as its owner, once RAM is back. run_local_qa.sh skips every step's
+# finished output and paid answers are cached, so a restart redoes only what was lost (step 9 per plan since
+# georef-plan_resume-20261104-3; releases before it redo step 9 from the start).
+[resume]
+after_kill = true
+max = 3              # restarts per batch in 24 h; then it stays paused and asks a person
+wait_min = 10        # minutes after the kill
+mem_free_pct = 40    # RAM available before a restart
+
+# ReinsLite C10 (user 2026-11-04: 两周被看门狗杀 11 次, 我不想再花时间管理这些): what each heavy process needs. reins holds
+# (SIGSTOP) a matching process until its claim fits the machine budget, production before experiments. Numbers are
+# starting points: reins measures every run and asks max(declared, 1.1 x measured peak) from then on.
+[resources.ocr_rotated]
+match = "s3_georef\\.ocr_rotated"
+gpu_gb = 8                 # measured 2026-10 (two at once were killed)
+mem_gb = 4
+[resources.read_vlm]
+match = "s3_georef\\.read_vlm"
+gpu_gb = 10.5              # 10.2 GB at the 2026-11-03 kill
+mem_gb = 3
+[resources.georef]
+match = "s3_georef\\.batch"
+gpu_gb = 12                # the whole step 9: 0.70 x 16.3 GB + CUDA contexts; each shard holds 1/E2E_GPU_PROCS
+split_env = "E2E_GPU_PROCS"
+mem_gb = 10                # per shard: 9.6 GB RSS at the 2026-11-04 04:53 kill
+[resources.yolo_plans]
+match = "s2_extract/yolo_plans\\.py"
+gpu_gb = 4
+mem_gb = 4
+[resources.stage_a]
+match = "stage_a_batch\\.py"
+gpu_gb = 4
+mem_gb = 4
+[resources.qwen_crops]
+match = "s2_extract/vlm_crops\\.py"
+gpu_gb = 12
+mem_gb = 6
+[resources.plot_seg]
+match = "s3_trace/seg_trace\\.py"
+gpu_gb = 4
+mem_gb = 4
+[resources.judge]
+match = "s4_verify/qa_judge\\.py"
+mem_gb = 11                # ~10-11 GB each with MALLOC_ARENA_MAX=2, up to 16 GB on big portal plans
+
+[modules.prepare]
+about = "预处理（第 0 步，页面分类之前的一切）：按文件头识别类型、展开多帧 TIFF、去掉旧流程派生件、去重、胶片夹分帧、负片反转、拼板拆页、逐 case 清单"
+files = ["e2e_plan_extract/s1_inputs/sources.py", "legacy_produce/stage_a/batch_ocr.py",
+         "e2e_plan_extract/s1_inputs/frames.py", "e2e_plan_extract/s1_inputs/vendor/scan_file_disassemble.py"]
+tools = ["source_normalise", "frame_split"]
+
+[modules.plan_crop]
+about = "从扫描页挑出图纸页，裁出 site / location plan（第 1-5 步）"
+files = ["e2e_plan_extract/s1_inputs/*", "e2e_plan_extract/s2_extract/*"]
+prompts = ["crops", "verify", "pick", "plan_type", "slot"]
+models = ["local_vlm"]
+weights = ["txtdraw", "plan_notplan", "text_image", "multi_single", "panel_yolo", "plan_type_yolo", "plan_box_yolo", "qwen_vl", "doclayout_v3", "ppocr_det", "ppocr_rec", "plan_quality", "plot_seg", "plan_type"]
+tools = ["stage_a_launcher", "page_gate", "panel_crop", "model_io", "vlm_cache", "vlm_crops", "crop_vetter"]
+
+[modules.plan_crop.gate]
+# 挑图模块自己的门禁（2026-10-19，ReinsLite 分模块门禁）：在 bench-plan-crops（99 个回归 case：两个位置、用户规则、裁图真值）
+# 和 bench-plan-boxes（用户标的 294 页 + 9 个 council 398 页）上打分；本地模型、有缓存、不花钱，约 30 分钟，要 GPU 空闲。
+# 硬指标：两个位置选对数、至少一张对的 case 数、真值页上完整框住数 / 切坏数、用户规则不新增失败。
+cmd = "python3 $REINS_ADAPTER/gate.py MALLOC_ARENA_MAX=2 /env/venv/yolo/bin/python benchmark/s2_crops/module_gate.py"
+benchmark = "bench-plan-crops"
+
+[modules.georef]
+about = "把图纸放到地图上：读路名、比例、门牌号，配准到 EPSG:27700（第 6-10 步）"
+files = ["e2e_plan_extract/s3_georef/*"]
+prompts = ["roads_scale"]
+models = ["local_vlm"]
+weights = ["minima_loftr", "qwen_vl", "ppocr_det", "ppocr_rec"]
+tools = ["rotated_ocr", "scale_text", "read_vlm", "georef_batch", "plan_pose", "names_locate", "road_fit", "house_numbers",
+         "minima_sliding", "geoplanagent_lib", "address_parser", "reliable_point", "os_http"]
+
+[modules.trace]
+about = "沿申请人画的红线描出多边形（第 11 步）"
+files = ["e2e_plan_extract/s3_trace/*"]
+prompts = ["locate", "house_number"]
+models = ["local_vlm"]
+weights = ["qwen_vl"]
+tools = ["boundary_lab", "heavy_line", "fork_map"]
+
+[modules.judge]
+about = "两个模型对照图纸，判断交付的多边形对不对（第 14 步）"
+files = ["e2e_plan_extract/s4_verify/qa_judge.py"]
+prompts = ["judge", "boundary_check", "tree_judge", "tree_boundary_check", "local_screen"]
+models = ["judge_primary", "judge_second", "judge_tiebreak"]
+tools = ["judge_evidence"]
+
+[modules.lanes]
+about = "按各项判定把 case 分到自动放行 / 人工审核 / 退回（第 12、13、15 步）"
+files = ["e2e_plan_extract/s4_verify/qa_input_polygon.py", "e2e_plan_extract/s4_verify/qa_final.py",
+         "e2e_plan_extract/s4_verify/case_classify.py", "e2e_plan_extract/s4_verify/redline_agree.py",
+         "e2e_plan_extract/s5_review/noplan_reader.py", "e2e_plan_extract/s5_review/noplan_model.json",
+         "e2e_plan_extract/s5_review/team_workbook.py", "e2e_plan_extract/s5_review/pool_rates.json",
+         "e2e_plan_extract/s5_review/polygon_rules/*"]
+prompts = ["case_class", "noplan_read"]
+models = ["case_class", "noplan_read"]
+tools = ["case_classify", "rule_classifiers", "qa_input_polygon", "redline_agree", "qa_final", "noplan_reader", "team_workbook"]
+
+[modules.redraw]
+about = "DrawPolygon 机器出图：图纸上的红线圈经配准放到地图上、贴合 OS MasterMap 地块，得到每个 case 的机器多边形和置信档 A-D，与交付多边形并排（第 13 步，只作证据和修改建议，不改任何判定）"
+files = ["e2e_plan_extract/s4_verify/redraw.py"]
+tools = ["redraw"]
+
+[modules.review]
+about = "人工审核平台：地图 + 证据 + 判定托盘 + 画多边形（EPSG:27700），每个审核员的每次操作写 review.db（第 5 步，不影响流水线输出）"
+files = ["e2e_plan_extract/s5_review/server.py", "e2e_plan_extract/s5_review/index.html",
+         "e2e_plan_extract/s5_review/db.py", "e2e_plan_extract/s5_review/queues.py"]
+
+[modules.fme_check]
+about = "FmeCheck（第 15f 步，用户 2026-11-17：FME 检测做成单独的模块）：客户 FME 规则（Landmark Spatial Dashboard v3-8 的 SA / RM 规则）查每个 case 可能交付的每个多边形（交付的、DrawPolygon 的、GeoTextCheck 的），必须修的先自动修，修不了的交给人；交付命令的 FME 关卡用同一份规则"
+files = ["e2e_plan_extract/fme/*", "docs/FME_GATE.md", "tests/test_fme.py", "tests/test_fme_stage.py", "benchmark/fme/*"]
+tools = ["fme_rules"]
+
+[modules.fme_check.gate]
+# 规则改了要先过校准（不花钱，约 2 分钟）：bench-fme-landmark（Landmark 自己的 FME 工作簿，174 个、17 个 council）上
+# 逐条规则比对，召回率不能比基准低 0.005 以上，必须修的规则精确率也一样（RM-07/08/09 依赖今天的客户输入，只显示不拦）；
+# 单元测试先过。结果写 $REINS_GATE_OUT
+cmd = "python3 -m pytest -q tests/test_fme.py tests/test_fme_stage.py && python3 $REINS_ADAPTER/gate.py python3 benchmark/fme/gate.py"
+benchmark = "bench-fme-landmark"
+
+[modules.pool1]
+about = "pool1（用户 2026-11-19：做成独立模块）：空间包交付前的第一轮分池 correct / unsure / error / query。只读别的阶段的输出文件（plans.json、trace_AutoRef.tsv、redraw.csv、noplan_read.json、fme_check.csv 等），按包配置 pool1/councils/<包>.toml 里的有序规则出 lab/result.csv、detail.csv、layers.gpkg 和 xlsx；含输入准备（客户 JSON + 公司库快照 + mapping）和图纸红线圈形状证据；docs/POOL1.md"
+files = ["e2e_plan_extract/pool1/*", "tests/test_pool1_*.py", "docs/POOL1.md"]
+
+[modules.intake]
+about = "intake（用户 2026-11-19：e2e 的专门子模块，从本地仓库 /env/code/intake 搬入）：客户给的输入在批次开始前备齐——S3 新清单监视（30 分钟）、每日客户文件登记、case 表和报告、intake 批次（取文件、清单画像、采集规则、映射、账本）；python3 -m e2e_plan_extract.intake；docs/INTAKE.md"
+files = ["e2e_plan_extract/intake/*", "tests/test_intake*.py", "docs/INTAKE.md", "tools/install_intake_timers.sh",
+         "tools/systemd/intake-*"]
+
+[modules.pipeline_ctl]
+about ="流水线和 reins 的接口：阶段边界、逐 case 账本、付费调用走网关、门禁结果"
+files = ["e2e_plan_extract/runctl.py", "tools/run_local_qa.sh", "tools/run_record.py",
+         "tools/cloud/*", "docs/CLOUD.md", "tools/setup_env.sh", "tools/container.sh", "docker/*", "docs/CONTAINER.md", "e2e_plan_extract/results_store.py"]
+tools = ["run_record"]
+
+# ---- versioned artifacts (ReinsLite C17): prompts live in the code as constants; reins reads them by symbol, hashes
+# the text and gives each distinct text a version (prompt-<name>-vN). A changed prompt is a new version; the module
+# version that carries it pins it; a workflow version pins the whole set. `title` is the short name on the board.
+[prompts.crops]
+file = "e2e_plan_extract/s2_extract/vlm_crops.py"
+symbol = "PROMPT"
+title = "框图纸"
+about = "让本地视觉模型框出页面上每一张土地图纸（第 2 步）"
+
+[prompts.verify]
+file = "e2e_plan_extract/s2_extract/vlm_crops.py"
+symbol = "VERIFY_Q"
+title = "是不是图纸"
+about = "对每张裁图问一句：这是不是土地图纸（第 2 步）"
+
+[prompts.pick]
+file = "e2e_plan_extract/s2_extract/vlm_crops.py"
+symbol = "PICK_Q"
+title = "挑最佳"
+about = "几张裁图里哪张是最好的 site plan（第 4 步）"
+
+[prompts.plan_type]
+file = "e2e_plan_extract/s2_extract/vlm_crops.py"
+symbol = "TYPE_Q"
+title = "图纸类型"
+about = "site / block plan 还是 location plan，两种问法取平均（第 4 步）"
+
+[prompts.slot]
+file = "e2e_plan_extract/s2_extract/vlm_crops.py"
+symbol = "SLOT_Q"
+title = "选槽位"
+about = "分别为 site 槽和 location 槽挑最合适的裁图（第 4 步）"
+
+[prompts.roads_scale]
+file = "e2e_plan_extract/s3_georef/read_vlm.py"
+symbol = "Q"
+title = "读路名比例"
+about = "读出图上的路名（带框）和比例尺（第 8 步）"
+
+[prompts.locate]
+file = "e2e_plan_extract/s3_trace/boundary_lab.py"
+symbol = "LOCATE_Q"
+title = "框出地块"
+about = "没有可靠种子点时，让模型按地址框出地块（第 11 步）"
+
+[prompts.house_number]
+file = "e2e_plan_extract/s3_trace/boundary_lab.py"
+symbol = "NUMBER_Q"
+title = "找门牌号"
+about = "在 OS 小图上找种子点附近的门牌号（第 11 步）"
+
+[prompts.judge]
+file = "e2e_plan_extract/s4_verify/qa_judge.py"
+symbol = "PROMPT"
+title = "判定多边形"
+about = "两个模型对照图纸判断多边形是否正确的提示词（第 14 步）"
+
+[prompts.boundary_check]
+file = "e2e_plan_extract/s4_verify/qa_judge.py"
+symbol = "BOUNDARY_CHECK"
+title = "边界复查"
+about = "两个判定都通过时再问一次：有没有把红线外的房子圈进来（第 14 步）"
+
+[prompts.tree_judge]
+file = "e2e_plan_extract/s4_verify/qa_judge.py"
+symbol = "TREE_PROMPT"
+title = "判定树木多边形"
+about = "树木工程（TPO / TCA / TPC）：多边形圈住图纸标的树即正确，没有可用图纸时退回整个地址地块（第 14 步）"
+
+[prompts.tree_boundary_check]
+file = "e2e_plan_extract/s4_verify/qa_judge.py"
+symbol = "TREE_BOUNDARY_CHECK"
+title = "树木边界复查"
+about = "树木工程两个判定都通过时再问一次：有没有漏掉图纸标的树、是不是落在别的地块（第 14 步）"
+
+[prompts.local_screen]
+file = "e2e_plan_extract/s4_verify/qa_judge.py"
+symbol = "SCREEN_PROMPT"
+title = "本地放行筛查"
+about = "本地核对放行的 case：先描述图纸上标的场地，再和多边形逐块比较；偏小、位置不对、形状不符转人工（第 14 步）"
+
+[prompts.case_class]
+file = "e2e_plan_extract/s4_verify/case_classify.py"
+symbol = "PROMPT"
+title = "案件分类"
+about = "按文字给申请分类（新建 / 地址不精确 / 指向他处）的提示词（第 12 步）"
+
+[prompts.noplan_read]
+file = "e2e_plan_extract/s5_review/noplan_reader.py"
+symbol = "PROMPT"
+title = "无图核对"
+about = "没有图纸的 case：读事实表（记录、多边形、OS 地图、地址和地址历史），按 HMLR 的 Draw 标准判对错（第 15 步）"
+
+[models.judge_primary]
+provider = "openrouter"
+id = "google/gemini-3.8-flash"
+params = { temperature = 0, response_format = "json_object", max_tokens = 4000 }
+title = "Gemini 判定"
+about = "第一判定模型；它说错就不许被推翻"
+
+[models.judge_second]
+provider = "openrouter"
+id = "openai/gpt-6-luna-pro"
+params = { temperature = 0, response_format = "json_object", max_tokens = 4000 }
+title = "Luna 判定"
+about = "第二判定模型"
+
+[models.judge_tiebreak]
+provider = "openrouter"
+id = "openai/gpt-6.1-sol-pro"
+params = { temperature = 0, response_format = "json_object", max_tokens = 4000 }
+title = "Sol 裁决"
+about = "两判定分歧时的裁决模型；默认关闭（分歧交给人），TIEBREAK= 打开"
+
+[models.case_class]
+provider = "deepseek"
+id = "deepseek-v4-flash"
+title = "DeepSeek 分类"
+about = "文字分类（第 12 步）"
+
+[models.noplan_read]
+provider = "deepseek"
+id = "deepseek-v4-flash"
+params = { temperature = 0, response_format = "json_object" }
+title = "DeepSeek 无图核对"
+about = "没有图纸的 case 读事实表，thinking 开（关掉召回 50% -> 33%）；约 $0.0015 / case（第 15 步）"
+
+[models.local_vlm]
+provider = "local"
+id = "Qwen/Qwen3-VL-4B-Instruct"
+title = "Qwen 视觉"
+about = "本地视觉模型：裁图、读路名和比例、描线时找地块"
+
+[workflows.local_qa]
+about = "交付多边形的本地质检流水线 tools/run_local_qa.sh（5 个阶段，15 步）"
+
+[[workflows.local_qa.stages]]
+name = "prepare"
+title = "准备输入"
+steps = "0"
+mascot = "box"
+module = "prepare"
+also = ["pipeline_ctl"]
+tools = ["source_normalise", "run_record"]
+
+[[workflows.local_qa.stages]]
+name = "plan_crop"
+title = "挑图裁图"
+steps = "1-5"
+mascot = "scissors"
+module = "plan_crop"
+prompts = ["crops", "verify", "pick", "plan_type", "slot"]
+models = ["local_vlm"]
+weights = ["txtdraw", "plan_notplan", "text_image", "multi_single", "panel_yolo", "plan_type_yolo", "plan_box_yolo", "qwen_vl", "doclayout_v3", "ppocr_det", "ppocr_rec", "plan_quality", "plot_seg", "plan_type"]
+tools = ["stage_a_launcher", "page_gate", "panel_crop", "model_io", "vlm_cache", "vlm_crops", "crop_vetter"]
+
+[[workflows.local_qa.stages]]
+name = "georef"
+title = "地图配准"
+steps = "6-10"
+mascot = "compass"
+module = "georef"
+prompts = ["roads_scale"]
+models = ["local_vlm"]
+weights = ["minima_loftr", "qwen_vl", "ppocr_det", "ppocr_rec"]
+tools = ["rotated_ocr", "scale_text", "read_vlm", "georef_batch", "plan_pose", "names_locate", "road_fit", "house_numbers",
+         "minima_sliding", "geoplanagent_lib", "address_parser", "reliable_point", "os_http", "vlm_cache",
+         "os_places", "nominatim", "photon", "google_geocode", "os_zoomstack", "sheffield_wfs"]
+
+[[workflows.local_qa.stages]]
+name = "trace"
+title = "描红线"
+steps = "11"
+mascot = "pencil"
+module = "trace"
+prompts = ["locate", "house_number"]
+models = ["local_vlm"]
+weights = ["qwen_vl"]
+tools = ["boundary_lab", "heavy_line", "fork_map", "address_parser", "reliable_point", "vlm_cache", "sheffield_wfs", "sheffield_ngd"]
+
+[[workflows.local_qa.stages]]
+name = "check"
+title = "质检分道"
+steps = "12-15"
+mascot = "judge"
+module = "judge"
+also = ["lanes"]
+paid = true
+prompts = ["case_class", "judge", "boundary_check", "tree_judge", "tree_boundary_check", "noplan_read"]
+models = ["case_class", "judge_primary", "judge_second", "judge_tiebreak", "noplan_read"]
+tools = ["case_classify", "rule_classifiers", "qa_input_polygon", "redline_agree", "judge_evidence", "qa_final", "noplan_reader",
+         "os_places", "sheffield_wfs", "sheffield_ngd"]
+
+# ---- ML weights (ReinsLite C17): every model file the pipeline loads. reins hashes the file(s) -> weights-<name>-vN
+# (same bytes = same version), harvests the training record beside them (ultralytics args.yaml / results.csv,
+# the house trainer's history.json / metrics.json / train_manifest.csv) and refuses to start a production batch
+# whose files are not a registered version (the silent model fallback of 2026-09). origin: trained = ours.
+# Where the trained weights live besides this machine (ReinsLite weights_store): every registered version of an
+# origin = "trained" entry is uploaded to the private HF repo; a new machine runs `reins weights pull --to DIR`.
+[weights_store]
+kind = "hf"
+repo = "zhaojia/rmsi"
+prefix = "e2e-plan-extract"
+upload = ["trained"]
+# one folder per kind of model, named for what it does; an improved model is the next vN/ in its folder
+[weights_store.folders]
+txtdraw = "page-doc-or-drawing"                # is the page a document or a drawing (v2 = the 3-seed SSD ensemble)
+plan_notplan = "page-plan-or-not"              # is the page a land plan
+text_image = "page-text-or-image"              # text page or image page
+multi_single = "page-one-or-many-plans"        # one drawing on the page or several
+panel_yolo = "drawing-panel-detector"          # boxes the drawing panels on a sheet (Braintree labels)
+plan_box_yolo = "plan-box-detector"            # boxes every land plan on a page (plan-box spec)
+plan_type_yolo = "site-location-plan-detector" # finds site / location plan boxes on pages without a caption
+plot_seg = "plot-boundary-segmentation"        # draws the plot boundary on a plan (PLAN_MODE=yolo: ranks crops)
+plan_quality = "plan-crop-quality"             # can the crop be placed on an OS map / is a site boundary marked
+plan_type = "plan-crop-type"                   # floor / block / site / location / other plan
+
+[weights.txtdraw]
+file = "/env/models/sheffield-text-drawing-convnext-tiny/best_model.pt"
+config_key = "model_txtdraw"
+origin = "trained"
+title = "文字/图纸"
+about = "自训 ConvNeXt-tiny：页面是文字还是图纸（Sheffield 标注）"
+
+[weights.plan_notplan]
+file = "/env/models/scan-classify/scan-classify-monmouthshire/plan_not_plan_image_only_mansfield_20260506/best_model.pt"
+config_key = "model_plan_notplan"
+origin = "trained"
+title = "是否图纸页"
+about = "自训分类器：是不是图纸页（Mansfield 20260506）"
+
+[weights.text_image]
+file = "/env/models/scan-classify/scan-classify-monmouthshire/text-and-image/text-and-image-basic.pt"
+config_key = "model_text_image"
+origin = "trained"
+title = "文字/图像"
+about = "自训 ResNet18：文字 / 图像页"
+
+[weights.multi_single]
+file = "/env/models/scan-classify/multi_single_convnext/best_model.pt"
+config_key = "model_multi_single"
+origin = "trained"
+title = "单图/多图"
+about = "自训 ConvNeXt：一页上一张图还是多张图"
+
+[weights.panel_yolo]
+file = "/data/lab/datasets/yolo-panel/runs/panel26n_r2/weights/best.pt"
+config_key = "model_panel_yolo"
+origin = "trained"
+title = "面板 YOLO"
+about = "自训 YOLO26n 第二轮：找图纸面板（默认定位器，Braintree 标注，imgsz 1536）"
+
+[weights.plan_type_yolo]
+file = "/env/models/scan-classify/scan-classify-monmouthshire/yolo-seg-plan/yolo-seg-plan-basic/best.pt"
+config_key = "model_plan_type_yolo"
+origin = "trained"
+title = "图纸类型 YOLO"
+about = "自训 YOLO-seg：在无标题页上找 site / location plan 框（Monmouthshire）"
+
+[weights.plan_box_yolo]
+file = "/env/models/plan-box-yolo/plan26n_v4.pt"
+config_key = "model_plan_box_yolo"
+origin = "trained"
+title = "Plan 框 YOLO"
+about = "自训 YOLO26n 第四版：Gemini 按用户标准（不切坏、框到图框、套图两个框）标的 9 个 council 2462 页 + Monmouthshire 人工框；训练集 /data/lab/datasets/plan-boxes/yolo-plan-v4"
+
+[weights.plan_quality]
+file = "/env/models/plan-type/plan_quality_v1.pt"
+config_key = "model_plan_quality"
+origin = "trained"
+title = "Plan 质量"
+about = "自训 ConvNeXt-Tiny 两头：能否在 OS 地图上定位 / 是否标了场地边界；9 个 council 9095 张裁图，用本地 Qwen 的回答训练（PLAN_MODE=yolo 排序）"
+
+[weights.plot_seg]
+file = "/env/models/plot-seg/plot_seg_v3.pt"
+config_key = "model_plot_seg"
+origin = "trained"
+title = "描边界"
+about = "自训 YOLO11s-seg 第三版：在 plan 上描出场地边界；PLAN_MODE=yolo 用它的置信度给裁图排序（长边 2000，imgsz 1280）"
+
+[weights.plan_type]
+file = "/env/models/plan-type/plan_type_v2.pt"
+config_key = "model_plan_type"
+origin = "trained"
+title = "Plan 类型"
+about = "自训 ConvNeXt-Tiny：floor / block / site / location / other，Gemini 标签，9 个 council（PLAN_MODE=yolo 填 site / location 位）"
+
+[weights.doc_drawing]
+dir = "/env/models/doc-vs-drawing"
+config_key = "model_doc_drawing"
+origin = "trained"
+title = "文档/图纸"
+about = "自训 ConvNeXt-Tiny x3（seed 0-2，2026-10-15）：OCR 前判断每页是文档还是图纸，P>=0.3 为图纸；9 个 council 10384 页训练，留出 case 见 test_cases.json"
+
+[weights.minima_loftr]
+file = "/env/models/geoplanagent/minima/minima_loftr.ckpt"
+origin = "pretrained"
+title = "MINIMA"
+about = "MINIMA-LoFTR 配准匹配权重（GeoPlanAgent 下载，非自训）"
+
+[weights.qwen_vl]
+dir = "/home/rmsi/.cache/huggingface/hub/models--Qwen--Qwen3-VL-4B-Instruct/snapshots/ebb281ec70b05090aa6165b016eac8ec08e71b17"
+origin = "pretrained"
+title = "Qwen3-VL-4B"
+about = "本地视觉模型 Qwen3-VL-4B-Instruct（HF 快照，非自训）"
+
+[weights.ppocr_det]
+dir = "/home/rmsi/.paddlex/official_models/PP-OCRv6_medium_det"
+origin = "pretrained"
+title = "OCR 检测"
+about = "PP-OCRv6 medium 文字检测（paddleocr 3.7 英文默认，官方模型）"
+
+[weights.ppocr_rec]
+dir = "/home/rmsi/.paddlex/official_models/PP-OCRv6_medium_rec"
+origin = "pretrained"
+title = "OCR 识别"
+about = "PP-OCRv6 medium 文字识别（paddleocr 3.7 英文默认，官方模型）"
+
+[weights.doclayout_v3]
+dir = "/home/rmsi/.paddlex/official_models/PP-DocLayoutV3"
+origin = "pretrained"
+title = "版面 V3"
+about = "PP-DocLayoutV3 版面检测：大图上找标题面板（官方模型）"
+
+# ---- tools (ReinsLite C17): everything else a stage picks up. code = source files (hashed: a changed file is a new
+# version; paths outside this repo allowed), api = endpoint + fixed parameters, data = a file outside the repo
+# (its listing; a production batch refuses to start when it changed since its registered version).
+[tools.run_record]
+files = ["tools/run_record.py", "/env/code/ReinsLite/adapters/e2e/stage_hook.py"]
+title = "运行记录"
+about = "每步产出点数、阶段边界、逐 case 账本"
+
+[tools.source_normalise]
+files = ["e2e_plan_extract/s1_inputs/sources.py", "legacy_produce/stage_a/batch_ocr.py"]
+title = "源文件整理"
+about = "按文件头识别类型，PDF 转页、多帧 TIFF 拆页，去掉旧流程派生件和重复件，写逐 case 清单"
+
+[tools.stage_a_launcher]
+files = ["e2e_plan_extract/s2_extract/run_case.py", "e2e_plan_extract/s2_extract/predict_one.py",
+         "e2e_plan_extract/s2_extract/stage_a_batch.py"]
+title = "分步启动"
+about = "在三个环境里依次跑 OCR、版面和挑图"
+
+[tools.frame_split]
+files = ["e2e_plan_extract/s1_inputs/frames.py", "e2e_plan_extract/s1_inputs/vendor/scan_file_disassemble.py"]
+title = "胶片分帧"
+about = "把黑底孔径卡照片拆成单独的文档"
+
+[tools.page_class]
+files = ["e2e_plan_extract/s1_inputs/page_class.py"]
+title = "文档/图纸分页"
+about = "拆帧之后、OCR 之前判断每页是文档还是图纸；只有图纸页做 OCR 和挑图"
+
+[tools.page_gate]
+files = ["e2e_plan_extract/s2_extract/run_pipeline.py"]
+title = "挑页闸门"
+about = "四个分类器打分挑图纸页；标题模糊匹配；页面去重；红线检测"
+
+[tools.panel_crop]
+files = ["e2e_plan_extract/s2_extract/crop_plans.py"]
+title = "面板裁切"
+about = "从多图大图上切出带标题的面板（YOLO 3x3 分块 + 整页）"
+
+[tools.model_io]
+files = ["e2e_plan_extract/s2_extract/model_io.py"]
+title = "模型加载"
+about = "加载权重；安全解码超大扫描图"
+
+[tools.vlm_cache]
+files = ["e2e_plan_extract/s2_extract/vlm_cache.py"]
+title = "模型答案缓存"
+about = "本地视觉模型的答案缓存；只在没命中时才加载模型"
+
+[tools.vlm_crops]
+files = ["e2e_plan_extract/s2_extract/vlm_crops.py"]
+title = "模型补裁挑图"
+about = "模型补裁、复核漏掉的页、两种顺序各问一次挑最佳、分 site/location 槽"
+
+[tools.crop_vetter]
+files = ["e2e_plan_extract/s2_extract/vet_crops.py"]
+title = "裁图筛选"
+about = "按分数和模型判断留弃裁图；SIFT 找重复图纸；红线优先排序"
+
+[tools.rotated_ocr]
+files = ["e2e_plan_extract/s3_georef/ocr_rotated.py"]
+title = "16 角度 OCR"
+about = "每张图纸转 16 个角度做 OCR，去重后一图一个 JSON"
+
+[tools.scale_text]
+files = ["e2e_plan_extract/s3_georef/scale_text.py"]
+title = "比例尺解析"
+about = "读印刷的 1:N 比例，换算米每像素"
+
+[tools.read_vlm]
+files = ["e2e_plan_extract/s3_georef/read_vlm.py"]
+title = "模型读路名"
+about = "OCR 漏掉的路名和比例让本地模型读"
+
+[tools.georef_batch]
+files = ["e2e_plan_extract/s3_georef/batch.py"]
+title = "配准调度"
+about = "把每张图纸放上地图，跑验收闸门，出对照图"
+
+[tools.plan_pose]
+files = ["e2e_plan_extract/s3_georef/plan.py"]
+title = "路名匹配定姿"
+about = "OCR 路名对真实道路；初始位置、旋转、比例；底图切片给 MINIMA"
+
+[tools.names_locate]
+files = ["e2e_plan_extract/s3_georef/names_locate.py"]
+title = "路口定位"
+about = "用路名交叉口定位图纸，可推翻地理编码"
+
+[tools.road_fit]
+files = ["e2e_plan_extract/s3_georef/road_fit.py"]
+title = "沿路拟合"
+about = "把路名标签贴到对应道路上（ICP）"
+
+[tools.house_numbers]
+files = ["e2e_plan_extract/s3_georef/labels.py"]
+title = "门牌号拟合"
+about = "门牌号对 OS Places 点，RANSAC 求相似变换"
+
+[tools.minima_sliding]
+files = ["e2e_plan_extract/s3_georef/sliding.py"]
+title = "MINIMA 滑窗"
+about = "按角度和比例滑窗配准（从 GeoPlanAgent 搬入）"
+
+[tools.geoplanagent_lib]
+files = ["/env/code/plot-reasoning/GeoPlanAgent/geoplanagent/tools/matching.py", "/env/code/plot-reasoning/GeoPlanAgent/geoplanagent/utils.py"]
+title = "GeoPlanAgent 匹配库"
+about = "仓库外：run_minima、仿射估计、窗口打分、切片计算"
+
+[tools.address_parser]
+files = ["e2e_plan_extract/s3_georef/address.py"]
+title = "地址解析"
+about = "解析记录里的地址，给每个候选打分"
+
+[tools.reliable_point]
+files = ["e2e_plan_extract/s3_georef/geocode.py"]
+title = "可靠地理编码"
+about = "只认就是这一户的地理编码，其余不用"
+
+[tools.os_http]
+files = ["e2e_plan_extract/os_http.py"]
+title = "OS 请求重试"
+about = "OS 接口遇 429 退避重试"
+
+[tools.boundary_lab]
+files = ["e2e_plan_extract/s3_trace/boundary_lab.py"]
+title = "描线调度"
+about = "选种子点、试几种成环方法、量地块面积"
+
+[tools.heavy_line]
+files = ["e2e_plan_extract/s3_trace/heavy.py"]
+title = "红线追踪"
+about = "沿地块周围画的红线或粗线描边"
+
+[tools.fork_map]
+files = ["e2e_plan_extract/resumable.py"]
+title = "逐图进程"
+about = "一张图一个进程，限时、可续跑"
+
+[tools.team_workbook]
+files = ["e2e_plan_extract/s5_review/team_workbook.py"]
+title = "分工表"
+about = "给核查团队的工作簿：按无图评分分 S1-S6（必查 / 要查 / 抽查 / 放行 / 无扫描件 / 无多边形）、每个 case 一个 HMLR 问题代码、抽样标记、核查结果填写列（第 0n 步和第 15 步）"
+
+[tools.fme_rules]
+files = ["e2e_plan_extract/fme/rules.py", "e2e_plan_extract/fme/context.py", "e2e_plan_extract/fme/stage.py"]
+title = "FME 规则"
+about = "客户 FME 规则（Landmark Spatial Dashboard v3-8）：形状规则、和客户给的数据比对、必须修的自动修复；GeoTextCheck 的出图、FmeCheck 和交付命令共用"
+
+[tools.noplan_reader]
+files = ["e2e_plan_extract/s5_review/noplan_reader.py", "e2e_plan_extract/s5_review/noplan_model.json",
+         "e2e_plan_extract/s5_review/polygon_rules/*"]
+title = "无图核对"
+about = "没有图纸的 case：事实表 + DeepSeek 读表 + 规则代码（polygon_rules，geocoding 仓库 polygon_confidence 的拷贝）+ HMLR 判定上拟合的模型 -> 估计出错概率"
+
+[tools.case_classify]
+files = ["e2e_plan_extract/s4_verify/case_classify.py"]
+title = "案件分类"
+about = "从地址、OCR、决定书页拼文字，交给 DeepSeek 分类"
+
+[tools.rule_classifiers]
+files = ["/env/code/geocoding/geocoding_pipeline/address_prasing.py", "/env/code/geocoding/geocoding_pipeline/area_class.py"]
+title = "规则分类"
+about = "仓库外：按规则给地址类型和用途打标签"
+
+[tools.qa_input_polygon]
+files = ["e2e_plan_extract/s4_verify/qa_input_polygon.py"]
+title = "本地判定"
+about = "对交付多边形给出对 / 错 / 待审 / 退回"
+
+[tools.redraw]
+files = ["e2e_plan_extract/s4_verify/redraw.py"]
+title = "机器出图"
+about = "红线圈 + 配准 + 贴合 OS 地块 -> 机器多边形，置信档 A-D（529 个已知正确多边形上实测），与交付多边形的关系 same / close / differs"
+
+[tools.redline_agree]
+files = ["e2e_plan_extract/s4_verify/redline_agree.py"]
+title = "红线比对"
+about = "把多边形投到图纸红线上，算覆盖和精度"
+
+[tools.judge_evidence]
+files = ["e2e_plan_extract/s4_verify/qa_judge.py"]
+title = "判定证据图"
+about = "画带 OS 线划的地图和配准后的图纸窗口，交给判定模型"
+
+[tools.qa_final]
+files = ["e2e_plan_extract/s4_verify/qa_final.py"]
+title = "分道规则"
+about = "自动放行还是人工，并写明原因类别"
+
+[tools.os_places]
+kind = "api"
+endpoint = "https://api.os.uk/search/places/v1"
+provider = "os"
+title = "OS Places"
+about = "地址点、门牌号、邮编"
+
+[tools.nominatim]
+kind = "api"
+endpoint = "https://nominatim.openstreetmap.org/search"
+title = "Nominatim"
+about = "备用地理编码第二家（每秒 1 次）"
+
+[tools.photon]
+kind = "api"
+endpoint = "https://photon.komoot.io/api/"
+title = "Photon"
+about = "备用地理编码第三家"
+
+[tools.google_geocode]
+kind = "api"
+endpoint = "https://maps.googleapis.com/maps/api/geocode/json"
+provider = "google"
+params = { accept = "ROOFTOP" }
+title = "Google 地理编码"
+about = "最后一家，只收 ROOFTOP；经 reins 网关计费"
+
+[tools.os_zoomstack]
+kind = "data"
+path = "/data/reference/base-data/os_opendata/OS_Open_Zoomstack.gpkg"
+title = "OS Zoomstack"
+about = "本地路名库（地方 / 区域 / 国道）"
+
+[tools.sheffield_wfs]
+kind = "data"
+path = "/data/councils/sheffield/reference/basemap/sheffield_wfs_raw.gpkg"
+title = "Sheffield 底图"
+about = "OS WFS 底图：配准、建筑检查、判定地图背景"
+
+[tools.sheffield_ngd]
+kind = "data"
+path = "/data/councils/sheffield/reference/basemap/sheffield_ngd_land.gpkg"
+title = "Sheffield NGD 地块"
+about = "地址处的土地用途地块：面积检查和 IoU"
+
+[review_source]
+# where reviewers' verdicts live (ReinsLite reins/loop.py): imported hourly for recent production / rework batches;
+# a case finished without a person (results good) that a reviewer marked wrong becomes an issue on the batch
+databases = ["{work_dir}/lab/review/review.db", "/data/councils/{scope0}/review/**/review.db"]
+table = "events"
+where = "action = 'verdict'"
+columns = { case = "case_id", reviewer = "reviewer", verdict = "verdict", error_type = "error_type", note = "note", at = "at" }
+verdicts = { correct = "correct", error = "wrong", query = "unsure" }
+case_pattern = "([0-9]+)$"
+# client feedback (Landmark dashboards' Validcases, Queries, HMLR P/A/F samples) collected into the ledger nightly
+commands = ["/home/rmsi/miniconda3/bin/python3 /env/code/ledger/feedback_events.py {scope0}"]

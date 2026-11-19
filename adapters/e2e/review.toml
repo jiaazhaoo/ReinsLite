@@ -1,0 +1,6 @@
+# C6 review taxonomy (ReinsLite `reins review`). Bump `version` when a type is added; never rename one in place:
+# reviewers' earlier verdicts would silently change meaning. The QA review platform (tools/qa_review) uses the same
+# two types: a wrong polygon is either in the wrong place or has the wrong extent.
+version = 1
+error_types = ["location", "polygon"]
+unsure_needs_note = true

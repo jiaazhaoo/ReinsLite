@@ -1,33 +1,144 @@
-"""The projects this machine manages: every checkout directly under the code root with a reins.toml (linked worktrees
-are checkouts of a project, not projects). Read by the hook (what a session may run) and the session index."""
+"""The projects this machine manages, and where each one's settings live.
+
+A project's settings (reins.toml, and beside it rules.toml / review.toml) live either
+  - outside the repo, in ReinsLite: adapters/<name>/reins.toml with `repo = "/path/of/the/checkout"` (the managed code
+    then knows nothing of reins; the adapter folder also holds the glue that drives it), or
+  - inside the repo, as <repo>/reins.toml (older projects, and release trees cut before their settings moved out).
+The adapter wins for its repo. Every reader goes through config_dir() / load() / find_root(), never `repo / "reins.toml"`.
+
+all_() lists every managed project: adapters whose repo exists, plus every checkout directly under the code root with a
+reins.toml (linked worktrees are checkouts of a project, not projects). Read by the hook (what a session may run) and
+the session index."""
 from __future__ import annotations
 
 import os
+import subprocess
 import tomllib
 from pathlib import Path
 
 from .store import CODE_ROOT
 
-_CACHE: dict[Path, list[tuple[Path, dict]]] = {}
+_CACHE: dict[tuple, list[tuple[Path, dict]]] = {}
+_EXT: dict[Path, dict[Path, Path]] = {}
 
 
 def root() -> Path:
     return Path(os.environ.get("REINS_CODE_ROOT") or CODE_ROOT)
 
 
+def adapters_dir() -> Path:
+    return Path(os.environ.get("REINS_ADAPTERS") or Path(__file__).resolve().parents[1] / "adapters")
+
+
+def _repo_of_cfg(cfg: dict) -> str | None:
+    return cfg.get("repo") or (cfg.get("dev") or {}).get("repo")
+
+
+def external() -> dict[Path, Path]:
+    """{managed repo: adapter folder holding its reins.toml}."""
+    a = adapters_dir()
+    if a not in _EXT:
+        out = {}
+        for f in sorted(a.glob("*/reins.toml")) if a.is_dir() else []:
+            try:
+                r = _repo_of_cfg(tomllib.loads(f.read_text(encoding="utf-8")))
+            except (OSError, tomllib.TOMLDecodeError):
+                continue
+            if r:
+                out[Path(r).resolve()] = f.parent
+        _EXT[a] = out
+    return _EXT[a]
+
+
+def main_checkout(d: Path) -> Path:
+    """The repository a checkout belongs to: a linked worktree (candidate, release tree) maps back to its main repo."""
+    g = d / ".git"
+    if g.is_file():
+        try:
+            gd = g.read_text().split(":", 1)[1].strip()
+            return Path(gd).parents[2] if "/worktrees/" in gd else d
+        except (OSError, IndexError):
+            return d
+    return d
+
+
+def config_dir(repo: Path | None) -> Path | None:
+    """The folder holding this repo's reins.toml (an adapter folder, else the repo itself), or None if unmanaged."""
+    if not repo:
+        return None
+    ext = external().get(Path(repo).resolve())
+    if ext:
+        return ext
+    return Path(repo) if (Path(repo) / "reins.toml").is_file() else None
+
+
+def config_file(repo: Path | None) -> Path | None:
+    d = config_dir(repo)
+    return d / "reins.toml" if d else None
+
+
+def side_file(repo: Path | None, name: str) -> Path:
+    """rules.toml / review.toml of a project: beside its reins.toml (the repo itself when it has none)."""
+    return (config_dir(repo) or Path(repo or ".")) / name
+
+
+def load(repo: Path | None) -> dict:
+    f = config_file(repo)
+    if not f:
+        return {}
+    try:
+        return tomllib.loads(f.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def managed(repo: Path | None) -> bool:
+    return config_file(repo) is not None
+
+
+def find_root(cwd: Path) -> Path | None:
+    """The project's main checkout for a directory: the nearest managed checkout above it (an adapter's repo, or a
+    folder with its own reins.toml), mapped from a linked worktree back to the repository it belongs to."""
+    ext = external()
+    for d in (cwd, *cwd.parents):
+        rd = d.resolve()
+        if rd in ext:
+            return rd
+        if (d / ".git").exists():
+            m = main_checkout(d).resolve()
+            if m in ext:
+                return m
+        if (d / "reins.toml").is_file():
+            r = subprocess.run(["git", "-C", str(d), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                               capture_output=True, text=True)
+            common = Path(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+            if common and common.name == ".git" and (common.parent / "reins.toml").is_file():
+                return common.parent
+            return d
+    return None
+
+
 def all_() -> list[tuple[Path, dict]]:
     r = root()
-    if r not in _CACHE:
-        found = []
+    key = (r, adapters_dir())
+    if key not in _CACHE:
+        found, seen = [], set()
+        for repo, ad in external().items():
+            if repo.is_dir():
+                try:
+                    found.append((repo, tomllib.loads((ad / "reins.toml").read_text(encoding="utf-8"))))
+                    seen.add(repo)
+                except (OSError, tomllib.TOMLDecodeError):
+                    pass
         for f in sorted(r.glob("*/reins.toml")):
-            if not (f.parent / ".git").is_dir():
+            if not (f.parent / ".git").is_dir() or f.parent.resolve() in seen:
                 continue
             try:
                 found.append((f.parent, tomllib.loads(f.read_text(encoding="utf-8"))))
             except (OSError, tomllib.TOMLDecodeError):
                 pass
-        _CACHE[r] = found
-    return _CACHE[r]
+        _CACHE[key] = found
+    return _CACHE[key]
 
 
 def run_programs() -> tuple[set[str], set[str]]:
