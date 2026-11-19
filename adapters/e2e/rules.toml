@@ -3,7 +3,7 @@
 #
 # Describes main after lanes-judge_every_case-20261014-1 (decision #22, 2026-10-14; was release qa-20261007-3): e2e_plan_extract/s4_verify/qa_input_polygon.py (local verdict, step 13),
 # qa_judge.py (hosted judges + boundary recheck, step 14), qa_final.py (lane per case, step 15),
-# e2e_plan_extract/s5_review/queues.py (P1-P5 for the review lane). Evidence: docs/DECISIONS.md.
+# web-app qa/review/queues.py (P1-P5 for the review lane; moved there 2026-11-19). Evidence: docs/DECISIONS.md.
 #
 # Two levels, in the order the code applies them:
 #   step 15 (qa_final)  every case -> auto_accept or review (the code's lanes "auto pass" / "human")

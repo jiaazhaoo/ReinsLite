@@ -294,10 +294,8 @@ about = "DrawPolygon 机器出图：图纸上的红线圈经配准放到地图�
 files = ["e2e_plan_extract/s4_verify/redraw.py"]
 tools = ["redraw"]
 
-[modules.review]
-about = "人工审核平台：地图 + 证据 + 判定托盘 + 画多边形（EPSG:27700），每个审核员的每次操作写 review.db（第 5 步，不影响流水线输出）"
-files = ["e2e_plan_extract/s5_review/server.py", "e2e_plan_extract/s5_review/index.html",
-         "e2e_plan_extract/s5_review/db.py", "e2e_plan_extract/s5_review/queues.py"]
+# [modules.review] retired 2026-11-19: the review page (server.py, index.html, db.py, queues.py) moved to web-app
+# qa/review, reins module qa_review there (user: 全都应该放在web-app呀，这个和e2e没有关系)
 
 [modules.fme_check]
 about = "FmeCheck（第 15f 步，用户 2026-11-17：FME 检测做成单独的模块）：客户 FME 规则（Landmark Spatial Dashboard v3-8 的 SA / RM 规则）查每个 case 可能交付的每个多边形（交付的、DrawPolygon 的、GeoTextCheck 的），必须修的先自动修，修不了的交给人；交付命令的 FME 关卡用同一份规则"
