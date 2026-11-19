@@ -21,7 +21,7 @@ Verbs (e2e's words -> reins):
     notify KEY LEVEL TITLE BODY              -> a note on the board (reins notify)
 
 reins is called from / so that the intake project's batches are not mistaken for e2e's (no settings above /);
-`open --project P` for a project reins manages (e2e-plan-extract: e.g. tools/cloud/prepare.sh's chunk runs) runs from
+`open --project P` for a project reins manages from an adapter (e2e-plan-extract: e.g. tools/cloud/prepare.sh's chunk runs) runs from
 that project's checkout, so the batch gets its rules (work dirs, case ids, stages).
 """
 from __future__ import annotations
@@ -53,7 +53,8 @@ def _open(args: list[str]) -> None:
         sys.path.insert(0, str(ROOT))
         from reins import projects
         name = args[args.index("--project") + 1]
-        hit = next((r for r, c in projects.all_() if c.get("project") == name), None)
+        ext = set(projects.external())                  # only a project managed from an adapter (not intake's old repo)
+        hit = next((r for r, c in projects.all_() if c.get("project") == name and r.resolve() in ext), None)
         if hit:
             cwd = str(hit)
             i = args.index("--project"); args = args[:i] + args[i + 2:]     # the checkout names the project
