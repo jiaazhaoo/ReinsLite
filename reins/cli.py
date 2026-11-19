@@ -52,21 +52,13 @@ from .store import ReinsError, connect, tx
 def project_root(cwd: Path) -> Path | None:
     """The project's main checkout: the nearest reins.toml above cwd, mapped from a linked worktree (a candidate) back
     to the repository it belongs to, so `reins dev ...` run inside a candidate acts on the project, not on the copy."""
-    import subprocess
-    for d in (cwd, *cwd.parents):
-        if (d / "reins.toml").is_file():
-            r = subprocess.run(["git", "-C", str(d), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                               capture_output=True, text=True)
-            common = Path(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
-            if common and common.name == ".git" and (common.parent / "reins.toml").is_file():
-                return common.parent
-            return d
-    return None
+    from . import projects
+    return projects.find_root(cwd)
 
 
 def project_config(cwd: Path) -> dict:
-    r = project_root(cwd)
-    return tomllib.loads((r / "reins.toml").read_text(encoding="utf-8")) if r else {}
+    from . import projects
+    return projects.load(project_root(cwd))
 
 
 def _key(cfg) -> str | None:
@@ -551,7 +543,7 @@ def main(argv: list[str] | None = None) -> int:
             probs = projects.check_config(cfg)
             for p in probs:
                 print(f"  {p}")
-            print(f"{project_root(cwd) / 'reins.toml' if project_root(cwd) else 'no reins.toml'}: "
+            print(f"{__import__('reins.projects').projects.config_file(project_root(cwd)) or 'no reins.toml'}: "
                   f"{'ok' if not probs else str(len(probs)) + ' problems'}")
             return 1 if probs else 0
         if args.cmd == "gateway" and args.sub == "serve":
@@ -624,12 +616,12 @@ def main(argv: list[str] | None = None) -> int:
             watchdog.run(args.interval); return 0
         if args.cmd == "rules" and args.sub != "freeze":
             if args.sub == "list":
-                p = Path(args.path) if args.path else (project_root(cwd) or cwd) / "rules.toml"
+                p = Path(args.path) if args.path else __import__("reins.projects").projects.side_file(project_root(cwd) or cwd, "rules.toml")
                 print(rules.describe(rules.load(p))); return 0
             d = rules.diff(args.old, args.new, args.key or _key(cfg), args.lane)
             print(json.dumps(d, ensure_ascii=False, indent=1) if args.json else rules.format_diff(d)); return 0
         if args.cmd == "review" and args.sub == "taxonomy":
-            print(json.dumps(review.taxonomy(args.path or (project_root(cwd) or cwd) / "review.toml"), indent=1)); return 0
+            print(json.dumps(review.taxonomy(args.path or __import__("reins.projects").projects.side_file(project_root(cwd) or cwd, "review.toml")), indent=1)); return 0
 
         con = connect()
         if args.cmd == "rules":
@@ -1356,7 +1348,7 @@ def _measure(con, args, cfg, cwd) -> int:
                 m = len(qa_page.marks(con, p["batch_id"], p["name"]))
                 print(f"{p['created'][:16]}  {p['batch_id']}  {p['name']}  {m}/{p['n_cards']} marked  http://127.0.0.1:{port}/pages/{p['batch_id']}/{p['name']}/")
     elif args.cmd == "review":
-        tax = review.taxonomy((project_root(cwd) or cwd) / "review.toml")
+        tax = review.taxonomy(__import__("reins.projects").projects.side_file(project_root(cwd) or cwd, "review.toml"))
         if args.sub == "assign":
             n = review.assign(con, args.batch, args.reviewer, [c for c in args.cases.split(",") if c], args.queue, args.round, args.by)
             print(f"{n} cases appended to {args.reviewer}'s list")

@@ -1,0 +1,231 @@
+# C7b routing rules of the local QA flow, as data (ReinsLite `reins rules`). Description only: the code decides, this
+# file says in plain words what the code in force decides, so a batch can record which rules it ran under.
+#
+# Describes main after lanes-judge_every_case-20261014-1 (decision #22, 2026-10-14; was release qa-20261007-3): e2e_plan_extract/s4_verify/qa_input_polygon.py (local verdict, step 13),
+# qa_judge.py (hosted judges + boundary recheck, step 14), qa_final.py (lane per case, step 15),
+# e2e_plan_extract/s5_review/queues.py (P1-P5 for the review lane). Evidence: docs/DECISIONS.md.
+#
+# Two levels, in the order the code applies them:
+#   step 15 (qa_final)  every case -> auto_accept or review (the code's lanes "auto pass" / "human")
+#   queues (s5_review)  every review case -> P1..P5; P3 is marked wrong without review (auto_reject), P4 is returned
+#                       unchecked (cannot_verify)
+# Rules with status = "superseded" are kept for the record; `reins rules list` prints only active ones.
+# A rule change needs `reins rules freeze --old-lanes --new-lanes` (the lane diff) from v2 on.
+
+# ---------------------------------------------------------------- step 13: local verdict (no hosted model) ----
+
+[[rule]]
+id = "local_pass_is_evidence_only"
+lane = "review"
+when = "the local check passes the case (local verdict correct: trace lane IoU >= 0.5, address land-use site IoU >= 0.85, or the red line follows the polygon). It no longer decides anything: the case goes to the two judges and the boundary recheck like every other case (both_judges_correct_auto_accept); the local finding is shown in `why` and, in the review lane, in the review reason"
+evidence = "user 2026-10-14 (reins decision #22, '我们主流程必须所有cases都要走ai看图判定'): Mansfield gate sample MAN_709110 (a shop fascia sign, Unit 22 Four Seasons Centre) auto-passed on the address lane because the polygon is the whole shopping centre's land-use site (IoU 1.0); 210 of 1966 Mansfield auto passes were never judged. Eval-359 (benchmark v10 copy): see docs/DECISIONS.md 2026-10-14"
+decided = "2026-10-14"
+by = "user"
+cost_per_case_usd = 0.012
+code = "run_local_qa.sh step 14 CASES = every case in qa.json; qa_final.py: local correct only adds '(local: ...)' to why"
+
+[[rule]]
+id = "trace_lane_iou_05"
+lane = "auto_accept"
+status = "superseded"
+superseded_by = "local_pass_is_evidence_only"
+when = "the plot traced on the case's own drawing (high band, through an accepted georef) agrees with the delivered polygon: IoU >= 0.5, or one holds >= 80% of the other and the other >= 30% of it, or IoU >= 0.4 with each holding >= half of the other; and the polygon is not > 1.3x the traced plot. Needs a picked plan_image (else no_plan_image_never_auto_accept)"
+evidence = "in the code since 2026-09-30 (28a526d); plan traces are rough, 0.85 is only for the address lane: SHF_157169 at IoU 0.60 confirmed right by the user; WP3 batch1 gate: trace lane 1 wrong of 31 (docs/DECISIONS.md 2026-10-06)"
+decided = "2026-10-06"
+by = "user"
+cost_per_case_usd = 0.0
+code = "qa_input_polygon.py verdict 'correct' (plot traced ... agrees); qa_final.py local correct -> auto pass"
+
+[[rule]]
+id = "address_parcel_lane_iou_085"
+lane = "auto_accept"
+status = "superseded"
+superseded_by = "local_pass_is_evidence_only"
+when = "nothing traced with high confidence; the reliable address point (exact address, not overruled by the plan's road names) lies inside the delivered polygon and the polygon matches the address's OS NGD land-use site with IoU >= 0.85; and the DeepSeek case class says: not a new build, address group exact (exact_numbered / named_site / former_named_site), class confidence high, no plot hint in the text (rear of, adjoining, land at, part of ...). Needs a picked plan_image (else no_plan_image_never_auto_accept)"
+evidence = "SHF_114963 at IoU 0.681 left out the rear of the plot; WP3 batch2: of 102 address-lane passes at 0.6-0.85 the judges sent 32 to a person; eval-359 6 to the judges, 3 moved (all Pass); WP3 batch1 gate: address lane 0 wrong of 44; benchmark v6"
+decided = "2026-10-05"
+by = "user"
+cost_per_case_usd = 0.0008
+code = "qa_input_polygon.SITE_IOU_MIN = 0.85 (2026-10-05, was 0.6), address_lane_doubt() (2026-10-01, 180b13f); step 12 case_classify.py (DeepSeek, cached)"
+
+[[rule]]
+id = "redline_lane_evidence_for_only"
+lane = "auto_accept"
+status = "superseded"
+superseded_by = "local_pass_is_evidence_only"
+when = "a case nothing above decided (local verdict fallback), on a colour scan with an accepted georef: the applicant's red line on the location or site plan follows the delivered polygon (boundary on red ink >= 85%, red ink on the boundary >= 80%, no stretch >= 10 m off it). Evidence FOR only: red ink that does not follow never makes a case wrong. Needs a picked plan_image"
+evidence = "SHF_149253 (red pen over black OS lines, trace failed); WP3 batch1 human labels: 28 correct / 0 wrong pass (without the stretch test 1 wrong, SHF_146048); 'red does not follow' is 11 wrong / 12 correct so not used against a case; eval-359: 5 pass, all HMLR Pass; benchmark v8"
+decided = "2026-10-06"
+by = "user"
+cost_per_case_usd = 0.0
+code = "redline_agree.score_plan via qa_input_polygon.py (fallback -> correct)"
+
+[[rule]]
+id = "local_wrong_to_review"
+lane = "review"
+when = "the high-band trace is elsewhere (IoU < 0.2) and the reliable address lies outside the delivered polygon (local verdict wrong). Never auto-accepted, no judge can overrule it (the judges are asked since 2026-10-14; their answers are shown, not used to pass it); category 2, queued P3 (see queue_p3_marked_wrong)"
+evidence = "the flow is built to miss nothing: a person (or rework) handles anything the local check calls wrong (docs/DECISIONS.md 2026-10-02); confirmed by the user 2026-10-14 when every case went to the judges"
+decided = "2026-10-02"
+by = "user"
+cost_per_case_usd = 0.0
+code = "qa_final.py: v['verdict'] == 'wrong' -> human"
+
+[[rule]]
+id = "local_disagreement_goes_to_judges"
+lane = "review"
+when = "(since 2026-10-14 every case goes to the judges, local_pass_is_evidence_only) a high-band trace disagrees with the delivered polygon in some other way (polygon >= 3x the traced plot, trace holds the polygon but is larger, IoU in between), or the local check settled nothing: the hosted judges decide (rules below). Step 15 runs without --keep-review, so local 'review' alone does not send a case to a person"
+evidence = "SHF_142219 / 126058 PCM (polygon 3x the plot) vs traces of the building alone; the judges see the whole plan"
+decided = "2026-10-02"
+by = "user"
+cost_per_case_usd = 0.012
+code = "qa_input_polygon.py verdict review / fallback; run_local_qa.sh step 15 (no --keep-review)"
+
+# ---------------------------------------------------------------- step 14-15: hosted judges -------------------
+
+[[rule]]
+id = "both_judges_correct_auto_accept"
+lane = "auto_accept"
+when = "both judges (gemini-3.8-flash and gpt-6-luna-pro, whole scanned plan plus one extra kept crop per type) say correct, and the boundary recheck answered and says correct (boundary_recheck_doubt_3f). Since 2026-10-14 this is the only way a case is auto-accepted (local_pass_is_evidence_only); also needs: the plans were not amended (amended_plans_3e) and the case has a picked plan_image (no_plan_image_never_auto_accept)"
+evidence = "two judges because gemini alone flips on obvious errors from read to read (SHF_142219); eval-359: human lane held all 23 Fail; WP3 batch1 gate: two-judge passes 2 wrong of 231; benchmark v10: 0 Fail / 0 Advisory auto-accepted"
+decided = "2026-10-02"
+by = "user"
+cost_per_case_usd = 0.021
+code = "qa_final.py all(verdict == 'correct') and the recheck's answer; step 14 qa_judge.py x2 --extra-plans 1 on every case, recheck gemini on every two-judge pass"
+
+[[rule]]
+id = "boundary_recheck_doubt_3f"
+lane = "review"
+when = "both judges said correct, but the boundary recheck (gemini, asked once more whether the marked line leaves a building or land outside that the polygon includes) does not say correct, or (since 2026-10-14) gave no answer. Category 3f, queue P1. False alarms are accepted, misses are not"
+evidence = "eval-359: both HMLR Advisory auto passes (SHF_60974, SHF_74764) and SHF_129633 (user: actually wrong) go to a person; 0 Fail / 0 Advisory auto-accepted; auto 233 -> 226; user checked 8 flags: 3 real, 1 borderline, 4 false alarms; benchmark v9"
+decided = "2026-10-07"
+by = "user"
+cost_per_case_usd = 0.009
+code = "qa_final.py --recheck gemini-3.8-flash-recheck; step 14 RECHECK=on (qa_judge.py --boundary-check)"
+
+[[rule]]
+id = "local_pass_screen_3h"
+lane = "review"
+when = "the local check passed the case (address parcel, plan trace or red line), but the local-pass screen (gemini, describe the drawn site first, then compare it with the polygon piece by piece; no overlay) answers too_small, wrong_location or wrong_shape, or the screen ran and left the case unanswered (a failed call or the cap: not checked, so not passed). Category 3h, queue P1. A too_big answer does not send the case on"
+evidence = "issue #5: no judge saw local passes; they held WP3 batch2's 3 production-QA majors (address lane) and batch3 gate F SHF_149022 (address lane) and SHF_104822 (trace lane, IoU 0.33). Probe on 15 known misses + 60 user-passed controls: 10/15 caught incl. both local misses, 11/60 false alarms (n=60). Batch3's 460 local passes: 90 flagged; reviewed flags too_big 0 error / 23 correct (so ignored), the flagging verdicts 4 error / 29 correct (n=33)"
+decided = "2026-10-13"
+by = "user"
+cost_per_case_usd = 0.017
+code = "qa_final.py --screen gemini-3.8-flash-screen; step 14 LOCAL_SCREEN=on (qa_judge.py --local-screen, SCREEN_PROMPT, SCREEN_FLAG)"
+
+[[rule]]
+id = "judges_split_to_review"
+lane = "review"
+when = "one judge says correct and the other does not (wrong, unsure, too_big, too_small, or no answer). No tie-break judge is asked; category 3 (3a-3d by the error named), queue P1"
+evidence = "user target <= 2 errors per 315-case gate; WP3 batch1 gate: tie-break passes 1 wrong of 9 (SHF_102129) against 2 of 231 for two-judge passes; re-laning from frozen answers: eval-359 auto 235 -> 232 (3 Pass moved, 0 Fail), WP3 batch1 1400 -> 1357, batch2 1513 -> 1469; benchmark v7"
+decided = "2026-10-06"
+by = "user"
+cost_per_case_usd = 0.012
+code = "qa_final.py --tiebreak none (default); run_local_qa.sh TIEBREAK=none"
+
+[[rule]]
+id = "both_judges_doubt_to_review"
+lane = "review"
+when = "neither judge says correct. Category 2 (likely wrong, by the most serious error named) when at least one says wrong / too_big / too_small; category 1d (drawing inconclusive) when both are unsure or silent"
+evidence = "a person looks at anything a judge doubts (docs/DECISIONS.md 2026-10-02)"
+decided = "2026-10-02"
+by = "user"
+cost_per_case_usd = 0.012
+code = "qa_final.py else-branch, review_reason()"
+
+[[rule]]
+id = "amended_plans_3e"
+lane = "review"
+when = "a case any rule above would auto-accept, whose proposal text says the plans were amended ('as per amended plan', 'amended scheme', 'revised plans' ...): the picked drawing may be the superseded one. Category 3e, queue P1, check every drawing page"
+evidence = "SHF_124253: stage A picked the sheet marked 'Superseded' and dropped the 'Amended Plan' as a duplicate; eval-359: 9 more to a person (8 Pass, 1 Adv); WP3 batch2: 79; benchmark v5"
+decided = "2026-10-05"
+by = "user"
+cost_per_case_usd = 0.0
+code = "qa_final.AMENDED"
+
+[[rule]]
+id = "no_plan_image_never_auto_accept"
+lane = "review"
+when = "a case both judges (and the recheck) would auto-accept but no plan_image was picked: no scans (4a) or scans with no plan found (4b). Category 4 'no drawing, high confidence', queue P5"
+evidence = "user spot-check of WP3 batch2: 491 auto passes had no drawing at all; SHF_134933 (address lane) missed the El Sub Sta piece the 2001 plan includes; benchmark v3"
+decided = "2026-10-05"
+by = "user"
+cost_per_case_usd = 0.0
+code = "qa_final.py category 4 ('no drawing to check it against')"
+
+# ---------------------------------------------------------------- superseded (kept for the record) --------------
+
+[[rule]]
+id = "tiebreak_sol_decides_splits"
+lane = "auto_accept"
+status = "superseded"
+superseded_by = "judges_split_to_review"
+when = "the judges split and the tie-break judge gpt-6.1-sol-pro says correct (narrowed 2026-10-05 by gemini_veto)"
+evidence = "eval-359 two uncached runs: auto 281 / 280, 0 Fail; WP3 rework: 642 splits -> 325 auto. Off by default since 2026-10-06"
+decided = "2026-10-04"
+by = "user"
+cost_per_case_usd = 0.026
+code = "qa_final.py --tiebreak gpt-6.1-sol-pro (no longer the default)"
+
+[[rule]]
+id = "gemini_veto"
+lane = "review"
+status = "superseded"
+superseded_by = "judges_split_to_review"
+when = "a split where gemini doubts the case: the tie-break judge may not overrule it. Moot since the tie-break is off (every split goes to a person)"
+evidence = "SHF_116602: gemini said wrong_location at every prompt and resolution, luna and sol said correct; eval-359: 19 more to a person (18 Pass, 1 Adv); benchmark v4"
+decided = "2026-10-05"
+by = "user"
+cost_per_case_usd = 0.0
+code = "qa_final.py --veto gemini-3.8-flash (only acts when a tie-break runs)"
+
+# ---------------------------------------------------------------- review queues (s5_review/queues.py) -----------
+
+[[rule]]
+id = "queue_p1_conflicting"
+lane = "review"
+when = "review case of category 3: the judges split (3a-3d), the boundary recheck doubts a two-judge pass (3f), or the plans were amended (3e). Review carefully"
+evidence = "eval-359 (benchmark v2): 11 bad / 18 Pass in P1; user decision on queues 2026-10-05"
+decided = "2026-10-05"
+by = "user"
+cost_per_case_usd = 0.0
+code = "queues.py P1"
+
+[[rule]]
+id = "queue_p2_likely_wrong_weak"
+lane = "review"
+when = "review case of category 2 that none of the P3 tests hold (mostly both judges say too_small, which HMLR mostly passes). Review: pick out the real ones"
+evidence = "eval-359 (benchmark v2): 5 bad / 22 Pass in P2"
+decided = "2026-10-05"
+by = "user"
+cost_per_case_usd = 0.0
+code = "queues.py P2 (strong_rule() is None)"
+
+[[rule]]
+id = "queue_p3_marked_wrong"
+lane = "auto_reject"
+when = "review case of category 2 with strong evidence: the local check says the traced plot is elsewhere (local_wrong_to_review); or the local trace lies inside a polygon >= 3x its size; or both judges say wrong and one names wrong_location; or both judges say too_big. Marked wrong without review and sent for rework"
+evidence = "eval-359 (benchmark v2): 12 bad / 5 Pass, so ~30% reworked needlessly, accepted by the user"
+decided = "2026-10-05"
+by = "user"
+cost_per_case_usd = 0.0
+code = "queues.py P3, strong_rule()"
+
+[[rule]]
+id = "queue_p4_cannot_verify"
+lane = "cannot_verify"
+when = "review case of category 1: no scans (1a), scans but no plan_image found (1b), delivered polygon invalid or empty after repair (1c), or drawings inconclusive to both judges (1d). Not reviewed: returned (deferred to the LA or to new scans)"
+evidence = "nothing to check the polygon against (user rule 2026-10-03 on review reasons)"
+decided = "2026-10-05"
+by = "user"
+cost_per_case_usd = 0.0
+code = "queues.py P4"
+
+[[rule]]
+id = "queue_p5_no_plan_image"
+lane = "review"
+when = "review case of category 4 (no_plan_image_never_auto_accept): a check passed it without any drawing. Review: check the polygon on the map against the address"
+evidence = "user decision 2026-10-05 (491 drawing-less auto passes in WP3 batch2)"
+decided = "2026-10-05"
+by = "user"
+cost_per_case_usd = 0.0
+code = "queues.py P5"

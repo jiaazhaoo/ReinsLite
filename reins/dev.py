@@ -43,9 +43,10 @@ def git(repo: Path, *args: str, check=True) -> str:
 
 def project_cfg(repo: Path) -> dict:
     import tomllib
-    f = repo / "reins.toml"
-    if not f.is_file():
-        raise ReinsError(f"{repo} has no reins.toml (project = ..., [dev] repo = ..., gate = ...)")
+    from . import projects
+    f = projects.config_file(repo)
+    if not f:
+        raise ReinsError(f"{repo} has no reins.toml, in the repo or in ReinsLite adapters/ (project = ..., [dev] repo = ..., gate = ...)")
     cfg = tomllib.loads(f.read_text(encoding="utf-8"))
     if "project" not in cfg:
         raise ReinsError(f"{f}: missing project = \"...\"")
@@ -191,6 +192,10 @@ def _run_gate(con, version: str, wt: Path, gate_cmd: str, skip_tier: str | None,
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, prefix="reins-gate-") as tf:
         out = tf.name
     env = {**os.environ, "REINS_GATE_OUT": out, "REINS_VERSION": version}
+    from . import projects
+    ad = projects.config_dir(projects.main_checkout(Path(wt)))
+    if ad:
+        env["REINS_ADAPTER"] = str(ad)                 # the folder of the project's settings: its gate glue lives there
     if module:
         env["REINS_GATE_MODULE"] = module
     if bench:
@@ -478,7 +483,8 @@ def remote_login(con, every_h: float = 1) -> list[str]:
 
 def adopt_release(con, repo: Path, tag: str, note: str = "") -> dict:
     """An existing git tag with its read-only worktree becomes a registered release (name = the tag)."""
-    cfg = project_cfg(repo) if (repo / "reins.toml").is_file() else None
+    from . import projects
+    cfg = project_cfg(repo) if projects.managed(repo) else None
     project = cfg["project"] if cfg else repo.name
     commit = git(repo, "rev-parse", f"{tag}^{{commit}}")
     wt, best = None, -1

@@ -181,8 +181,12 @@ def project_rules(cwd: Path | None, project: str | None = None) -> list[dict]:
                 return rs
             break                    # a release cut before its project declared resources: the machine's needs are
                                      # the main checkout's (2026-11-04), not "none"
+    from . import projects
+    if cwd and not project:
+        r = projects.find_root(cwd)
+        if r:
+            return rules(projects.load(r))
     if project:
-        from . import projects
         for _, cfg in projects.all_():
             if cfg.get("project") == project:
                 return rules(cfg)

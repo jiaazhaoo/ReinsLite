@@ -77,7 +77,7 @@ def _project(con, batch: str) -> tuple[Path | None, dict]:
 def settings(con, batch: str) -> dict:
     """Grades, codes, reviewer and taxonomy for this batch's project."""
     root, cfg = _project(con, batch)
-    tax = review.taxonomy(root / "review.toml" if root else None)
+    tax = review.taxonomy(projects.side_file(root, "review.toml") if root else None)
     pg = cfg.get("page") or {}
     grades = [{"label": g.get("label", g["key"]), **g} for g in (pg.get("grades") or DEFAULT_GRADES)]
     codes = pg.get("codes") or [{"code": t, "label": t, "error_type": t} for t in tax["error_types"]]

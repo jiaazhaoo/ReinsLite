@@ -95,7 +95,8 @@ def start(con, batch: str, stage: str, cmd: list[str], cwd: Path, module_version
         retries = DEFAULT_RETRIES.get(b["type"], 0)
     spec = {"batch": batch, "stage": stage, "cmd": cmd, "cwd": str(cwd.resolve()), "module_version": mv,
             "retries": retries, "log": str(log), "session": session(), "home": str(home()),
-            "rules": resources.project_rules(cwd.resolve(), b["project"])}
+            "rules": resources.project_rules(cwd.resolve(), b["project"]),
+            "project_env": project_env(con, b, stage)}
     env = {**os.environ, **(extra_env or {})}
     try:                                                    # what an automatic restart gives the command again
         Path(str(log) + ".env.json").write_text(json.dumps(knobs(env), indent=1, sort_keys=True))
@@ -144,13 +145,40 @@ def wait(con, batch: str, timeout_s: float | None = None, poll_s: float = 2) -> 
         time.sleep(poll_s)
 
 
+def project_env(con, b, stage: str) -> dict:
+    """[run.env] of the batch's project settings: the managed code's own variable names, filled from the batch, so the
+    code reads e.g. $E2E_RUN_ID and never a reins name. Placeholders: {batch} {stage} {type} {release} {work_dir}
+    {adapter} (the folder of the project's reins.toml) {reins} (this ReinsLite checkout) {stage_versions} (JSON
+    {stage: module version} of the batch's stages)."""
+    from . import projects
+    hit = next(((r, c) for r, c in projects.all_() if c.get("project") == b["project"]), None)
+    tmpl = ((hit[1].get("run") or {}).get("env") or {}) if hit else {}
+    if not tmpl:
+        return {}
+    keys = b.keys() if hasattr(b, "keys") else []
+    vals = {"batch": b["batch_id"], "stage": stage, "type": b["type"] or "",
+            "release": (b["release_name"] if "release_name" in keys else "") or "",
+            "work_dir": (b["work_dir"] if "work_dir" in keys else "") or "",
+            "adapter": str(projects.config_dir(hit[0]) or ""), "reins": str(Path(__file__).resolve().parents[1]),
+            "stage_versions": json.dumps(dict(con.execute(
+                "SELECT stage, coalesce(module_version,'') FROM batch_stage WHERE batch_id=?", (b["batch_id"],)).fetchall()),
+                sort_keys=True)}
+    out = {}
+    for k, v in tmpl.items():
+        try:
+            out[k] = str(v).format(**vals)
+        except (KeyError, IndexError, ValueError):
+            out[k] = str(v)
+    return out
+
+
 def _env(spec: dict) -> dict:
     port = config()["gateway_port"]
     token = spec["batch"] if spec["stage"] == SELF else f"{spec['batch']}:{spec['stage']}"
     return {**os.environ, "REINS_BATCH": spec["batch"], "REINS_STAGE": spec["stage"], "REINS_HOME": spec["home"],
             "REINS_MODULE_VERSION": spec["module_version"] or "", "PYTHONUNBUFFERED": "1",
             "REINS_BIN": str(Path(__file__).resolve().parents[1] / "bin" / "reins"),
-            **providers.client_env(port, token)}
+            **providers.client_env(port, token), **(spec.get("project_env") or {})}
 
 
 def _on_kill(con, batch: str, stage: str, pid: int, cmd: str, how: str) -> None:

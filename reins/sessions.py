@@ -274,9 +274,10 @@ def repo_of(path: str) -> tuple[Path | None, Path | None]:
 
 
 def project_of(main: Path | None) -> dict:
-    if main and (main / "reins.toml").is_file():
+    from . import projects
+    if main and projects.managed(main):
         try:
-            return tomllib.loads((main / "reins.toml").read_text(encoding="utf-8"))
+            return projects.load(main)
         except tomllib.TOMLDecodeError:
             return {}
     return {}
@@ -705,6 +706,14 @@ def briefing(con, sid: str) -> str:
     from .store import config
     docs = Path(__file__).resolve().parents[1] / "docs" / "WORKFLOW.md"
     lines = [f"[reins] You are session {sid[:8]}. Board: http://127.0.0.1:{config()['board_port']} . Rules: {docs}"]
+    try:                                       # a project managed from outside: its working rules sit with its settings
+        from . import projects
+        r = projects.find_root(Path(s["cwd"])) if s and s["cwd"] else None
+        ag = projects.config_dir(r) / "AGENTS.md" if r and projects.config_dir(r) else None
+        if ag and ag.is_file() and ag.parent != r:
+            lines.append(f"[reins] {r.name} is managed from outside: read {ag} before changing or running it.")
+    except (OSError, IndexError, KeyError):
+        pass
     if s and s["parent"]:
         lines.append(f"[reins] You were FORKED from session {s['parent'][:8]}. You own nothing it owns: its batches and "
                      f"worktrees stay with it. To develop a fix, first run: reins dev start MODULE SUFFIX --about '...' "
