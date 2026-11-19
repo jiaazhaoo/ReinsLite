@@ -34,6 +34,22 @@ from .store import ReinsError, now, session, today, tx
 IDENT = ["-c", "user.name=reins", "-c", "user.email=reins@local"]
 
 
+def ident(cfg: dict | None) -> list[str]:
+    """Who signs the merge commits and tags reins makes in a project: [dev] merge_author = "Name <email>" (a project
+    whose history must not name the framework, 2026-11-19), else reins."""
+    a = ((cfg or {}).get("dev") or {}).get("merge_author") or ""
+    if "<" in a and a.rstrip().endswith(">"):
+        name, mail = a.rsplit("<", 1)
+        return ["-c", f"user.name={name.strip()}", "-c", f"user.email={mail.rstrip().rstrip('>').strip()}"]
+    return IDENT
+
+
+def forbidden_in_history(cfg: dict | None, *texts: str) -> list[str]:
+    """[dev] history_forbid = ["word", ...]: words a project keeps out of the branch names and messages reins writes."""
+    words = ((cfg or {}).get("dev") or {}).get("history_forbid") or []
+    return sorted({w for w in words for t in texts if t and w.lower() in t.lower()})
+
+
 def git(repo: Path, *args: str, check=True) -> str:
     r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
     if check and r.returncode:
@@ -117,6 +133,10 @@ def start(con, repo: Path, module: str, suffix: str, about: str, from_batch: str
           cases: list[str] | None = None, files: list[str] | None = None, overlap_ok: str | None = None,
           issue: int | None = None) -> dict:
     cfg = project_cfg(repo)
+    bad = forbidden_in_history(cfg, suffix, about)
+    if bad:
+        raise ReinsError(f"{', '.join(bad)}: this project keeps these words out of its history ([dev] history_forbid); "
+                         "say it another way in the suffix and --about")
     _ensure_module(con, cfg, module)
     if issue is not None:
         from . import issues
@@ -250,7 +270,7 @@ def finish(con, version: str, skip_tier: str | None = None, why: str | None = No
     cfg = project_cfg(repo)
     if git(wt, "status", "--porcelain"):
         raise ReinsError(f"{wt} has uncommitted changes: commit them first")
-    r = subprocess.run(["git", *IDENT, "-C", str(wt), "merge", "--no-edit", "main"], capture_output=True, text=True)
+    r = subprocess.run(["git", *ident(cfg), "-C", str(wt), "merge", "--no-edit", "main"], capture_output=True, text=True)
     if r.returncode:
         raise ReinsError(f"merging main into {row['branch']} conflicts; resolve in {wt}, commit, finish again")
     gate_cmd = cfg.get("dev", {}).get("gate")
@@ -279,8 +299,14 @@ def finish(con, version: str, skip_tier: str | None = None, why: str | None = No
             evidence = _run_gate(con, version, wt, gate_cmd, skip_tier, why)
         else:
             evidence = "no gate configured in reins.toml [dev].gate"
-    msg = f"Merge {row['branch']}: {row['about']}\n\n{evidence}\n"
-    r = subprocess.run(["git", *IDENT, "-C", str(repo), "merge", "--no-ff", "-m", msg, row["branch"]],
+    if (cfg.get("dev") or {}).get("merge_message") == "short":
+        msg = f"Merge {row['branch']}: {row['about']}\n"            # the gate's evidence stays in reins.db (gate_log)
+    else:
+        msg = f"Merge {row['branch']}: {row['about']}\n\n{evidence}\n"
+    bad = forbidden_in_history(cfg, msg)
+    if bad:
+        raise ReinsError(f"the merge message would carry {', '.join(bad)} ([dev] history_forbid): not merged")
+    r = subprocess.run(["git", *ident(cfg), "-C", str(repo), "merge", "--no-ff", "-m", msg, row["branch"]],
                        capture_output=True, text=True)
     if r.returncode:
         raise ReinsError(f"merge into main failed: {r.stderr[-400:]}")
@@ -356,7 +382,10 @@ def release(con, repo: Path, note: str = "") -> dict:
         while f"{prefix}-{day}-{n}" in taken:
             n += 1
         name = f"{prefix}-{day}-{n}"
-        git(repo, *IDENT, "tag", "-a", name, "-m", note or name, "main")
+        bad = forbidden_in_history(cfg, note)
+        if bad:
+            raise ReinsError(f"the release note carries {', '.join(bad)} ([dev] history_forbid): say it another way")
+        git(repo, *ident(cfg), "tag", "-a", name, "-m", note or name, "main")
         wt = repo.parent / (f"{repo.name}-{name}" if name.startswith("rel-") else f"{repo.name}-rel-{name}")
         git(repo, "worktree", "add", "--detach", str(wt), name)
         subprocess.run(["chmod", "-R", "a-w", str(wt)], check=False)

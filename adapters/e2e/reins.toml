@@ -26,6 +26,11 @@ push = "origin"                           # reins dev finish / release / the wat
 # the project's word police first: a change that brings a forbidden word into a field name is refused (2026-11-16)
 gate = "python3 $REINS_ADAPTER/no_reins.py && python3 /env/code/standards/vocab/check.py diff && python3 $REINS_ADAPTER/gate.py python3 benchmark/judge_hmlr/gate.py"
 release_prefix = "qa"                     # tags qa-YYYYMMDD-N, trees e2e-plan-extract-rel-qa-YYYYMMDD-N (as before reins)
+# e2e's history names no framework either (user 2026-11-19): merges and tags signed by the project, merge messages
+# without the gate's evidence (kept in reins.db gate_log), and no candidate named or described with these words
+merge_author = "e2e-plan-extract <e2e-plan-extract@users.noreply.github.com>"
+merge_message = "short"
+history_forbid = ["reins"]
 # after reins dev release (in the new release tree): the GitHub release page, its models, smoke-expected.json -- what
 # tools/update.sh on other machines needs to install it (user 2026-10-26: whoever clones the repo runs it on their own)
 post_release = "python3 tools/release_publish.py --tag $REINS_RELEASE"
