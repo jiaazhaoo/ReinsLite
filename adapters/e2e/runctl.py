@@ -20,7 +20,9 @@ Verbs (e2e's words -> reins):
     wait RUN [--timeout S]                   -> reins wait
     notify KEY LEVEL TITLE BODY              -> a note on the board (reins notify)
 
-reins is called from / so that the intake project's batches are not mistaken for e2e's (no settings above /).
+reins is called from / so that the intake project's batches are not mistaken for e2e's (no settings above /);
+`open --project P` for a project reins manages from an adapter (e2e-plan-extract: e.g. tools/cloud/prepare.sh's chunk runs) runs from
+that project's checkout, so the batch gets its rules (work dirs, case ids, stages).
 """
 from __future__ import annotations
 
@@ -35,8 +37,8 @@ ROOT = Path(__file__).resolve().parents[2]
 REINS = os.environ.get("REINS_BIN") or str(ROOT / "bin" / "reins")
 
 
-def reins(*a: str, check: bool = True) -> str:
-    p = subprocess.run([REINS, *a], capture_output=True, text=True, cwd="/")
+def reins(*a: str, check: bool = True, cwd: str = "/") -> str:
+    p = subprocess.run([REINS, *a], capture_output=True, text=True, cwd=cwd)
     if check and p.returncode:
         sys.stderr.write(p.stderr)
         raise SystemExit(p.returncode or 1)
@@ -46,7 +48,17 @@ def reins(*a: str, check: bool = True) -> str:
 
 def _open(args: list[str]) -> None:
     args = ["--type" if a == "--kind" else a for a in args]
-    out = reins("batch", "open", *args)
+    cwd = "/"
+    if "--project" in args:
+        sys.path.insert(0, str(ROOT))
+        from reins import projects
+        name = args[args.index("--project") + 1]
+        ext = set(projects.external())                  # only a project managed from an adapter (not intake's old repo)
+        hit = next((r for r, c in projects.all_() if c.get("project") == name and r.resolve() in ext), None)
+        if hit:
+            cwd = str(hit)
+            i = args.index("--project"); args = args[:i] + args[i + 2:]     # the checkout names the project
+    out = reins("batch", "open", *args, cwd=cwd)
     scope = args[args.index("--scope") + 1] if "--scope" in args else ""
     kind = args[args.index("--type") + 1] if "--type" in args else ""
     m = re.search(rf"\b{re.escape(scope)}-{re.escape(kind)}-\d{{8}}-\d+\b", out) if scope and kind else None
