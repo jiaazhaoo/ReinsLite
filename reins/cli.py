@@ -193,6 +193,9 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--ruleset"); x.add_argument("--env"); x.add_argument("--config", action="append", type=Path)
     x.add_argument("--input", action="append", type=Path, help="mapping tables and other inputs to hash into provenance")
     x.add_argument("--time-budget", type=float, help="hours for the whole batch; the watchdog reports overruns")
+    x.add_argument("--key-fields", help="a case key of several columns, comma-separated (e.g. council,oachargeid,"
+                   "further_information_reference): every case row must have them, unique together")
+    x.add_argument("--case-column", help="the case set's column that names each case (with --key-fields)")
     x.add_argument("--workflow", help="workflow-<name>-vN: stages, module versions, prompts and models come from it")
     x = b.add_parser("adopt", help="bring a batch that already exists on disk under reins")
     _scope_args(x)
@@ -1074,10 +1077,12 @@ def _batch(con, args, cfg) -> int:
                             purpose=args.purpose, case_file=Path(args.cases),
                             stages=[batches.parse_stage_spec(s) for s in args.stage], parent=args.parent,
                             release_name=args.release, aliases=args.alias,
-                            case_pattern=cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN), case_key=_key(cfg),
+                            case_pattern=cfg.get("case_id_pattern", names.DEFAULT_CASE_PATTERN),
+                            case_key=args.case_column or _key(cfg),
                             work_dir=args.work_dir, spend_cap=args.cap, ruleset=args.ruleset, env_name=args.env,
                             config_files=args.config, input_files=args.input, workflow=args.workflow,
-                            work_dir_patterns=cfg.get("run", {}).get("work_dirs"), adopt_dir=args.adopt_dir)
+                            work_dir_patterns=cfg.get("run", {}).get("work_dirs"), adopt_dir=args.adopt_dir,
+                            key_fields=_key_fields(args, cfg))
         probe = cfg.get("run", {}).get("probe")
         if probe:
             batches.set_probe(con, bid, probe)
@@ -1139,7 +1144,7 @@ def _batch(con, args, cfg) -> int:
             print(f"WARNING {w}", file=sys.stderr)
     elif args.sub == "mark":
         if args.file:
-            rows = batches.read_marks(Path(args.file), _key(cfg))
+            rows = batches.read_marks(Path(args.file), batches.batch_case_column(con, args.batch) or _key(cfg))
         elif args.case and args.status:
             rows = [(args.case, args.status, args.reason)]
         else:
@@ -1196,11 +1201,23 @@ def _batch(con, args, cfg) -> int:
     return 0
 
 
+def _key_fields(args, cfg) -> list[str] | None:
+    """--key-fields, else the project's case_key_fields (reins.toml); None = the case is its one id column."""
+    if getattr(args, "key_fields", None):
+        return [f.strip() for f in args.key_fields.split(",") if f.strip()]
+    v = cfg.get("case_key_fields")
+    return list(v) if v else None
+
+
 def _case(con, args) -> int:
     members = [r[0] for r in con.execute("SELECT batch_id FROM batch_case WHERE case_id=? ORDER BY batch_id", (args.case_id,))]
     if not members:
         print(f"{args.case_id}: in no registered batch"); return 1
     print(f"{args.case_id}: in {len(members)} batches: {', '.join(members)}")
+    for m in members:                                    # the case's key of several columns, where its batch has one
+        k = batches.case_key_of(con, m, args.case_id)
+        if k:
+            print(f"  {m}: " + ", ".join(f"{f} {v!r}" for f, v in k.items()))
     if args.provenance:
         for m in members:
             print(json.dumps(batches.provenance(con, m), ensure_ascii=False, indent=1))

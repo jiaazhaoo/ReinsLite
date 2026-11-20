@@ -119,7 +119,8 @@ def open_(con, *, project: str, scope: str, type_: str, purpose: str, case_file:
           work_dir: str | None = None, spend_cap: float = 0.0, day: str | None = None,
           ruleset: str | None = None, env_name: str | None = None, config_files: list[Path] | None = None,
           input_files: list[Path] | None = None, workflow: str | None = None,
-          work_dir_patterns: list[str] | None = None, adopt_dir: str | None = None) -> str:
+          work_dir_patterns: list[str] | None = None, adopt_dir: str | None = None,
+          key_fields: list[str] | None = None) -> str:
     if not purpose.strip():
         raise ReinsError("a batch needs a purpose (one sentence: why it runs)")
     if workflow:
@@ -137,7 +138,9 @@ def open_(con, *, project: str, scope: str, type_: str, purpose: str, case_file:
         ids = []
     else:
         ids = names.read_case_set(case_file, case_key)
+    keys = case_keys(case_file, key_fields, ids)
     problems = names.case_problems(ids, case_pattern, case_key) if ids else []
+    problems += names.key_problems(keys) if keys else []
     if problems:
         shown = "\n  ".join(problems[:20]) + (f"\n  ... {len(problems) - 20} more" if len(problems) > 20 else "")
         raise ReinsError(f"case set {case_file} is not usable ({len(problems)} problems):\n  {shown}")
@@ -184,7 +187,7 @@ def open_(con, *, project: str, scope: str, type_: str, purpose: str, case_file:
                     (bid, project, scope, type_, day, seq, purpose, parent, str(case_file.resolve()) if case_file else "",
                      names.sha256_lines(ids), len(ids), release_name, json.dumps(aliases or [], ensure_ascii=False),
                      spend_cap, work_dir, ruleset, env_name, config_sha, json.dumps(input_shas), session(), now()))
-        con.executemany("INSERT INTO batch_case VALUES (?,?)", [(bid, i) for i in ids])
+        insert_cases(con, bid, ids, keys, case_key, key_fields)
         con.executemany("INSERT INTO batch_stage (batch_id, stage, ord, module_version, status, paid, spend_cap,"
                         " time_limit_s) VALUES (?,?,?,?, 'planned', ?,?,?)",
                         [(bid, s["stage"], k, s["module_version"], s["paid"], s["spend_cap"], s["time_limit_s"])
@@ -229,12 +232,13 @@ def standing_approval(con, batch: str) -> float | None:
 def adopt(con, *, project: str, scope: str, type_: str, purpose: str, case_file: Path, work_dir: str,
           stages: list[tuple[str, str]], release_name: str | None, owner: str | None, aliases: list[str] | None = None,
           case_pattern: str = names.DEFAULT_CASE_PATTERN, day: str | None = None, note: str = "",
-          case_key: str | None = None) -> str:
+          case_key: str | None = None, key_fields: list[str] | None = None) -> str:
     """Bring a batch that was started outside reins under management. `stages` = [(name, state)] with state in
     planned | running | done | skipped. Done stages get every case marked done with reason 'adopted' (the real
     per-case ledger starts from the running stage on). Strict-type checks are relaxed: the batch is a fact."""
     ids = names.read_case_set(case_file, case_key)
-    probs = names.case_problems(ids, case_pattern, case_key)
+    keys = case_keys(case_file, key_fields, ids)
+    probs = names.case_problems(ids, case_pattern, case_key) + (names.key_problems(keys) if keys else [])
     if probs:
         raise ReinsError(f"case set not usable: {probs[:5]}")
     day = day or today()
@@ -251,7 +255,7 @@ def adopt(con, *, project: str, scope: str, type_: str, purpose: str, case_file:
                     " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)",
                     (bid, project, scope, type_, day, seq, purpose, str(case_file.resolve()), names.sha256_lines(ids),
                      len(ids), release_name, json.dumps(aliases or [], ensure_ascii=False), status, work_dir, owner, now()))
-        con.executemany("INSERT INTO batch_case VALUES (?,?)", [(bid, i) for i in ids])
+        insert_cases(con, bid, ids, keys, case_key, key_fields)
         t = now()
         for k, (stage, state) in enumerate(stages):
             names.check_token("stage", stage)
@@ -403,6 +407,45 @@ def mark(con, batch: str, stage: str, rows: list[tuple[str, str, str | None]]) -
         con.executemany("INSERT INTO case_event (at, batch_id, stage, case_id, status, reason, module_version)"
                         " VALUES (?,?,?,?,?,?,?)", [(t, batch, stage, c, s, r, st["module_version"]) for c, s, r in rows])
     return len(rows)
+
+
+def case_keys(case_file: Path | None, key_fields: list[str] | None, ids: list[str]) -> list[dict]:
+    """The key fields of each case (a case key of several columns, user 2026-11-20: case 名单必须按照三个字段), in the
+    order of ids; [] when the batch has no such key."""
+    if not key_fields or case_file is None:
+        return []
+    keys = names.read_case_keys(case_file, key_fields)
+    if len(keys) != len(ids):
+        raise ReinsError(f"{case_file}: {len(keys)} key rows for {len(ids)} cases")
+    by_id: dict[str, set] = {}
+    for i, k in zip(ids, keys):
+        by_id.setdefault(i, set()).add(tuple(k.values()))
+    split = {i: v for i, v in by_id.items() if len(v) > 1}
+    if split:                                  # the batch's files name a case by one column: it must be unique here
+        i, v = next(iter(split.items()))
+        raise ReinsError(f"{case_file}: {len(split)} case ids carry more than one key (e.g. {i!r}: "
+                         f"{sorted(v)}); one batch names its cases by one column, so put them in separate batches")
+    return keys
+
+
+def insert_cases(con, bid: str, ids: list[str], keys: list[dict], case_key: str | None,
+                 key_fields: list[str] | None) -> None:
+    con.executemany("INSERT INTO batch_case (batch_id, case_id, case_key_json) VALUES (?,?,?)",
+                    [(bid, i, json.dumps(keys[n], ensure_ascii=False) if keys else None) for n, i in enumerate(ids)])
+    if key_fields:
+        con.execute("UPDATE batch SET case_key_fields=? WHERE batch_id=?",
+                    (json.dumps({"case_column": case_key or names.CASE_KEY, "fields": list(key_fields)}), bid))
+
+
+def batch_case_column(con, batch: str) -> str | None:
+    """The column a batch's own files name its case by (stored when it was opened with a key of several columns)."""
+    row = con.execute("SELECT case_key_fields FROM batch WHERE batch_id=?", (batch,)).fetchone()
+    return json.loads(row[0]).get("case_column") if row and row[0] else None
+
+
+def case_key_of(con, batch: str, case_id: str) -> dict:
+    row = con.execute("SELECT case_key_json FROM batch_case WHERE batch_id=? AND case_id=?", (batch, case_id)).fetchone()
+    return json.loads(row[0]) if row and row[0] else {}
 
 
 def read_marks(path: Path, key: str | None = None) -> list[tuple[str, str, str | None]]:

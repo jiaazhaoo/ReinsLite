@@ -151,6 +151,35 @@ def read_case_set(path: Path, key: str | None = None) -> list[str]:
     return [ln for ln in text.splitlines() if ln != ""]
 
 
+def read_case_keys(path: Path, fields: list[str]) -> list[dict]:
+    """The key fields of every row of a .csv/.tsv/.json case set, in file order (a case key of several columns, e.g.
+    council + oachargeid + further_information_reference). A missing column is refused; an empty value is kept (a
+    field the source leaves blank is still part of the key)."""
+    text = path.read_text(encoding="utf-8-sig")
+    if path.suffix.lower() in (".csv", ".tsv"):
+        rows = list(csv.DictReader(text.splitlines(), delimiter="\t" if path.suffix.lower() == ".tsv" else ","))
+        have = list(rows[0].keys()) if rows else []
+    elif path.suffix.lower() == ".json":
+        import json as _json
+        d = _json.loads(text)
+        if isinstance(d, dict):
+            d = d.get("records") or d.get("data") or next((v for v in d.values() if isinstance(v, list)), [])
+        rows = [r for r in d if isinstance(r, dict)]
+        have = list(rows[0].keys()) if rows else []
+    else:
+        raise ReinsError(f"{path}: a case key of several columns needs a .csv/.tsv/.json case set with those columns")
+    missing = [f for f in fields if f not in have]
+    if missing:
+        raise ReinsError(f"{path}: the case key needs the columns {fields}; missing {missing} (columns: {have[:12]})")
+    return [{f: str(r.get(f) if r.get(f) is not None else "").strip() for f in fields} for r in rows]
+
+
+def key_problems(keys: list[dict]) -> list[str]:
+    """A case key of several columns is unique together."""
+    seen = Counter(tuple(k.values()) for k in keys)
+    return [f"case key {dict(zip(keys[0], v))} appears {n} times" for v, n in seen.items() if n > 1]
+
+
 def sha256_lines(ids: list[str]) -> str:
     return hashlib.sha256("\n".join(sorted(ids)).encode()).hexdigest()
 
