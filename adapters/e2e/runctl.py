@@ -46,6 +46,26 @@ def reins(*a: str, check: bool = True, cwd: str = "/") -> str:
     return p.stdout
 
 
+# the case of this project is three fields together (user 2026-11-06 / 2026-11-20: case 名单必须按照三个字段)
+CASE_KEY_FIELDS = ["council", "oachargeid", "further_information_reference"]
+
+
+def key_args(args: list[str]) -> list[str]:
+    """--key-fields / --case-column for a case set that carries the three key columns (intake writes them since
+    2026-11-20); a case set without them opens as before."""
+    if "--cases" not in args or "--key-fields" in args:
+        return []
+    f = Path(args[args.index("--cases") + 1])
+    try:
+        head = f.read_text(encoding="utf-8-sig").splitlines()[0] if f.suffix.lower() in (".csv", ".tsv") else ""
+    except (OSError, IndexError):
+        return []
+    cols = [c.strip() for c in head.split("\t" if f.suffix.lower() == ".tsv" else ",")]
+    if all(c in cols for c in CASE_KEY_FIELDS):
+        return ["--key-fields", ",".join(CASE_KEY_FIELDS), "--case-column", "oachargeid"]
+    return []
+
+
 def _open(args: list[str]) -> None:
     args = ["--type" if a == "--kind" else a for a in args]
     cwd = "/"
@@ -58,6 +78,7 @@ def _open(args: list[str]) -> None:
         if hit:
             cwd = str(hit)
             i = args.index("--project"); args = args[:i] + args[i + 2:]     # the checkout names the project
+    args += key_args(args)
     out = reins("batch", "open", *args, cwd=cwd)
     scope = args[args.index("--scope") + 1] if "--scope" in args else ""
     kind = args[args.index("--type") + 1] if "--type" in args else ""

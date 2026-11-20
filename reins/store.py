@@ -556,7 +556,9 @@ def connect(path: Path | None = None, ensure: bool = True) -> sqlite3.Connection
     return con
 
 
-MIGRATIONS = [("batch", "probe_cmd", "TEXT"), ("batch", "time_budget_h", "REAL"), ("batch", "workflow", "TEXT"),
+MIGRATIONS = [# a case key of several columns (2026-11-20): the batch's key fields + its case column, and each case's fields
+              ("batch", "case_key_fields", "TEXT"), ("batch_case", "case_key_json", "TEXT"),
+              ("batch", "probe_cmd", "TEXT"), ("batch", "time_budget_h", "REAL"), ("batch", "workflow", "TEXT"),
               # module gates (2026-10-19): which module a gate scored, its own metrics, how much of the downstream re-ran
               ("gate_log", "module", "TEXT"), ("gate_log", "metrics", "TEXT"), ("gate_log", "cases_rerun", "INTEGER"),
               ("gate_log", "cases_reused", "INTEGER"),
