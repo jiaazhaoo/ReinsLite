@@ -1,6 +1,6 @@
 # Working on e2e-plan-extract on this machine (ReinsLite, from outside)
 
-e2e-plan-extract (`/env/code/e2e-plan-extract`, GitHub jiaazhaoo/e2e-plan-extract) is business code that anyone may
+e2e-plan-extract (`/env/code/e2e-plan-extract`, GitHub RMSI-UK/e2e-plan-extract) is business code that anyone may
 clone and run; it carries no reins file and names no reins variable (user 2026-11-19). On this machine ReinsLite
 manages it from here: its settings are `reins.toml` / `rules.toml` / `review.toml` in this folder, found by the repo
 path. There is no other way to change its code or run its pipeline here (user, 2026-10-07). Board: http://127.0.0.1:8791.
