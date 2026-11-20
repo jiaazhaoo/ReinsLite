@@ -26,24 +26,32 @@ def _run(*args, prefix="MAN_"):
     return subprocess.run([sys.executable, str(HOOK), *args], capture_output=True, text=True, env=env)
 
 
-def _w(tmp_path, recs):
-    W = tmp_path / "w"
-    W.mkdir()
+def _w(tmp_path, recs, council="mansfield"):
+    W = tmp_path / "councils" / council / "runs" / "w"          # a run's work dir names its council
+    W.mkdir(parents=True)
     (W / "records.json").write_text(json.dumps(recs))
     return W
 
 
+def _rows(out: str) -> list[list[str]]:
+    lines = out.splitlines()
+    assert lines[0] == "council\toachargeid\tfurther_information_reference"
+    return [ln.split("\t") for ln in lines[1:]]
+
+
 @needs_e2e
 def test_numeric_ids_unchanged(tmp_path):
-    W = _w(tmp_path, {"BRA_15884": {"oachargeid": "15884", "ref": "95/00261/LBC"}, "BRA_1": {}})
-    assert _run("cases", str(W), prefix="BRA_").stdout.split() == ["15884", "1"]
+    W = _w(tmp_path, {"BRA_15884": {"oachargeid": "15884", "further-information-reference": "95/00261/LBC"}, "BRA_1": {}},
+           council="braintree")
+    assert _rows(_run("cases", str(W), prefix="BRA_").stdout) == [["braintree", "15884", "95/00261/LBC"],
+                                                                 ["braintree", "1", ""]]
 
 
 @needs_e2e
 def test_work_dir_keyed_by_another_id_gives_the_clients_id(tmp_path):
     W = _w(tmp_path, {"MAN_707374": {"oachargeid": "707374", "orig_oachargeid": "1982/0520/P", "ref": "1982/0520/P"}})
     assert H.native_ids(W) == {"MAN_707374": "1982/0520/P"}
-    assert _run("cases", str(W)).stdout.split() == ["1982/0520/P"]
+    assert _rows(_run("cases", str(W)).stdout) == [["mansfield", "1982/0520/P", ""]]
     cs = tmp_path / "cases.txt"
     cs.write_text("1982/0520/P\n")
     assert _run("check-cases", str(W), str(cs)).returncode == 0
@@ -57,6 +65,52 @@ def test_two_records_one_charge_refused(tmp_path):
                       "MAN_2": {"oachargeid": "2", "orig_oachargeid": "1982/0001/P"}})
     r = _run("cases", str(W))
     assert r.returncode != 0 and "both name oachargeid" in r.stderr
+
+
+@needs_e2e
+def test_case_set_of_three_fields_checked_by_all_three(tmp_path):
+    """user 2026-11-20: 一个case在我们这永远是3字段作为id,无论任何工作流和框架"""
+    W = _w(tmp_path, {"BRA_7": {"oachargeid": "7", "further-information-reference": "TPO 6/88"}}, council="braintree")
+    cs = tmp_path / "cases.tsv"
+    cs.write_text(_run("cases", str(W), prefix="BRA_").stdout)
+    r = _run("check-cases", str(W), str(cs), prefix="BRA_")
+    assert r.returncode == 0 and "further_information_reference" in r.stdout
+    cs.write_text("council\toachargeid\tfurther_information_reference\nbraintree\t7\tTPO 6/89\n")
+    assert _run("check-cases", str(W), str(cs), prefix="BRA_").returncode == 1     # same id, another case
+
+
+@needs_e2e
+def test_a_case_is_never_named_without_its_council(tmp_path):
+    W = tmp_path / "bench" / "w"
+    W.mkdir(parents=True)
+    (W / "records.json").write_text(json.dumps({"BRA_7": {"oachargeid": "7"}}))
+    r = _run("cases", str(W), prefix="BRA_")
+    assert r.returncode != 0 and "council" in r.stderr
+    (W / "records.json").write_text(json.dumps({"BRA_7": {"oachargeid": "7", "council": "Braintree"}}))
+    assert _rows(_run("cases", str(W), prefix="BRA_").stdout) == [["braintree", "7", ""]]
+
+
+@needs_e2e
+def test_marks_name_the_case_by_its_three_fields(tmp_path):
+    W = _w(tmp_path, {"BRA_7": {"oachargeid": "7", "further-information-reference": "A/7"}}, council="braintree")
+    keys = H.native_keys(W)
+    text = H.key_tsv([{**keys["BRA_7"], "status": "done", "reason": ""}], ("status", "reason"))
+    assert text == "council\toachargeid\tfurther_information_reference\tstatus\treason\nbraintree\t7\tA/7\tdone\t\n"
+
+
+def test_register_marks_of_a_keyed_batch(tmp_path, monkeypatch):
+    import cloud_register as register
+    W = tmp_path / "councils" / "mansfield" / "runs" / "b1"; W.mkdir(parents=True)
+    (W / "records.json").write_text(json.dumps({"MAN_1": {"oachargeid": "1", "orig_oachargeid": "1990/0001/P",
+                                                          "further-information-reference": "1990/0001/P"}}))
+    f = tmp_path / "marks.tsv"
+    monkeypatch.setattr(register, "batch_keyed", lambda B: True)
+    register.marks_file(f, W, "b1", [("1990/0001/P", "done", "1 plan(s) placed on RunPod")])
+    assert f.read_text().splitlines() == ["council\toachargeid\tfurther_information_reference\tstatus\treason",
+                                          "mansfield\t1990/0001/P\t1990/0001/P\tdone\t1 plan(s) placed on RunPod"]
+    monkeypatch.setattr(register, "batch_keyed", lambda B: False)              # opened before 2026-11-20
+    register.marks_file(f, W, "b1", [("1990/0001/P", "done", "")])
+    assert f.read_text().splitlines()[0] == "case_id\tstatus\treason"
 
 
 def fake_reins(tmp_path, fail_on):

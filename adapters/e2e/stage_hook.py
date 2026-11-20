@@ -9,8 +9,13 @@ directory, or $E2E_REPO). Until 2026-11-19 this file lived in e2e as tools/reins
     python3 stage_hook.py start STAGE EVAL_DIR      reins batch stage-start (skipped when already running/done)
     python3 stage_hook.py end STAGE EVAL_DIR        per-case outcome from the stage's outputs -> reins batch mark,
                                                     then reins batch stage-end (refused if a case has none)
-    python3 stage_hook.py cases EVAL_DIR            the batch's case set (every record's own oachargeid) on stdout
+    python3 stage_hook.py cases EVAL_DIR > X.tsv    the batch's case set on stdout: every record as council, oachargeid,
+                                                    further_information_reference (open the batch with --cases X.tsv)
     python3 stage_hook.py check-cases EVAL_DIR FILE exit 0 when FILE (a batch's case set) equals the records
+
+A case is its three fields together, in every workflow (user 2026-11-20: 一个case在我们这永远是3字段作为id,无论任何工作流和
+框架): the case set, the check and the marks name each case by council + oachargeid + further_information_reference.
+A batch opened before 2026-11-20 on a one-id case set is checked and marked in that form until it ends.
 
 Stages and the steps of tools/run_local_qa.sh they cover; a case's outcome is read from what the steps wrote:
   prepare    0                cases.json + out/prepare/<case>.json (e2e_plan_extract/s1_inputs/sources.py)
@@ -50,6 +55,8 @@ import run_record  # noqa: E402  (tools/run_record.py: the step output checks)
 from run_record import plan_keys  # noqa: E402  (s3_georef.plan_key: each plan's own output name)
 
 STAGES = ("prepare", "plan_crop", "georef", "trace", "check")
+KEY = ["council", "oachargeid", "further_information_reference"]
+FIR = "further-information-reference"                     # the client's field name, as records.json keeps it
 STAGE_CHECKS = {"check": ("12", "13", "14", "15")}        # stages whose step checks decide done / failed
 PREFIX = os.environ.get("CASE_PREFIX", "SHF_")
 
@@ -83,6 +90,50 @@ def native_ids(W: Path) -> dict[str, str]:
             sys.exit(f"stage_hook: records {seen[k]} and {c} both name oachargeid {k!r}: one case, two records")
         seen[k] = c
     return out
+
+
+def council_of(W: Path, rec: dict | None = None) -> str:
+    """The case's council: the record's own, else the work dir's (/data/councils/<council>/...), else the batch scope's.
+    None of them: refused -- a case is never named without its council."""
+    if rec and str(rec.get("council") or "").strip():
+        return str(rec["council"]).strip().lower()
+    parts = Path(W).resolve().parts
+    if "councils" in parts and parts.index("councils") + 1 < len(parts):
+        return parts[parts.index("councils") + 1]
+    if os.environ.get("REINS_BATCH"):
+        return os.environ["REINS_BATCH"].split("-", 1)[0]
+    sys.exit(f"stage_hook: {W} is not under /data/councils/<council>/ and its records name no council: "
+             "a case is council + oachargeid + further_information_reference")
+
+
+def native_keys(W: Path) -> dict[str, dict]:
+    """work-dir case key -> the case's three fields (council, the client's oachargeid as native_ids, the record's
+    further-information-reference, blank where the client left it blank)."""
+    recs = load(W / "records.json", {})
+    ids = native_ids(W)
+    return {c: {"council": council_of(W, r), "oachargeid": ids[c],
+                "further_information_reference": str((r or {}).get(FIR) or "").strip()} for c, r in recs.items()}
+
+
+def key_tsv(rows: list[dict], extra: tuple = ()) -> str:
+    cols = KEY + list(extra)
+    return "\t".join(cols) + "\n" + "".join("\t".join(str(r.get(c, "")) for c in cols) + "\n" for r in rows)
+
+
+def read_case_set(path: str) -> tuple[bool, set]:
+    """(keyed, cases): a case set with the three columns gives triples; an older one-id set gives ids."""
+    lines = [ln for ln in Path(path).read_text(encoding="utf-8-sig").splitlines() if ln.strip()]
+    sep = "\t" if lines and "\t" in lines[0] else ","
+    if lines and all(k in lines[0].split(sep) for k in KEY):
+        rows = csv.DictReader(lines, delimiter=sep)
+        return True, {tuple((r.get(k) or "").strip() for k in KEY) for r in rows}
+    return False, {ln.strip() for ln in lines if ln.strip() not in ("oachargeid", "case_id")}
+
+
+def batch_keyed(batch: str) -> bool:
+    """True when the batch was opened on a case set of the three fields (reins stores its case_key_fields)."""
+    r = reins("batch", "status", batch, "--json")
+    return bool(r.returncode == 0 and (json.loads(r.stdout).get("batch") or {}).get("case_key_fields"))
 
 
 def outcomes(stage: str, W: Path) -> list[tuple[str, str, str]]:
@@ -183,13 +234,16 @@ def stage_status(batch: str, stage: str) -> str | None:
 
 def main() -> int:
     if len(sys.argv) >= 3 and sys.argv[1] == "cases":
-        print("\n".join(native_ids(Path(sys.argv[2])).values()))
+        print(key_tsv(list(native_keys(Path(sys.argv[2])).values())), end="")
         return 0
     if len(sys.argv) == 4 and sys.argv[1] == "check-cases":
-        want = set(native_ids(Path(sys.argv[2])).values())
-        have = {l.strip() for l in open(sys.argv[3]) if l.strip() and l.strip() not in ("oachargeid", "case_id")}
-        print(f"batch case set = records.json ({len(want)})" if want == have else
-              f"batch case set differs from records.json: {len(have - want)} extra, {len(want - have)} missing")
+        keyed, have = read_case_set(sys.argv[3])
+        W = Path(sys.argv[2])
+        want = {tuple(k[f] for f in KEY) for k in native_keys(W).values()} if keyed else set(native_ids(W).values())
+        form = "council, oachargeid, further_information_reference" if keyed else "oachargeid only (opened before 2026-11-20)"
+        print(f"batch case set = records.json ({len(want)}; {form})" if want == have else
+              f"batch case set differs from records.json ({form}): {len(have - want)} extra, {len(want - have)} missing"
+              + (f", e.g. extra {sorted(have - want)[:2]} missing {sorted(want - have)[:2]}" if want != have else ""))
         return 0 if want == have else 1
     batch = os.environ.get("REINS_BATCH")
     if not batch:
@@ -213,10 +267,15 @@ def main() -> int:
         r = reins("batch", "stage-start", batch, stage, "--output", str(W / "lab"), "--log", str(W / "logs"))
         if r.returncode:
             print(r.stderr, end="", file=sys.stderr); return r.returncode
-    ids = native_ids(W)
-    rows = [(ids.get(c) or oaid(c), s, why) for c, s, why in outcomes(stage, W)]
     with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as f:
-        f.write("oachargeid\tstatus\treason\n" + "".join(f"{c}\t{s}\t{why}\n" for c, s, why in rows))
+        if batch_keyed(batch):                          # each case by its three fields
+            keys = native_keys(W)
+            f.write(key_tsv([{**keys[c], "status": s, "reason": why} for c, s, why in outcomes(stage, W)],
+                            ("status", "reason")))
+        else:                                           # a batch opened on one id before 2026-11-20
+            ids = native_ids(W)
+            rows = [(ids.get(c) or oaid(c), s, why) for c, s, why in outcomes(stage, W)]
+            f.write("oachargeid\tstatus\treason\n" + "".join(f"{c}\t{s}\t{why}\n" for c, s, why in rows))
     end = ["batch", "stage-end", batch, stage]
     if stage in STAGE_CHECKS:
         with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as g:

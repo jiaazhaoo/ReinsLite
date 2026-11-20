@@ -40,6 +40,45 @@ def case_ids(W: Path) -> dict:
     return out
 
 
+KEY = ["council", "oachargeid", "further_information_reference"]
+
+
+def case_keys(W: Path) -> dict:
+    """run key -> the case's three fields (user 2026-11-20: 一个case在我们这永远是3字段作为id,无论任何工作流和框架): council
+    = the record's own, else the work dir's (/data/councils/<council>/runs/...); the record's further-information-reference."""
+    recs = json.loads((W / "records.json").read_text())
+    ids = case_ids(W)
+    parts = W.resolve().parts
+    here = parts[parts.index("councils") + 1] if "councils" in parts and parts.index("councils") + 1 < len(parts) else ""
+    out = {}
+    for k, r in recs.items():
+        council = str(r.get("council") or here).strip().lower()
+        if not council:
+            raise SystemExit(f"{W}: record {k} names no council and the work dir is not under /data/councils/<council>/")
+        out[k] = {"council": council, "oachargeid": ids[k],
+                  "further_information_reference": str(r.get("further-information-reference") or "").strip()}
+    return out
+
+
+def batch_keyed(B: str) -> bool:
+    """The batch was opened on a case set of the three fields (reins stores its case_key_fields)."""
+    r = subprocess.run([REINS, "batch", "status", B, "--json"], capture_output=True, text=True)
+    try:
+        return bool(r.returncode == 0 and (json.loads(r.stdout).get("batch") or {}).get("case_key_fields"))
+    except ValueError:
+        return False
+
+
+def marks_file(f: Path, W: Path, B: str, rows: list[tuple[str, str, str]]) -> None:
+    """Each case by its three fields; a batch opened on one id before 2026-11-20 keeps that form."""
+    if batch_keyed(B):
+        by_id = {k["oachargeid"]: k for k in case_keys(W).values()}
+        f.write_text("\t".join(KEY + ["status", "reason"]) + "\n" + "".join(
+            "\t".join([by_id[a][c] for c in KEY] + [b, c2]) + "\n" for a, b, c2 in rows))
+    else:
+        f.write_text("case_id\tstatus\treason\n" + "".join(f"{a}\t{b}\t{c}\n" for a, b, c in rows))
+
+
 def marks(W: Path) -> tuple[list[tuple[str, str, str]], dict]:
     R = json.loads((W / "lab/georef/out/results_0of1.json").read_text())
     ids = case_ids(W)
@@ -75,7 +114,7 @@ def register(state: Path, B: str, W: Path, stages: list[str], prefix: str) -> tu
     already done is left), mark every case, end; any refusal stops here and says which command and why."""
     rows, st = marks(W)
     f = state / f"marks_{B}.tsv"
-    f.write_text("case_id\tstatus\treason\n" + "".join(f"{a}\t{b}\t{c}\n" for a, b, c in rows))
+    marks_file(f, W, B, rows)
     rc, out = reins_rc("preflight", B, env={**os.environ, "CASE_PREFIX": prefix})
     if rc:
         fails = [l.strip() for l in out.splitlines() if l.strip().startswith("FAIL")]

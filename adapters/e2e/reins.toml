@@ -5,6 +5,9 @@
 project = "e2e-plan-extract"
 repo = "/env/code/e2e-plan-extract"
 case_key = "oachargeid"                   # this project's name for the case key column (reins reads it beside case_id)
+# a case is these three together, in every workflow (user 2026-11-20: 一个case在我们这永远是3字段作为id,无论任何工作流和框架):
+# batch open refuses a case set without them (make it with: python3 $REINS_ADAPTER/stage_hook.py cases EVAL_DIR > X.tsv)
+case_key_fields = ["council", "oachargeid", "further_information_reference"]
 case_id_pattern = "^[^\\s,]+$"            # the client's own oachargeid (Sheffield 75755, Mansfield 1986/0508/P, Powys
                                           # 202100;3031425170): no spaces or commas; the case is council + oachargeid + further-information-reference
 
