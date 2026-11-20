@@ -16,10 +16,14 @@ path. There is no other way to change its code or run its pipeline here (user, 2
 4. A change to these settings or to the glue here is a ReinsLite change: `reins dev start core SUFFIX` in /env/code/ReinsLite.
 
 **Run** (reins controls cost, time, benchmark, the case ledger):
-5. `reins batch open --council C --wp W --type production|rework|experiment|pilot|eval --purpose '...' --cases CASES
+5. `reins batch open --council C --wp W --type production|rework|experiment|pilot|eval --purpose '...' --cases CASES.tsv
    --work-dir /data/councils/C/runs/{batch} --release qa-... --stage prepare --stage plan_crop=V --stage georef=V
    --stage trace=V --stage check=V:paid --time-budget HOURS`, `reins preflight B`, ask the user for the cap
    (`reins batch approve B --cap USD`), then from a release tree `reins run B --self-staged -- tools/run_local_qa.sh EVAL_DIR`.
+   CASES.tsv names every case by council, oachargeid, further_information_reference (user 2026-11-20: 一个case在我们这永远是
+   3字段作为id,无论任何工作流和框架; reins.toml `case_key_fields`: a one-id list is refused): make it from the work dir's
+   records with `python3 /env/code/ReinsLite/adapters/e2e/stage_hook.py cases EVAL_DIR > CASES.tsv`. The council comes
+   from the record, else the work dir (/data/councils/<council>/...); a record with neither is refused.
    The pipeline programs (`[run] programs`) are refused by the hook any other way.
 6. What a reins run gives e2e ([run.env]): `E2E_RUN_ID`, `E2E_WORK_DIR`, `E2E_STAGE_VERSIONS`, `E2E_STAGE_HOOK`
    (stage_hook.py: stage boundaries + per-case outcomes), `E2E_CONTAINER_HOOK`, `E2E_RUN_CONTROL`; paid calls go

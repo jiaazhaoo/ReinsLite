@@ -51,19 +51,11 @@ CASE_KEY_FIELDS = ["council", "oachargeid", "further_information_reference"]
 
 
 def key_args(args: list[str]) -> list[str]:
-    """--key-fields / --case-column for a case set that carries the three key columns (intake writes them since
-    2026-11-20); a case set without them opens as before."""
+    """--key-fields / --case-column: every run opened through here names its cases by the three fields (user
+    2026-11-20: 一个case在我们这永远是3字段作为id,无论任何工作流和框架); reins refuses a case set without them."""
     if "--cases" not in args or "--key-fields" in args:
         return []
-    f = Path(args[args.index("--cases") + 1])
-    try:
-        head = f.read_text(encoding="utf-8-sig").splitlines()[0] if f.suffix.lower() in (".csv", ".tsv") else ""
-    except (OSError, IndexError):
-        return []
-    cols = [c.strip() for c in head.split("\t" if f.suffix.lower() == ".tsv" else ",")]
-    if all(c in cols for c in CASE_KEY_FIELDS):
-        return ["--key-fields", ",".join(CASE_KEY_FIELDS), "--case-column", "oachargeid"]
-    return []
+    return ["--key-fields", ",".join(CASE_KEY_FIELDS), "--case-column", "oachargeid"]
 
 
 def _open(args: list[str]) -> None:

@@ -167,7 +167,8 @@ def read_case_keys(path: Path, fields: list[str]) -> list[dict]:
         rows = [r for r in d if isinstance(r, dict)]
         have = list(rows[0].keys()) if rows else []
     else:
-        raise ReinsError(f"{path}: a case key of several columns needs a .csv/.tsv/.json case set with those columns")
+        raise ReinsError(f"{path}: a case here is {' + '.join(fields)} together; the case set must be a .csv/.tsv/.json "
+                         f"with those columns (the project's case_key_fields), not one id per line")
     missing = [f for f in fields if f not in have]
     if missing:
         raise ReinsError(f"{path}: the case key needs the columns {fields}; missing {missing} (columns: {have[:12]})")

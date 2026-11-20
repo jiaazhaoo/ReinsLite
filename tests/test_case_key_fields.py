@@ -96,7 +96,7 @@ class CaseKeyFields(unittest.TestCase):
 
 
 class RunControlAdapter(unittest.TestCase):
-    """The e2e run-control adapter passes the key when the case set carries the three columns."""
+    """The e2e run-control adapter always passes the three fields (user 2026-11-20)."""
 
     def test_key_args(self):
         spec = importlib.util.spec_from_file_location("runctl", Path(__file__).resolve().parents[1] / "adapters/e2e/runctl.py")
@@ -107,7 +107,10 @@ class RunControlAdapter(unittest.TestCase):
         (d / "ids.txt").write_text("1\n")
         self.assertEqual(m.key_args(["--cases", str(d / "k.tsv")]),
                          ["--key-fields", "council,oachargeid,further_information_reference", "--case-column", "oachargeid"])
-        self.assertEqual(m.key_args(["--cases", str(d / "ids.txt")]), [])
+        # every run opened through the adapter names its cases by the three (reins refuses a set without them)
+        self.assertEqual(m.key_args(["--cases", str(d / "ids.txt")]),
+                         ["--key-fields", "council,oachargeid,further_information_reference", "--case-column", "oachargeid"])
+        self.assertEqual(m.key_args(["--scope", "x"]), [])
 
 
 if __name__ == "__main__":
