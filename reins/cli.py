@@ -140,6 +140,8 @@ def build_parser() -> argparse.ArgumentParser:
     x = m.add_parser("describe", help="set the one-line description of a module or a module version")
     x.add_argument("name", help="module name or module version"); x.add_argument("--about", required=True)
     x = m.add_parser("status"); x.add_argument("module")
+    x = m.add_parser("move", help="a module changes project (its repo was split)")
+    x.add_argument("name"); x.add_argument("--project", required=True); x.add_argument("--why", required=True)
     m.add_parser("list")
 
     d = sub.add_parser("dev").add_subparsers(dest="sub", required=True)
@@ -995,6 +997,9 @@ def _module(con, args, cfg) -> int:
         else:
             old = modules.describe_module(con, args.name, args.about)
         print(f"{args.name}: {args.about}\n  (was: {old})")
+    elif args.sub == "move":
+        old = modules.move(con, args.name, args.project, args.why)
+        print(f"module {args.name}: project {old} -> {args.project}")
     elif args.sub == "status":
         st = modules.status(con, args.module)
         p = st["production"]

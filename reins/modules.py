@@ -118,6 +118,25 @@ def describe_module(con, module: str, about: str) -> str:
     return row["about"]
 
 
+def move(con, module: str, project: str, why: str) -> str:
+    """A module changes project (its repo was split, 2026-11-22: web-app -> readymap / s3viewer). Its versions stay as
+    they are; releases of the new project count them from now on. Recorded as a decision. Returns the old project."""
+    from . import decisions
+    why = (why or "").strip()
+    if len(why) < 8:
+        raise ReinsError("--why says why the module changes project")
+    with tx(con):
+        row = con.execute("SELECT project FROM module WHERE name=?", (module,)).fetchone()
+        if not row:
+            raise ReinsError(f"module {module!r} is not registered")
+        old = row["project"]
+        if old == project:
+            return old
+        con.execute("UPDATE module SET project=? WHERE name=?", (project, module))
+    decisions.add(con, f"module {module} moves from project {old} to {project}", why, "session", project=project)
+    return old
+
+
 def note(con, version: str, event: str, detail: str) -> None:
     """Free event on a version: a gate result, a status line from the developing session."""
     with tx(con):
