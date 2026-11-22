@@ -1,0 +1,29 @@
+# ReinsLite project settings for LoadGate, the gate that loads checked data into the company database (llcdata): dry
+# run first (预演), then the load. https://github.com/RMSI-UK/loadgate; its dry run started 2026-11-20 in web-app
+# delivery/ (decision #129) and moved to its own repo 2026-11-22. The repo carries no reins file.
+project = "loadgate"
+case_key = "case"
+case_id_pattern = "^[a-z0-9]+\\|[^|]+\\|[^|]*$"
+
+[glossary]
+file = "/env/code/standards/glossary.toml"
+
+[dev]
+repo = "/env/code/loadgate"
+push = "origin"
+# the repo names no framework (user 2026-11-22): merges and tags signed by the project, short merge messages
+merge_author = "loadgate <loadgate@users.noreply.github.com>"
+merge_message = "short"
+history_forbid = ["reins"]
+gate = "python3 /env/code/standards/vocab/check.py diff && python3 -m pytest -q tests"
+
+[run]
+work_dirs = ["/data/councils/*/runs/{batch}"]      # a dry run lives with its council
+programs = ["dryrun.py"]                          # a company database load dry run (read only): only as a batch
+
+[run.env]
+LOADGATE_READYMAP = "/env/code/readymap"
+
+[modules.loadgate]
+about = "LoadGate: the dry run of a company database load (every row and column it would change, checks, Landmark v3-8 before/after, SQL to read, report page); the load itself next"
+files = ["*", "tests/*"]
