@@ -1,0 +1,50 @@
+# ReinsLite project settings for ReadyMap (/env/code/ReinsLite). User 2026-11-03: 必须接reinslite. Since the 2026-11-22
+# split of RMSI-UK/web-app (decision #131): https://github.com/RMSI-UK/readymap = qa/ (ReadyMap, the review site) and
+# dashboard/ (the production dashboard's front door; its page lives in qa/gate). Before the split this project was "web-app".
+# Kept here (ReinsLite adapter), not in the repo: the repo carries no reins file.
+project = "readymap"
+case_key = "case"                          # the case set's id column (agent/native.py writes case_id + site_case)
+# a case is council|oachargeid|further-information-reference, the client's own fields (user 2026-11-06, binding);
+# the site's own ids (BRA_1040006) stay its storage handles, never a reins case id
+case_id_pattern = "^[a-z0-9]+\\|[^|]+\\|[^|]*$"
+
+[batch]
+scope = ["product", "job"]                 # one batch per confirmed leader job: qacloud-job7-production-20261103-1
+
+[glossary]
+file = "/env/code/standards/glossary.toml"   # the project's one word list (all repos, user 2026-11-16)
+
+[dev]
+repo = "/env/code/readymap"
+push = "origin"                            # reins dev finish publishes main to GitHub RMSI-UK/readymap
+# the project's word police first: a change that brings a forbidden word into a field name is refused (2026-11-16)
+gate = "python3 /env/code/standards/vocab/check.py diff && python3 -m unittest discover -s qa/tests && python3 -m pytest -q qa/review/tests"
+
+[run]
+work_dirs = ["/data/lab/projects/qa-cloud/runs/{batch}"]
+programs = ["qa/agent/job.py"]                # a confirmed job's work (fill gaps, polygons, render + upload): only via reins run
+
+[modules.qa_gate]
+about = "qa-gate on the server: sign-in, accounts + roles, admin panel, job API, review proxy, view rebuild"
+files = ["qa/gate/*", "qa/gate/static/*"]
+
+[modules.qa_review]
+about = "the review page and its server (map, verdicts, drawings, lists): moved in from e2e-plan-extract s5_review on 2026-11-19 (user: 全都应该放在web-app呀，这个和e2e没有关系)"
+files = ["qa/review/*", "qa/review/tests/*"]
+
+[modules.qa_worker]
+about = "the Cloudflare Worker qa: images from R2, everything else to qa-gate through the tunnel"
+files = ["qa/worker/*", "qa/worker/src/*"]
+
+[modules.qa_agent]
+about = "the data host side: poll the site, check a job's cases, open its reins batch, fill gaps, render and upload"
+files = ["qa/agent/*", "qa/agent/systemd/*"]
+
+[modules.qa_deploy]
+about = "server setup, release script, systemd units, docs, project settings, tests"
+files = ["qa/deploy/*", "qa/deploy/systemd/*", "qa/docs/*", "qa/README.md", "qa/tests/*", "README.md", "reins.toml", ".gitignore"]
+
+[modules.dashboard]
+about = "the Cloudflare Worker dashboard (dashboard.rmsi-uk.workers.dev): the production dashboard, served by qa-gate /board"
+files = ["dashboard/*", "dashboard/src/*"]
+
