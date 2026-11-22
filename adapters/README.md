@@ -9,3 +9,4 @@ the repo. Projects without an adapter keep their reins.toml in the repo, as befo
 - `e2e/` -- e2e-plan-extract (since 2026-11-19); `e2e/AGENTS.md` says how to work on it here.
 - `readymap/` -- ReadyMap (qa/ + dashboard/; was the web-app project), `s3viewer/`, `labelmap/` (was modeltraining/):
   the repos split out of RMSI-UK/web-app on 2026-11-22 (decision #131). web-app itself is archived.
+- `loadgate/` -- LoadGate, the company-DB load gate (RMSI-UK/loadgate, 2026-11-22; its dry run moved out of web-app delivery/).
