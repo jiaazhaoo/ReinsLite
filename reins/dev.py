@@ -378,6 +378,7 @@ def release(con, repo: Path, note: str = "") -> dict:
     with tx(con):
         prefix = cfg.get("dev", {}).get("release_prefix") or f"rel-{project}"
         taken = set(git(repo, "tag", "-l", f"{prefix}-{day}-*").split())
+        taken |= {r[0] for r in con.execute("SELECT name FROM release WHERE name LIKE ?", (f"{prefix}-{day}-%",))}
         n = 1
         while f"{prefix}-{day}-{n}" in taken:
             n += 1
