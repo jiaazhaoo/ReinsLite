@@ -9,6 +9,11 @@ file = "/env/code/standards/glossary.toml"
 [dev]
 repo = "/env/code/labelmap"
 push = "origin"
+# the repo names no framework (user 2026-11-22: rmsi的所有东西都不能出现reinslite): merges and tags signed by the
+# project, short merge messages, and no candidate named or described with these words
+merge_author = "labelmap <labelmap@users.noreply.github.com>"
+merge_message = "short"
+history_forbid = ["reins"]
 gate = "python3 /env/code/standards/vocab/check.py diff && python3 -m pytest -q tests"
 
 [modules.labelmap]
