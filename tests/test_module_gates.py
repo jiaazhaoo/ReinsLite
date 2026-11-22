@@ -183,3 +183,19 @@ class Units(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ModuleMove(unittest.TestCase):
+    """reins module move: a module changes project when its repo is split (2026-11-22)."""
+
+    def test_move_changes_project_and_records_a_decision(self):
+        import tempfile
+        from reins import modules, store
+        d = tempfile.mkdtemp()
+        con = store.connect(Path(d) / "t.db")
+        modules.add(con, "qa_agent", "web-app", "the data host side of the review site")
+        self.assertEqual(modules.move(con, "qa_agent", "readymap", "repo split: one repo per app"), "web-app")
+        self.assertEqual(con.execute("SELECT project FROM module WHERE name='qa_agent'").fetchone()[0], "readymap")
+        self.assertTrue(con.execute("SELECT 1 FROM decision WHERE text LIKE 'module qa_agent moves%'").fetchone())
+        with self.assertRaises(Exception):
+            modules.move(con, "nope", "readymap", "repo split: one repo per app")
