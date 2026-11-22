@@ -1,0 +1,16 @@
+# ReinsLite project settings for LabelMap, the labelling platform (people draw boundaries and labels on plan scans for
+# model training; office LAN, port 8840). Split out of RMSI-UK/web-app (modeltraining/) on 2026-11-22 (decision #131):
+# https://github.com/RMSI-UK/labelmap.
+project = "labelmap"
+
+[glossary]
+file = "/env/code/standards/glossary.toml"
+
+[dev]
+repo = "/env/code/labelmap"
+push = "origin"
+gate = "python3 /env/code/standards/vocab/check.py diff && python3 -m pytest -q tests"
+
+[modules.labelmap]
+about = "LabelMap: the labelling server and page, its systemd unit and tests"
+files = ["*", "static/*", "systemd/*", "tests/*"]

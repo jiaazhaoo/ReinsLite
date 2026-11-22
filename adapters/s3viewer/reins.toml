@@ -1,0 +1,16 @@
+# ReinsLite project settings for s3viewer, the S3 image viewer's cloud layer (sign-in Worker, accounts, release and
+# data-sync scripts). Split out of RMSI-UK/web-app (s3viewer/) on 2026-11-22 (decision #131): https://github.com/RMSI-UK/s3viewer.
+# The viewer application itself is RMSI-UK/file-browser.
+project = "s3viewer"
+
+[glossary]
+file = "/env/code/standards/glossary.toml"
+
+[dev]
+repo = "/env/code/s3viewer"
+push = "origin"
+gate = "python3 /env/code/standards/vocab/check.py diff && bash -n push.sh && bash -n release.sh && python3 -m py_compile users.py"
+
+[modules.s3viewer]
+about = "the S3 viewer's cloud layer: sign-in Worker, accounts, release (GitHub code only) and data-sync scripts"
+files = ["*", "src/*", "systemd/*"]
