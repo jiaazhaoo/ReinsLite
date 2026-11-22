@@ -17,6 +17,11 @@ file = "/env/code/standards/glossary.toml"   # the project's one word list (all 
 [dev]
 repo = "/env/code/readymap"
 push = "origin"                            # reins dev finish publishes main to GitHub RMSI-UK/readymap
+# the repo names no framework (user 2026-11-22: rmsi的所有东西都不能出现reinslite): merges and tags signed by the
+# project, short merge messages, and no candidate named or described with these words
+merge_author = "readymap <readymap@users.noreply.github.com>"
+merge_message = "short"
+history_forbid = ["reins"]
 # the project's word police first: a change that brings a forbidden word into a field name is refused (2026-11-16)
 gate = "python3 /env/code/standards/vocab/check.py diff && python3 -m unittest discover -s qa/tests && python3 -m pytest -q qa/review/tests"
 
@@ -48,3 +53,12 @@ files = ["qa/deploy/*", "qa/deploy/systemd/*", "qa/docs/*", "qa/README.md", "qa/
 about = "the Cloudflare Worker dashboard (dashboard.rmsi-uk.workers.dev): the production dashboard, served by qa-gate /board"
 files = ["dashboard/*", "dashboard/src/*"]
 
+# what a run gives ReadyMap, in its own words (its code reads no framework variable): the run id, the work dir, the
+# run manager's command line, its register (read-only) and board, and the notify helper beside this file
+[run.env]
+READYMAP_RUN_ID = "{batch}"
+READYMAP_WORK_DIR = "{work_dir}"
+READYMAP_RUNNER = "{reins}/bin/reins"
+READYMAP_REGISTER = "/data/system/reins/reins.db"
+READYMAP_RUN_BOARD = "http://127.0.0.1:8791"
+READYMAP_NOTIFY = "python3 {adapter}/notify.py"
