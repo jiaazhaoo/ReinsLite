@@ -61,7 +61,7 @@ _ENV_SECRET = re.compile(r"KEY|TOKEN|SECRET|PASS|CREDENTIAL|AUTH|COOKIE|PRIVATE|
 
 
 def knobs(env: dict) -> dict:
-    """The variables a run was started with that a restart must give it again (START_STEP=5 CASE_PREFIX=BRA_ ...):
+    """The variables a run was started with that a restart must give it again (START_STEP=5 END_STEP=11 ...):
     upper-case names, not the desktop / shell / reins / session ones, never anything that looks like a secret."""
     return {k: v for k, v in env.items() if re.fullmatch(r"[A-Z][A-Z0-9_]*", k) and not _ENV_SKIP.match(k)
             and not _ENV_SECRET.search(k) and len(v) < 2000}

@@ -12,6 +12,9 @@ directory, or $E2E_REPO). Until 2026-11-19 this file lived in e2e as tools/reins
     python3 stage_hook.py cases EVAL_DIR > X.tsv    the batch's case set on stdout: every record as council, oachargeid,
                                                     further_information_reference (open the batch with --cases X.tsv)
     python3 stage_hook.py check-cases EVAL_DIR FILE exit 0 when FILE (a batch's case set) equals the records
+    python3 stage_hook.py check-names EVAL_DIR      exit 0 when every case folder (records.json key, cases.json) is its
+                                                    record's three-field name -- e2e's case_names.case_folder of the
+                                                    checkout run (decision #141, 2026-11-24: no council prefix, ever)
 
 A case is its three fields together, in every workflow (user 2026-11-20: 一个case在我们这永远是3字段作为id,无论任何工作流和
 框架): the case set, the check and the marks name each case by council + oachargeid + further_information_reference.
@@ -58,7 +61,6 @@ STAGES = ("prepare", "plan_crop", "georef", "trace", "check")
 KEY = ["council", "oachargeid", "further_information_reference"]
 FIR = "further-information-reference"                     # the client's field name, as records.json keeps it
 STAGE_CHECKS = {"check": ("12", "13", "14", "15")}        # stages whose step checks decide done / failed
-PREFIX = os.environ.get("CASE_PREFIX", "SHF_")
 
 
 def load(p: Path, default):
@@ -66,11 +68,6 @@ def load(p: Path, default):
         return json.loads(p.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return default
-
-
-def oaid(case: str) -> str:
-    """the work dir's case key without CASE_PREFIX (only where no record says what the client calls it)"""
-    return case[len(PREFIX):] if case.startswith(PREFIX) else case
 
 
 def records(W: Path) -> list[str]:
@@ -83,7 +80,12 @@ def native_ids(W: Path) -> dict[str, str]:
     another id kept the client's in orig_oachargeid (Mansfield: locallandchargeid in oachargeid). Never a prefix.
     Two records naming one oachargeid cannot both be cases: refused."""
     recs = load(W / "records.json", {})
-    out = {c: str((r or {}).get("orig_oachargeid") or (r or {}).get("oachargeid") or oaid(c)).strip() for c, r in recs.items()}
+    out = {}
+    for c, r in recs.items():                     # an id is the record's, never read off the case name
+        oa = str((r or {}).get("orig_oachargeid") or (r or {}).get("oachargeid") or "").strip()
+        if not oa:
+            sys.exit(f"stage_hook: record {c} names no oachargeid")
+        out[c] = oa
     seen: dict[str, str] = {}
     for c, k in out.items():
         if k in seen:
@@ -232,6 +234,38 @@ def stage_status(batch: str, stage: str) -> str | None:
     return None
 
 
+def check_names(W: Path) -> int:
+    """Every case folder of the work dir is its record's three-field name (decision #141, user 2026-11-24: 完全全面禁止
+    这种编号): records.json keys and cases.json entries = case_folder(council, oachargeid, further-information-reference)
+    of e2e's checkout being run. A checkout without case_folder (a release before the rule) is refused too."""
+    sys.path.insert(0, str(REPO))
+    try:
+        from e2e_plan_extract.case_names import case_folder, record_fields
+    except ImportError:
+        print(f"{REPO}: this e2e checkout predates three-field case folders (no case_names.case_folder): "
+              "open the batch with a release cut after decision #141")
+        return 1
+    recs = load(W / "records.json", {})
+    cases = load(W / "cases.json", [])
+    bad = []
+    for c, r in recs.items():
+        try:
+            want = case_folder(*record_fields(r or {}, council_of(W, r)))
+        except ValueError as e:
+            want = f"<{e}>"
+        if c != want:
+            bad.append((c, want))
+    extra = [c for c in cases if c not in recs]
+    if bad or extra:
+        print(f"{len(bad)} case folder(s) not named by their record's three fields"
+              + (f", e.g. {bad[0][0]!r} should be {bad[0][1]!r}" if bad else "")
+              + (f"; {len(extra)} cases.json entries without a record, e.g. {extra[0]!r}" if extra else "")
+              + " -- build the work dir with e2e_plan_extract.case_names.case_folder (no council prefix)")
+        return 1
+    print(f"{len(recs)} case folders named by their three fields")
+    return 0
+
+
 def main() -> int:
     if len(sys.argv) >= 3 and sys.argv[1] == "cases":
         print(key_tsv(list(native_keys(Path(sys.argv[2])).values())), end="")
@@ -245,6 +279,8 @@ def main() -> int:
               f"batch case set differs from records.json ({form}): {len(have - want)} extra, {len(want - have)} missing"
               + (f", e.g. extra {sorted(have - want)[:2]} missing {sorted(want - have)[:2]}" if want != have else ""))
         return 0 if want == have else 1
+    if len(sys.argv) == 3 and sys.argv[1] == "check-names":
+        return check_names(Path(sys.argv[2]))
     batch = os.environ.get("REINS_BATCH")
     if not batch:
         return 0                                                   # not run under reins: nothing to report
@@ -274,7 +310,7 @@ def main() -> int:
                             ("status", "reason")))
         else:                                           # a batch opened on one id before 2026-11-20
             ids = native_ids(W)
-            rows = [(ids.get(c) or oaid(c), s, why) for c, s, why in outcomes(stage, W)]
+            rows = [(ids[c], s, why) for c, s, why in outcomes(stage, W)]
             f.write("oachargeid\tstatus\treason\n" + "".join(f"{c}\t{s}\t{why}\n" for c, s, why in rows))
     end = ["batch", "stage-end", batch, stage]
     if stage in STAGE_CHECKS:
