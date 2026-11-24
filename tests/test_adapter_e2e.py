@@ -20,8 +20,8 @@ if (E2E / "tools/run_record.py").exists():
     import stage_hook as H  # noqa: E402
 
 
-def _run(*args, prefix="MAN_"):
-    env = dict(os.environ, CASE_PREFIX=prefix, E2E_REPO=str(E2E))
+def _run(*args):
+    env = dict(os.environ, E2E_REPO=str(E2E))
     env.pop("REINS_BATCH", None)
     return subprocess.run([sys.executable, str(HOOK), *args], capture_output=True, text=True, env=env)
 
@@ -41,10 +41,12 @@ def _rows(out: str) -> list[list[str]]:
 
 @needs_e2e
 def test_numeric_ids_unchanged(tmp_path):
-    W = _w(tmp_path, {"BRA_15884": {"oachargeid": "15884", "further-information-reference": "95/00261/LBC"}, "BRA_1": {}},
+    W = _w(tmp_path, {"BRA_15884": {"oachargeid": "15884", "further-information-reference": "95/00261/LBC"}},
            council="braintree")
-    assert _rows(_run("cases", str(W), prefix="BRA_").stdout) == [["braintree", "15884", "95/00261/LBC"],
-                                                                 ["braintree", "1", ""]]
+    assert _rows(_run("cases", str(W)).stdout) == [["braintree", "15884", "95/00261/LBC"]]
+    (W / "records.json").write_text(json.dumps({"BRA_1": {}}))           # an id is the record's, never the name's
+    r = _run("cases", str(W))
+    assert r.returncode != 0 and "names no oachargeid" in r.stderr
 
 
 @needs_e2e
@@ -72,11 +74,11 @@ def test_case_set_of_three_fields_checked_by_all_three(tmp_path):
     """user 2026-11-20: 一个case在我们这永远是3字段作为id,无论任何工作流和框架"""
     W = _w(tmp_path, {"BRA_7": {"oachargeid": "7", "further-information-reference": "TPO 6/88"}}, council="braintree")
     cs = tmp_path / "cases.tsv"
-    cs.write_text(_run("cases", str(W), prefix="BRA_").stdout)
-    r = _run("check-cases", str(W), str(cs), prefix="BRA_")
+    cs.write_text(_run("cases", str(W)).stdout)
+    r = _run("check-cases", str(W), str(cs))
     assert r.returncode == 0 and "further_information_reference" in r.stdout
     cs.write_text("council\toachargeid\tfurther_information_reference\nbraintree\t7\tTPO 6/89\n")
-    assert _run("check-cases", str(W), str(cs), prefix="BRA_").returncode == 1     # same id, another case
+    assert _run("check-cases", str(W), str(cs)).returncode == 1     # same id, another case
 
 
 @needs_e2e
@@ -84,10 +86,10 @@ def test_a_case_is_never_named_without_its_council(tmp_path):
     W = tmp_path / "bench" / "w"
     W.mkdir(parents=True)
     (W / "records.json").write_text(json.dumps({"BRA_7": {"oachargeid": "7"}}))
-    r = _run("cases", str(W), prefix="BRA_")
+    r = _run("cases", str(W))
     assert r.returncode != 0 and "council" in r.stderr
     (W / "records.json").write_text(json.dumps({"BRA_7": {"oachargeid": "7", "council": "Braintree"}}))
-    assert _rows(_run("cases", str(W), prefix="BRA_").stdout) == [["braintree", "7", ""]]
+    assert _rows(_run("cases", str(W)).stdout) == [["braintree", "7", ""]]
 
 
 @needs_e2e
@@ -138,7 +140,7 @@ def test_register_refusal_not_written_as_registered(tmp_path):
     old = register.REINS
     try:
         register.REINS = fake_reins(tmp_path, "preflight")
-        ok, msg = register.register(state, "b1", W, ["georef"], "BRA_")
+        ok, msg = register.register(state, "b1", W, ["georef"])
         assert not ok and "NOT REGISTERED: reins preflight failed: FAIL file_links" in msg
         for _ in range(2):
             sys.argv = ["cloud_register.py", str(state)]
@@ -183,3 +185,34 @@ def test_runctl_open_for_a_managed_project_runs_from_its_checkout(tmp_path, monk
     call = (tmp_path / "calls").read_text().strip()
     if E2E.is_dir():
         assert call.startswith(f"{E2E} batch open --scope mansfield-wp1 --type rework")
+
+
+needs_names = pytest.mark.skipif(not (E2E / "e2e_plan_extract/case_names.py").exists()
+                                 or "def case_folder" not in (E2E / "e2e_plan_extract/case_names.py").read_text(),
+                                 reason="e2e checkout without three-field case folders")
+
+
+@needs_names
+def test_check_names_refuses_a_prefixed_case(tmp_path):
+    """decision #141 (user 2026-11-24: 完全全面禁止这种编号): a work dir keyed BRA_<id> does not pass preflight"""
+    rec = {"oachargeid": "7", "further-information-reference": "TPO 6/88"}
+    W = _w(tmp_path, {"BRA_7": rec}, council="braintree")
+    (W / "cases.json").write_text(json.dumps(["BRA_7"]))
+    r = _run("check-names", str(W))
+    assert r.returncode == 1 and "braintree~7~TPO_206_2F88" in r.stdout
+    (W / "records.json").write_text(json.dumps({"braintree~7~TPO_206_2F88": rec}))
+    (W / "cases.json").write_text(json.dumps(["braintree~7~TPO_206_2F88"]))
+    r = _run("check-names", str(W))
+    assert r.returncode == 0, r.stdout
+
+
+@needs_names
+def test_check_names_refuses_a_bare_id_and_an_orphan_case(tmp_path):
+    rec = {"oachargeid": "36630", "further-information-reference": "M/1"}
+    W = _w(tmp_path, {"36630": rec}, council="monmouthshire")
+    (W / "cases.json").write_text(json.dumps(["36630"]))
+    assert _run("check-names", str(W)).returncode == 1
+    (W / "records.json").write_text(json.dumps({"monmouthshire~36630~M_2F1": rec}))
+    (W / "cases.json").write_text(json.dumps(["monmouthshire~36630~M_2F1", "monmouthshire~1~x"]))
+    r = _run("check-names", str(W))
+    assert r.returncode == 1 and "without a record" in r.stdout

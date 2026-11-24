@@ -177,6 +177,12 @@ name = "case_set_is_records"
 cmd = "python3 $REINS_ADAPTER/stage_hook.py check-cases $REINS_WORK_DIR $REINS_CASES"
 
 [[preflight]]
+name = "case_names"
+# decision #141 (user 2026-11-24: 完全全面禁止这种编号): every case folder = its record's three fields
+# (council~oachargeid~further-information-reference, e2e case_names.case_folder); a council prefix is refused
+cmd = "python3 $REINS_ADAPTER/stage_hook.py check-names $REINS_WORK_DIR"
+
+[[preflight]]
 name = "file_links"
 # user 2026-10-23: the default input carries file_link (the charge's cloud scans) and the Evidence sheet shows it;
 # fill it with: python3 tools/file_links.py add WORK_DIR
