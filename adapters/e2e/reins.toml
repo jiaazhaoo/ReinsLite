@@ -74,6 +74,10 @@ E2E_STAGE_VERSIONS = "{stage_versions}"
 E2E_STAGE_HOOK = "python3 {adapter}/stage_hook.py"
 E2E_CONTAINER_HOOK = "python3 {adapter}/container_claim.py"
 E2E_RUN_CONTROL = "python3 {adapter}/runctl.py"
+# AutoRef keeps OS Places answers here (e2e qa-20261127-1, labels.get): a look-up that failed three times used to
+# drop a house-number anchor silently, so the same plan placed differently run to run. Answers only, no key;
+# delete the file to look everything up again (decision #144, user 2026-11-27: 打开门牌缓存)
+E2E_PLACES_CACHE = "/data/vlm-cache/os_places.sqlite"
 
 
 [results]
